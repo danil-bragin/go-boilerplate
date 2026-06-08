@@ -3,6 +3,10 @@
 // data (Repository.Enqueue), and a Relay later publishes them to a transport
 // via the Publisher interface. The transport (e.g. Kafka) is injected; this
 // package does not depend on any broker.
+//
+// Delivery semantics are AT-LEAST-ONCE: if Publish succeeds but the
+// transaction's commit fails, the message is re-published on a later poll.
+// Consumers must be idempotent and deduplicate by Message.ID.
 package outbox
 
 import (
@@ -12,7 +16,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// Message is one outbox record to be published.
+// Message is one outbox record to be published. Delivery is AT-LEAST-ONCE;
+// consumers must deduplicate by ID.
 type Message struct {
 	ID            uuid.UUID
 	AggregateType string
