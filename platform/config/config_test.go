@@ -31,3 +31,13 @@ func TestLoad_MissingRequiredFails(t *testing.T) {
 	_, err := config.Load[sampleConfig]()
 	require.Error(t, err)
 }
+
+func TestLoad_NonStructTypeReturnsClearError(t *testing.T) {
+	_, err := config.Load[int]()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must be a struct")
+
+	_, err = config.Load[map[string]string]()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "must be a struct")
+}
