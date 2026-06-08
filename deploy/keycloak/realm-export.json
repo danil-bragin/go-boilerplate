@@ -1,0 +1,67 @@
+{
+  "id": "app",
+  "realm": "app",
+  "displayName": "App Realm",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": false,
+  "roles": {
+    "realm": [
+      {
+        "id": "admin-role",
+        "name": "admin",
+        "description": "Administrator role",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "app"
+      },
+      {
+        "id": "user-role",
+        "name": "user",
+        "description": "Standard user role",
+        "composite": false,
+        "clientRole": false,
+        "containerId": "app"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "id": "gateway-client",
+      "clientId": "gateway",
+      "name": "Gateway",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "protocol": "openid-connect",
+      "redirectUris": ["*"],
+      "webOrigins": ["*"],
+      "defaultRoles": ["user"]
+    }
+  ],
+  "users": [
+    {
+      "id": "demo-user",
+      "username": "demo",
+      "email": "demo@example.com",
+      "emailVerified": true,
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "demo",
+          "temporary": false
+        }
+      ],
+      "realmRoles": ["user"],
+      "clientRoles": {}
+    }
+  ]
+}

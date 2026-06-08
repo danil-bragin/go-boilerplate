@@ -1,0 +1,343 @@
+services:
+
+  # ── Infrastructure ──────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092,OUTSIDE://localhost:19092
+      - --pandaproxy-addr=0.0.0.0:8082
+      - --advertise-pandaproxy-addr=localhost:8082
+      - --schema-registry-addr=0.0.0.0:8081
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=redpanda:33145
+    ports:
+      - "19092:19092"   # external Kafka access from host
+      - "8081:8081"     # Schema Registry
+      - "8082:8082"     # Pandaproxy (optional)
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true'"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  redpanda-console:
+    image: redpandadata/console:v2.7.2
+    restart: unless-stopped
+    environment:
+      CONFIG_FILEPATH: /etc/redpanda-console/config.yaml
+    command: >
+      sh -c "
+        cat > /etc/redpanda-console/config.yaml <<'EOF'
+      kafka:
+        brokers: [\"redpanda:9092\"]
+        schemaRegistry:
+          enabled: true
+          urls: [\"http://redpanda:8081\"]
+      EOF
+        exec /app/console"
+    ports:
+      - "8090:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  minio:
+    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address :9001
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # MinIO Console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  minio-setup:
+    image: minio/mc:RELEASE.2024-11-17T19-35-25Z
+    restart: on-failure
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+        mc alias set local http://minio:9000 minioadmin minioadmin &&
+        mc mb --ignore-existing local/app &&
+        echo 'MinIO bucket created.'
+      "
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0.6
+    restart: unless-stopped
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_DB: dev-mem
+      KC_HEALTH_ENABLED: "true"
+    command: ["start-dev", "--import-realm"]
+    volumes:
+      - ./deploy/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    ports:
+      - "8180:8080"   # offset to avoid conflict with gateway
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200 OK'"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  # ── Observability ───────────────────────────────────────────────────────────
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    restart: unless-stopped
+    volumes:
+      - ./deploy/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus exporter
+    depends_on:
+      - jaeger
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:13133/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "14317:4317"   # OTLP gRPC (host-mapped to avoid conflict with collector)
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.console.libraries=/etc/prometheus/console_libraries
+      - --web.console.templates=/etc/prometheus/consoles
+      - --web.enable-lifecycle
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_INSTALL_PLUGINS: grafana-pyroscope-app
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - jaeger
+
+  pyroscope:
+    image: grafana/pyroscope:1.8.1
+    restart: unless-stopped
+    ports:
+      - "4040:4040"
+
+  # ── Application Services ────────────────────────────────────────────────────
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: gateway
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Postgres
+      PG_DSN: postgres://app:app@postgres:5432/gateway?sslmode=disable
+      # Kafka
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_CLIENT_ID: gateway
+      # HTTP
+      HTTP_ADDR: :8080
+      # Telemetry
+      OTEL_SERVICE_NAME: gateway
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_ENABLED: "true"
+      # Logging
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+      # Auth — disabled for the local demo; to enable with Keycloak:
+      #   GATEWAY_AUTH_DISABLED: "false"
+      #   GATEWAY_JWKS_URL: http://keycloak:8080/realms/app/protocol/openid-connect/certs
+      #   GATEWAY_JWKS_ISSUER: http://localhost:8180/realms/app
+      #   GATEWAY_JWKS_AUDIENCE: gateway
+      GATEWAY_AUTH_DISABLED: "true"
+      # Topics
+      GATEWAY_COMMANDS_TOPIC: orders.commands
+      GATEWAY_ORDERS_EVENTS_TOPIC: orders.events
+      GATEWAY_PAYMENTS_EVENTS_TOPIC: payments.events
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+
+  orders:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: orders
+    restart: unless-stopped
+    environment:
+      # Postgres
+      PG_DSN: postgres://app:app@postgres:5432/orders?sslmode=disable
+      # Kafka
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_CLIENT_ID: orders
+      # Telemetry
+      OTEL_SERVICE_NAME: orders
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_ENABLED: "true"
+      # Logging
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+      # Topics
+      ORDERS_COMMANDS_TOPIC: orders.commands
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+
+  payments:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: payments
+    restart: unless-stopped
+    environment:
+      # Postgres
+      PG_DSN: postgres://app:app@postgres:5432/payments?sslmode=disable
+      # Kafka
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_CLIENT_ID: payments
+      # Telemetry
+      OTEL_SERVICE_NAME: payments
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_ENABLED: "true"
+      # Logging
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+      # Topics
+      ORDERS_EVENTS_TOPIC: orders.events
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+
+  notifications:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: notifications
+    restart: unless-stopped
+    environment:
+      # Postgres
+      PG_DSN: postgres://app:app@postgres:5432/notifications?sslmode=disable
+      # Kafka
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_CLIENT_ID: notifications
+      # Telemetry
+      OTEL_SERVICE_NAME: notifications
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_ENABLED: "true"
+      # Logging
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+      # Topics
+      PAYMENTS_EVENTS_TOPIC: payments.events
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  redpanda-data:
+  redis-data:
+  minio-data:
+  prometheus-data:
+  grafana-data:

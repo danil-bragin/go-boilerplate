@@ -1,0 +1,23 @@
+# Version control
+.git
+.gitignore
+
+# Build output
+bin/
+
+# Docs and local config
+docs/
+*.md
+.env
+.env.*
+!.env.example
+
+# Temporary / editor files
+tmp/
+*.tmp
+.DS_Store
+.idea/
+.vscode/
+
+# Test caches (binaries not needed; source is fine for go build inside Docker)
+**/*_test.go.cache

@@ -1,13 +1,16 @@
 version: "3"
 
 tasks:
+
+  # ── Go development ──────────────────────────────────────────────────────────
+
   tidy:
     desc: Sync go.mod/go.sum
     cmds:
       - go mod tidy
 
   test:
-    desc: Run all tests with race detector
+    desc: Run all tests with race detector (requires Docker for testcontainers)
     cmds:
       - go test -race ./...
 
@@ -25,3 +28,51 @@ tasks:
     desc: Run the skeleton service
     cmds:
       - go run ./cmd/skeleton
+
+  # ── Code generation ─────────────────────────────────────────────────────────
+
+  buf:
+    desc: Lint and generate protobuf/grpc code via buf
+    cmds:
+      - buf lint
+      - buf generate
+
+  sqlc:
+    desc: Generate SQL query code for all services and platform packages
+    cmds:
+      - sqlc generate -f examples/gateway/internal/store/sqlc.yaml
+      - sqlc generate -f examples/orders/internal/store/sqlc.yaml
+      - sqlc generate -f examples/payments/internal/store/sqlc.yaml
+      - sqlc generate -f platform/outbox/sqlc.yaml
+
+  # ── Docker Compose stack ────────────────────────────────────────────────────
+
+  up:
+    desc: Build images and bring the full stack up in detached mode
+    cmds:
+      - docker compose up -d --build
+
+  down:
+    desc: Stop and remove all containers and volumes
+    cmds:
+      - docker compose down -v
+
+  logs:
+    desc: Stream logs from all services
+    cmds:
+      - docker compose logs -f
+
+  ps:
+    desc: Show running compose services
+    cmds:
+      - docker compose ps
+
+  # ── Image builds ────────────────────────────────────────────────────────────
+
+  build-images:
+    desc: Build Docker images for all four application services
+    cmds:
+      - docker build --build-arg SERVICE=gateway      -t go-boilerplate/gateway:local      .
+      - docker build --build-arg SERVICE=orders       -t go-boilerplate/orders:local       .
+      - docker build --build-arg SERVICE=payments     -t go-boilerplate/payments:local     .
+      - docker build --build-arg SERVICE=notifications -t go-boilerplate/notifications:local .
