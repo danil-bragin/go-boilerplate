@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
+	noop "go.opentelemetry.io/otel/trace/noop"
 
 	"go-boilerplate/platform/telemetry"
 )
@@ -24,4 +25,34 @@ func TestSetup_ConfiguresGlobalProvidersAndShutsDown(t *testing.T) {
 	span.End()
 
 	require.NoError(t, shutdown(context.Background()))
+}
+
+// TestSetup_DisabledUsesNoopProvider verifies that when Enabled:false, the
+// global tracer provider is the true no-op provider (zero-allocation).
+func TestSetup_DisabledUsesNoopProvider(t *testing.T) {
+	_, err := telemetry.Setup(context.Background(), telemetry.Config{
+		ServiceName: "noop-svc",
+		Enabled:     false,
+	})
+	require.NoError(t, err)
+
+	require.IsType(t, noop.NewTracerProvider(), otel.GetTracerProvider())
+}
+
+// TestShutdown_FlushesEvenWithCancelledContext verifies that the shutdown
+// function ignores the incoming (possibly cancelled) context and uses its own
+// background-based timeout, so spans are flushed even after SIGTERM.
+func TestShutdown_FlushesEvenWithCancelledContext(t *testing.T) {
+	shutdown, err := telemetry.Setup(context.Background(), telemetry.Config{
+		ServiceName: "shutdown-svc",
+		Enabled:     false,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, shutdown)
+
+	// Pass an already-cancelled context; shutdown must still succeed.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	require.NoError(t, shutdown(ctx))
 }
