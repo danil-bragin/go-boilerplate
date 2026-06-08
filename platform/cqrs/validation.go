@@ -24,6 +24,10 @@ var validate = validator.New(validator.WithRequiredStructEnabled())
 // otherwise struct-tag validation is performed (only for struct/pointer-to-struct
 // types — non-struct C values are passed through without error). On failure,
 // the zero R and a wrapped error are returned and next is not called.
+//
+// Nil-pointer commands: if C is a pointer type and the command is nil, the
+// validator will return an error (not a panic); callers should ensure commands
+// are non-nil before dispatching.
 func Validation[C, R any]() Behavior[C, R] {
 	return func(next HandlerFunc[C, R]) HandlerFunc[C, R] {
 		return func(ctx context.Context, cmd C) (R, error) {

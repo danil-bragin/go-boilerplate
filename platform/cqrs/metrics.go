@@ -28,9 +28,25 @@ func Metrics[C, R any](name string) Behavior[C, R] {
 			metric.WithUnit("ms"),
 		)
 
-		return func(ctx context.Context, cmd C) (R, error) {
+		return func(ctx context.Context, cmd C) (res R, err error) {
 			start := time.Now()
-			res, err := next(ctx, cmd)
+			defer func() {
+				if r := recover(); r != nil {
+					dur := float64(time.Since(start).Milliseconds())
+					attrs := metric.WithAttributes(
+						attribute.String("handler", name),
+						attribute.String("status", "panic"),
+					)
+					if counterErr == nil {
+						counter.Add(ctx, 1, attrs)
+					}
+					if histErr == nil {
+						histogram.Record(ctx, dur, attrs)
+					}
+					panic(r) // re-raise after recording
+				}
+			}()
+			res, err = next(ctx, cmd)
 			dur := float64(time.Since(start).Milliseconds())
 
 			status := "ok"

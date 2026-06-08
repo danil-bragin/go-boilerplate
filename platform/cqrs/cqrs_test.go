@@ -331,3 +331,115 @@ func TestValidation_SkipsNonStruct(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "raw-result", res)
 }
+
+// --- Panic-hardening tests ---
+
+// panicHandler returns a HandlerFunc that always panics with the given value.
+func panicHandler[C, R any](v any) cqrs.HandlerFunc[C, R] {
+	return func(_ context.Context, _ C) (R, error) {
+		panic(v)
+	}
+}
+
+// TestTracing_PanicMarksSpanErrorAndRepanics verifies that a panicking handler
+// causes the span to be marked with codes.Error (and an exception event), and
+// that the panic still propagates to the caller.
+func TestTracing_PanicMarksSpanErrorAndRepanics(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	decorated := cqrs.Decorate(
+		panicHandler[string, string]("oh no"),
+		cqrs.Tracing[string, string]("PanicSpan"),
+	)
+
+	require.Panics(t, func() {
+		_, _ = decorated(context.Background(), "x")
+	})
+
+	spans := exp.GetSpans()
+	require.Len(t, spans, 1)
+	require.Equal(t, "PanicSpan", spans[0].Name)
+	require.Equal(t, codes.Error, spans[0].Status.Code,
+		"span must be Error when handler panics")
+
+	var hasException bool
+	for _, ev := range spans[0].Events {
+		if ev.Name == "exception" {
+			hasException = true
+		}
+	}
+	require.True(t, hasException, "expected exception event from RecordError on panic")
+}
+
+// TestLogging_PanicLogsAndRepanics verifies that a panicking handler causes a
+// "handler panicked" error log line and that the panic still propagates.
+func TestLogging_PanicLogsAndRepanics(t *testing.T) {
+	var buf bytes.Buffer
+	logger, _ := log.New(log.Config{Level: "debug", Format: "json"}, &buf)
+	ctx := log.Into(context.Background(), logger)
+
+	decorated := cqrs.Decorate(
+		panicHandler[string, string]("log-panic"),
+		cqrs.Logging[string, string]("PanicHandler"),
+	)
+
+	require.Panics(t, func() {
+		_, _ = decorated(ctx, "x")
+	})
+
+	lines := splitJSONLines(buf.Bytes())
+	// Expect at least two lines: the start debug log and the panic error log.
+	require.GreaterOrEqual(t, len(lines), 2, "expected start log and panic log")
+
+	// Last line must be the panic error.
+	last := lines[len(lines)-1]
+	require.Equal(t, "error", last["level"])
+	require.Equal(t, "handler panicked", last["msg"])
+	require.Equal(t, "PanicHandler", last["handler"])
+	_, hasDur := last["duration_ms"]
+	require.True(t, hasDur, "expected duration_ms field in panic log")
+}
+
+// TestMetrics_PanicRecordsAndRepanics verifies that a panicking handler still
+// records a metric data point (with status "panic") and that the panic
+// continues to propagate.
+func TestMetrics_PanicRecordsAndRepanics(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	otel.SetMeterProvider(mp)
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+
+	decorated := cqrs.Decorate(
+		panicHandler[string, string]("metric-panic"),
+		cqrs.Metrics[string, string]("PanicMetricHandler"),
+	)
+
+	require.Panics(t, func() {
+		_, _ = decorated(context.Background(), "x")
+	})
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
+	var foundCount bool
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == "cqrs.handler.calls" {
+				// Verify there is at least one data point recorded for this panic call.
+				if data, ok := m.Data.(metricdata.Sum[int64]); ok {
+					for _, dp := range data.DataPoints {
+						for _, attr := range dp.Attributes.ToSlice() {
+							if attr.Key == "status" && attr.Value.AsString() == "panic" {
+								foundCount = true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	require.True(t, foundCount, "expected cqrs.handler.calls metric with status=panic")
+}

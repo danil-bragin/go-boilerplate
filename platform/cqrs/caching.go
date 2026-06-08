@@ -37,6 +37,15 @@ func (JSONCodec[R]) Unmarshal(b []byte) (R, error) {
 // success, the result is serialised with codec and stored in cache. Caching
 // errors (marshal / set) are silently discarded so they never fail the query.
 // Apply this ONLY to queries; commands must NOT use this behavior.
+//
+// Stampede / single-flight: Caching provides NO single-flight protection.
+// N concurrent misses for the same key will all invoke the handler; each
+// successful response is written to the cache independently. Callers that
+// need stampede protection (singleflight) must wrap this behavior or the
+// cache implementation themselves.
+//
+// On handler error: the (possibly zero) result is returned uncached, consistent
+// with the Transaction behavior that also returns zero,err on failure.
 func Caching[C, R any](cache Cache, keyFor func(C) string, ttl time.Duration, codec Codec[R]) Behavior[C, R] {
 	return func(next HandlerFunc[C, R]) HandlerFunc[C, R] {
 		return func(ctx context.Context, cmd C) (R, error) {
