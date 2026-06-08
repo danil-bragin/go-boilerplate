@@ -33,6 +33,16 @@ type Config struct {
 
 // Cache is a two-tier cache: L1 (in-process otter) + L2 (Redis via rueidis).
 // It implements cqrs.Cache and adds GetOrLoad with singleflight stampede protection.
+//
+// Coherence notes:
+//
+//   - L1 is per-process with no cross-instance invalidation. A write on another
+//     instance leaves this instance's L1 stale until the entry's TTL expires.
+//     This is eventual consistency; keep TTLs modest to bound staleness.
+//
+//   - An L2 (Redis) error on read is treated as a cache miss (availability over
+//     strictness). Such errors are currently unlogged.
+//     TODO(obs/SP7): expose L2 errors via metrics/structured logging.
 type Cache struct {
 	l1  *otter.Cache[string, []byte]
 	l2  rueidis.Client
@@ -92,8 +102,11 @@ func (c *Cache) JitteredTTL(ttl time.Duration) time.Duration {
 // Returns (value, true) on hit, (nil, false) on miss.
 func (c *Cache) Get(ctx context.Context, key string) ([]byte, bool) {
 	// L1 fast path.
+	// Return a copy so the caller cannot mutate the shared L1 entry.
 	if v, ok := c.l1.GetIfPresent(key); ok {
-		return v, true
+		out := make([]byte, len(v))
+		copy(out, v)
+		return out, true
 	}
 
 	// L2 path — use client-side caching with a short client-side TTL to
@@ -108,10 +121,13 @@ func (c *Cache) Get(ctx context.Context, key string) ([]byte, bool) {
 		return nil, false
 	}
 
-	// Populate L1.
+	// Store a copy in L1 so the returned slice and the L1 entry don't alias.
+	l1copy := make([]byte, len(b))
+	copy(l1copy, b)
 	jttl := c.JitteredTTL(c.cfg.DefaultTTL)
-	c.l1.Set(key, b)
+	c.l1.Set(key, l1copy)
 	c.l1.SetExpiresAfter(key, jttl)
+	// Return b directly — rueidis AsBytes already allocated fresh bytes.
 	return b, true
 }
 
@@ -126,8 +142,11 @@ func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Durati
 	_ = c.l2.Do(ctx, c.l2.B().Set().Key(key).Value(rueidis.BinaryString(val)).Ex(jttl).Build()).Error()
 	// TODO(obs): log L2 error.
 
-	// Write to L1.
-	c.l1.Set(key, val)
+	// Write a copy to L1 so that a caller mutating val after Set
+	// does not corrupt the shared in-process entry.
+	l1copy := make([]byte, len(val))
+	copy(l1copy, val)
+	c.l1.Set(key, l1copy)
 	c.l1.SetExpiresAfter(key, jttl)
 }
 

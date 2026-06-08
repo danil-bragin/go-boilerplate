@@ -174,3 +174,41 @@ func TestCache_HealthCheck(t *testing.T) {
 	err := c.HealthCheck(context.Background())
 	assert.NoError(t, err)
 }
+
+// TestCache_ReturnedBytesAreCopy_NoAliasing verifies that:
+//  1. Mutating the slice returned by Get does not corrupt the cached value for
+//     subsequent readers (no shared L1 alias).
+//  2. Mutating the slice passed to Set after the call does not corrupt the
+//     cached value (Set copies before storing in L1).
+//
+// Run with -race to catch concurrent aliasing.
+func TestCache_ReturnedBytesAreCopy_NoAliasing(t *testing.T) {
+	c := newCache(t)
+	ctx := context.Background()
+
+	// --- Part 1: mutating the returned slice must not corrupt the cache ---
+	c.Set(ctx, "k", []byte("hello"), time.Minute)
+
+	v, ok := c.Get(ctx, "k")
+	require.True(t, ok)
+	require.Equal(t, []byte("hello"), v)
+
+	// Mutate the returned slice.
+	v[0] = 'X'
+
+	// A subsequent Get must still return the original value.
+	v2, ok2 := c.Get(ctx, "k")
+	require.True(t, ok2)
+	assert.Equal(t, []byte("hello"), v2, "mutating the returned slice corrupted the cache (aliasing bug)")
+
+	// --- Part 2: mutating the input slice after Set must not corrupt the cache ---
+	original := []byte("world")
+	c.Set(ctx, "k2", original, time.Minute)
+
+	// Mutate the original buffer after Set.
+	original[0] = 'Z'
+
+	v3, ok3 := c.Get(ctx, "k2")
+	require.True(t, ok3)
+	assert.Equal(t, []byte("world"), v3, "mutating the Set input slice corrupted the cache (aliasing bug)")
+}
