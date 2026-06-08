@@ -19,24 +19,38 @@ type teardown struct {
 // Closer collects teardown callbacks and runs them in reverse registration
 // order (last registered closes first), aggregating any errors.
 type Closer struct {
-	mu    sync.Mutex
-	items []teardown
+	mu     sync.Mutex
+	items  []teardown
+	closed bool
 }
 
 // NewCloser returns an empty Closer.
 func NewCloser() *Closer { return &Closer{} }
 
-// Add registers a named teardown callback.
+// Add registers a named teardown callback. If Close has already been called,
+// the teardown is run immediately (best-effort, using context.Background()) so
+// that late-registered resources are never silently dropped.
 func (c *Closer) Add(name string, fn TeardownFunc) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	if c.closed {
+		c.mu.Unlock()
+		_ = fn(context.Background()) // closer already ran; clean up immediately
+		return
+	}
 	c.items = append(c.items, teardown{name: name, fn: fn})
+	c.mu.Unlock()
 }
 
 // Close runs every teardown in reverse order. All callbacks run even if some
 // fail; the returned error joins all failures (with their resource names).
+// Close is idempotent; subsequent calls are no-ops.
 func (c *Closer) Close(ctx context.Context) error {
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil
+	}
+	c.closed = true
 	items := c.items
 	c.items = nil
 	c.mu.Unlock()

@@ -32,3 +32,27 @@ func TestCloser_AggregatesErrorsButRunsAll(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, 3, ran) // all teardowns ran despite the error
 }
+
+// FIX 1: Add after Close must not silently drop the teardown.
+func TestCloser_AddAfterCloseRunsImmediately(t *testing.T) {
+	c := run.NewCloser()
+	require.NoError(t, c.Close(context.Background()))
+
+	var ran bool
+	c.Add("late", func(context.Context) error {
+		ran = true
+		return nil
+	})
+	require.True(t, ran, "teardown added after Close must run immediately, not be dropped")
+}
+
+// FIX 2: Close is idempotent; the second call must be a no-op.
+func TestCloser_DoubleCloseIsNoOp(t *testing.T) {
+	var count int
+	c := run.NewCloser()
+	c.Add("once", func(context.Context) error { count++; return nil })
+
+	require.NoError(t, c.Close(context.Background()))
+	require.NoError(t, c.Close(context.Background()))
+	require.Equal(t, 1, count, "teardown must run exactly once across two Close calls")
+}

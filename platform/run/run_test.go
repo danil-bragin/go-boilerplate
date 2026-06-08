@@ -26,3 +26,13 @@ func TestRun_ReturnsWhenContextCanceled(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, closed.Load(), "closer must run on shutdown")
 }
+
+// FIX 3: Run with a nil Closer must not panic.
+func TestRun_NilCloserDoesNotPanic(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already canceled
+
+	require.NotPanics(t, func() {
+		_ = run.Run(ctx, run.Options{ShutdownTimeout: time.Second}, nil)
+	})
+}
