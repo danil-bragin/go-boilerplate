@@ -56,3 +56,26 @@ func TestShutdown_FlushesEvenWithCancelledContext(t *testing.T) {
 
 	require.NoError(t, shutdown(ctx))
 }
+
+// TestSetup_EnabledWiresSDKProviderAndShutsDown exercises the Enabled:true
+// path: a real SDK TracerProvider is installed (not the no-op), and shutdown
+// completes promptly when no spans are pending (the OTLP/gRPC exporter dials
+// lazily, so an empty flush does not block on the unreachable collector).
+//
+// Note: recording a span here would make Shutdown attempt to export it to the
+// dead collector and block until the 5s shutdown deadline — that is correct
+// behavior, so this test deliberately records none.
+func TestSetup_EnabledWiresSDKProviderAndShutsDown(t *testing.T) {
+	shutdown, err := telemetry.Setup(context.Background(), telemetry.Config{
+		ServiceName:  "enabled-svc",
+		OTLPEndpoint: "127.0.0.1:4317", // nothing listening; lazy dial
+		Enabled:      true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, shutdown)
+
+	// Enabled path installs a real SDK provider, not the no-op.
+	require.NotEqual(t, noop.NewTracerProvider(), otel.GetTracerProvider())
+
+	require.NoError(t, shutdown(context.Background()))
+}
