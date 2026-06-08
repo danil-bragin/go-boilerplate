@@ -158,3 +158,37 @@ func TestReadyz_NotReadyShortCircuits(t *testing.T) {
 
 	require.Equal(t, "unavailable", resp.Status)
 }
+
+// TestReadyz_HandlerReturnsAtDeadlineEvenIfCheckIgnoresCtx verifies that the
+// HTTP handler returns at the per-check timeout even when the check function
+// ignores its context and sleeps longer. The handler must NOT block on
+// wg.Wait() for the full sleep duration; it must unblock at the deadline.
+func TestReadyz_HandlerReturnsAtDeadlineEvenIfCheckIgnoresCtx(t *testing.T) {
+	h := health.New()
+	// This check sleeps 800ms regardless of context cancellation.
+	h.AddReadiness("slow", func(_ context.Context) error {
+		time.Sleep(800 * time.Millisecond)
+		return nil
+	})
+	h.SetCheckTimeout(50 * time.Millisecond)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/readyz", nil)
+
+	start := time.Now()
+	h.ReadyzHandler().ServeHTTP(rec, req)
+	elapsed := time.Since(start)
+
+	// Handler must return well before the 800ms sleep finishes.
+	require.Less(t, elapsed, 300*time.Millisecond,
+		"handler took %v; expected to return at the 50ms deadline, not wait for the 800ms sleep", elapsed)
+
+	// The timed-out check must be recorded as a failure, causing 503.
+	require.Equal(t, 503, rec.Code)
+
+	var resp checkResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	require.Equal(t, "unavailable", resp.Status)
+	require.NotEmpty(t, resp.Checks["slow"], "timed-out check must appear in response")
+	require.NotEqual(t, "ok", resp.Checks["slow"])
+}

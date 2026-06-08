@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,4 +67,27 @@ func TestStart_TwiceErrors(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+}
+
+// TestShutdown_DoubleConcurrentShutdownNoPanic verifies that calling Shutdown
+// from two goroutines simultaneously does not panic (no double-close of the
+// serveErr channel). The mutex + closed flag must absorb both calls safely.
+func TestShutdown_DoubleConcurrentShutdownNoPanic(t *testing.T) {
+	srv := httpserver.New(httpserver.Config{Addr: "127.0.0.1:0"})
+	require.NoError(t, srv.Start())
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	for range 2 {
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			// Either call may return a non-nil error from http.Server.Shutdown
+			// (the second caller sees ErrServerClosed), but neither must panic.
+			_ = srv.Shutdown(ctx)
+		}()
+	}
+
+	require.NotPanics(t, func() { wg.Wait() })
 }

@@ -28,12 +28,13 @@ type Config struct {
 
 // Server wraps a chi router and an http.Server with the standard stack.
 type Server struct {
-	mux       *chi.Mux
-	http      *http.Server
-	serveErr  chan error
-	closeOnce sync.Once
-	started   atomic.Bool
-	addr      string
+	mux      *chi.Mux
+	http     *http.Server
+	serveErr chan error
+	mu       sync.Mutex
+	closed   bool
+	started  atomic.Bool
+	addr     string
 }
 
 // New builds a Server with the standard middleware stack preinstalled.
@@ -110,12 +111,17 @@ func (s *Server) Start() error {
 	s.addr = ln.Addr().String()
 	go func() {
 		if err := s.http.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			// A3: use a non-blocking send so we never block if the channel is
-			// already full (or has been closed by a concurrent Shutdown call).
-			select {
-			case s.serveErr <- err:
-			default:
+			// A3: send only while holding the lock and only if the channel has
+			// not been closed yet — this eliminates the send-on-closed-channel
+			// race that would otherwise occur if Shutdown() races this goroutine.
+			s.mu.Lock()
+			if !s.closed {
+				select {
+				case s.serveErr <- err:
+				default:
+				}
 			}
+			s.mu.Unlock()
 		}
 	}()
 	return nil
@@ -131,11 +137,20 @@ func (s *Server) Addr() string { return s.addr }
 
 // Shutdown gracefully drains in-flight requests within ctx and then closes
 // the Notify() channel so any consumer unblocks.
+//
+// It is safe to call Shutdown concurrently or more than once; the channel is
+// closed exactly once under the lock so no send-on-closed race is possible.
 func (s *Server) Shutdown(ctx context.Context) error {
 	err := s.http.Shutdown(ctx)
-	// A3: close exactly once; the serve goroutine has already returned (or
-	// sent its error) by the time http.Shutdown returns, so there is no
-	// send-on-closed-channel race.
-	s.closeOnce.Do(func() { close(s.serveErr) })
+	// A3: close exactly once under the lock. Setting closed=true before the
+	// close() call means any concurrent send goroutine that acquires the lock
+	// afterwards will see closed==true and skip the send, preventing a
+	// send-on-closed-channel panic.
+	s.mu.Lock()
+	if !s.closed {
+		s.closed = true
+		close(s.serveErr)
+	}
+	s.mu.Unlock()
 	return err
 }

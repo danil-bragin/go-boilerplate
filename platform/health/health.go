@@ -80,8 +80,12 @@ type readyzResponse struct {
 
 // ReadyzHandler runs all readiness checks concurrently; 200 only if ready and
 // all pass. Each check is bounded by its own per-check timeout (default 2s).
-// A panicking check is treated as a failure and never crashes the handler.
-// The response body is always valid JSON describing the status of every check.
+//
+// The handler itself returns at the per-check deadline regardless of whether
+// the check honours its context — a check goroutine that ignores ctx may linger,
+// but it cannot block the HTTP handler beyond the timeout. A panicking check is
+// treated as a failure and never crashes the handler. The response body is
+// always valid JSON describing the status of every check.
 func (h *Health) ReadyzHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Shutdown gating: short-circuit immediately if not ready.
@@ -120,17 +124,31 @@ func (h *Health) ReadyzHandler() http.Handler {
 			wg.Add(1)
 			go func(idx int, c Check) {
 				defer wg.Done()
-				defer func() {
-					if p := recover(); p != nil {
-						results[idx].err = fmt.Sprintf("panic: %v", p)
-					}
-				}()
 
-				ctx, cancel := context.WithTimeout(r.Context(), timeout)
+				checkCtx, cancel := context.WithTimeout(r.Context(), timeout)
 				defer cancel()
 
-				if err := c(ctx); err != nil {
-					results[idx].err = err.Error()
+				// Race the check against its own deadline. If the check ignores
+				// ctx and blocks, the handler still returns at the deadline rather
+				// than blocking on wg.Wait(). The lingering goroutine is
+				// unavoidable in Go but does not affect handler latency.
+				done := make(chan error, 1)
+				go func() {
+					defer func() {
+						if p := recover(); p != nil {
+							done <- fmt.Errorf("panic: %v", p)
+						}
+					}()
+					done <- c(checkCtx)
+				}()
+
+				select {
+				case err := <-done:
+					if err != nil {
+						results[idx].err = err.Error()
+					}
+				case <-checkCtx.Done():
+					results[idx].err = "timeout"
 				}
 			}(idx, c)
 		}

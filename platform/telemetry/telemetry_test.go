@@ -79,3 +79,28 @@ func TestSetup_EnabledWiresSDKProviderAndShutsDown(t *testing.T) {
 
 	require.NoError(t, shutdown(context.Background()))
 }
+
+// TestShutdown_EnabledFlushesWithCancelledContext exercises the Enabled:true
+// shutdown path with an already-cancelled context. The shutdown function must
+// use its own background-based context (not the caller's) so the flush
+// succeeds even when the incoming ctx is cancelled (e.g. on SIGTERM).
+//
+// No spans are recorded so the flush is instantaneous; this strictly tests
+// that the shutdown function does not propagate the cancelled ctx to
+// tp.Shutdown, which would cause it to fail immediately.
+func TestShutdown_EnabledFlushesWithCancelledContext(t *testing.T) {
+	shutdown, err := telemetry.Setup(context.Background(), telemetry.Config{
+		ServiceName:  "enabled-flush",
+		OTLPEndpoint: "127.0.0.1:4317", // nothing listening; lazy dial
+		Enabled:      true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, shutdown)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled before passing to shutdown
+
+	// Must still return nil: no spans pending → flush is instant, and the
+	// shutdown function uses context.Background() internally, not the cancelled ctx.
+	require.NoError(t, shutdown(ctx))
+}
