@@ -19,7 +19,6 @@ func TestServer_ServesAndShutsDown(t *testing.T) {
 	})
 
 	require.NoError(t, srv.Start())
-	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	resp, err := http.Get("http://" + srv.Addr() + "/ping")
 	require.NoError(t, err)

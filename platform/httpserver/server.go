@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -21,21 +22,38 @@ type Config struct {
 
 // Server wraps a chi router and an http.Server with the standard stack.
 type Server struct {
-	mux  *chi.Mux
-	http *http.Server
-	ln   net.Listener
-	addr string
+	mux      *chi.Mux
+	http     *http.Server
+	serveErr chan error
+	addr     string
 }
 
 // New builds a Server with the recover + request-id middleware preinstalled.
 func New(cfg Config) *Server {
+	if cfg.Addr == "" {
+		cfg.Addr = ":8080"
+	}
+	if cfg.ReadHeaderTimeout == 0 {
+		cfg.ReadHeaderTimeout = 5 * time.Second
+	}
+	if cfg.ReadTimeout == 0 {
+		cfg.ReadTimeout = 15 * time.Second
+	}
+	if cfg.WriteTimeout == 0 {
+		cfg.WriteTimeout = 30 * time.Second
+	}
+	if cfg.IdleTimeout == 0 {
+		cfg.IdleTimeout = 60 * time.Second
+	}
+
 	mux := chi.NewRouter()
 	mux.Use(RequestID)
 	mux.Use(Recover)
 
 	return &Server{
-		mux:  mux,
-		addr: cfg.Addr,
+		mux:      mux,
+		addr:     cfg.Addr,
+		serveErr: make(chan error, 1),
 		http: &http.Server{
 			Handler:           mux,
 			ReadHeaderTimeout: cfg.ReadHeaderTimeout,
@@ -55,11 +73,18 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("httpserver: listen %s: %w", s.addr, err)
 	}
-	s.ln = ln
 	s.addr = ln.Addr().String()
-	go func() { _ = s.http.Serve(ln) }()
+	go func() {
+		if err := s.http.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.serveErr <- err
+		}
+	}()
 	return nil
 }
+
+// Notify returns a channel that receives a fatal Serve error (if the
+// listener dies unexpectedly). It never receives on graceful shutdown.
+func (s *Server) Notify() <-chan error { return s.serveErr }
 
 // Addr returns the actual bound address (useful when Addr used :0).
 func (s *Server) Addr() string { return s.addr }

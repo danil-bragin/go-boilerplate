@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"runtime/debug"
 
 	"go-boilerplate/platform/httpx"
 	"go-boilerplate/platform/log"
@@ -44,7 +45,7 @@ func Recover(next http.Handler) http.Handler {
 		defer func() {
 			if rec := recover(); rec != nil {
 				log.From(r.Context()).Error("panic recovered",
-					"panic", rec, "path", r.URL.Path)
+					"panic", rec, "path", r.URL.Path, "stack", string(debug.Stack()))
 				httpx.Error(w, http.StatusInternalServerError, "internal server error")
 			}
 		}()

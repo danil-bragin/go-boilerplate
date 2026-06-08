@@ -35,3 +35,20 @@ func TestRecover_TurnsPanicInto500Problem(t *testing.T) {
 	require.Equal(t, 500, rec.Code)
 	require.Equal(t, "application/problem+json", rec.Header().Get("Content-Type"))
 }
+
+func TestRequestID_ReusesIncomingHeader(t *testing.T) {
+	const incoming = "abc-123-existing"
+	var seen string
+	h := httpserver.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = httpserver.RequestIDFromContext(r.Context())
+		w.WriteHeader(200)
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("X-Request-Id", incoming)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, incoming, seen)
+	require.Equal(t, incoming, rec.Header().Get("X-Request-Id"))
+}
