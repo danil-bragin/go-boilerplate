@@ -3,6 +3,7 @@ package blob
 import (
 	"context"
 	"io"
+	"net/http"
 	"net/url"
 	"time"
 
@@ -82,11 +83,19 @@ func (s *MinioStore) Delete(ctx context.Context, key string) error {
 }
 
 // Exists reports whether the object at key is present.
-// A "NoSuchKey" response is treated as (false, nil); all other errors propagate.
+//
+// MinIO returns error code "NoSuchKey" for a missing object. AWS S3 issues a
+// HEAD request and returns HTTP 404 with code "NotFound" (no response body to
+// parse). Both cases are treated as (false, nil). All other errors propagate.
+//
+// Note: a new container-level test for the S3 NotFound path is not included
+// because the existing MinIO test container covers the NoSuchKey path and
+// setting up a real-S3 container is outside the scope of this package's tests.
 func (s *MinioStore) Exists(ctx context.Context, key string) (bool, error) {
 	_, err := s.client.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{})
 	if err != nil {
-		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
+		resp := minio.ToErrorResponse(err)
+		if resp.StatusCode == http.StatusNotFound || resp.Code == "NoSuchKey" || resp.Code == "NotFound" {
 			return false, nil
 		}
 		return false, err
