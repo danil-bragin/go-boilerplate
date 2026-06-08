@@ -4,11 +4,25 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
+	"strings"
 
 	"github.com/go-playground/validator/v10"
 )
 
-var validate = validator.New(validator.WithRequiredStructEnabled())
+var validate = newValidator()
+
+func newValidator() *validator.Validate {
+	v := validator.New(validator.WithRequiredStructEnabled())
+	v.RegisterTagNameFunc(func(fld reflect.StructField) string {
+		name := strings.SplitN(fld.Tag.Get("json"), ",", 2)[0]
+		if name == "-" {
+			return ""
+		}
+		return name
+	})
+	return v
+}
 
 // ValidationError reports field-level validation failures.
 type ValidationError struct {
