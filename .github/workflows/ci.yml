@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Lint ──────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      # golangci-lint-action@v6 with version v2.x matches the repo's
+      # .golangci.yml `version: "2"` config schema.
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.1.6
+
+  # ── Buf proto lint ────────────────────────────────────────────────────────
+  buf:
+    name: Buf lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
+      - name: buf lint
+        run: buf lint
+
+      # Breaking-change detection against main (commented out for initial runs
+      # where there is no prior image to compare against; uncomment once the
+      # first baseline exists in the BSR or on the branch).
+      #
+      # - name: buf breaking
+      #   run: buf breaking --against 'https://github.com/OWNER/REPO.git#branch=main'
+
+  # ── Tests ─────────────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest   # ubuntu-latest ships with Docker; testcontainers work out of the box
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true          # caches both the module download cache and the build cache
+
+      # Verify the module graph compiles cleanly before running the (slow) test suite.
+      - name: go build
+        run: go build ./...
+
+      # NOTE: Integration tests use testcontainers-go and spin up real Postgres,
+      # Redpanda, Redis, and MinIO containers. The suite can take 3–5 minutes.
+      # Docker is available on ubuntu-latest runners so no extra setup is needed.
+      - name: go test
+        run: go test -race -timeout 10m ./...
+
+  # ── Image builds ──────────────────────────────────────────────────────────
+  build-images:
+    name: Build image (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [gateway, orders, payments, notifications]
+      fail-fast: false  # build all images even if one fails
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build without pushing — confirms the parametric Dockerfile resolves for
+      # every service.  No registry credentials needed.
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg SERVICE=${{ matrix.service }} \
+            -t ${{ matrix.service }}:ci \
+            .
