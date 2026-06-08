@@ -77,7 +77,8 @@ func (a *app) stop(ctx context.Context) error {
 }
 
 func main() {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	a, err := newApp(ctx)
 	if err != nil {
@@ -89,7 +90,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Block until SIGINT/SIGTERM, then close resources (reverse order).
+	// A fatal serve error (listener dies unexpectedly) triggers graceful
+	// shutdown by canceling the run context.
+	go func() {
+		if serveErr := <-a.server.Notify(); serveErr != nil {
+			a.logger.Error("http server failed", "error", serveErr)
+			cancel()
+		}
+	}()
+
+	// Block until SIGINT/SIGTERM or a fatal serve error, then close
+	// resources (reverse order).
 	if err := run.Run(ctx, run.Options{ShutdownTimeout: 15 * time.Second}, a.closer); err != nil {
 		a.logger.Error("shutdown completed with errors", "error", err)
 		os.Exit(1)

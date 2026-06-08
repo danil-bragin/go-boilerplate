@@ -1,6 +1,8 @@
-// Package telemetry configures OpenTelemetry tracer and meter providers.
-// When Enabled is false, providers are installed but no exporter is wired,
-// so spans/metrics are cheap no-ops — convenient for tests and local runs.
+// Package telemetry configures the OpenTelemetry tracer provider and W3C
+// context propagation. When Enabled is false, the provider is installed but
+// no exporter is wired, so spans are recorded and dropped — convenient for
+// tests and local runs. A meter/metrics provider is added in a later
+// sub-project.
 package telemetry
 
 import (
@@ -26,8 +28,8 @@ type Config struct {
 // ShutdownFunc flushes and stops telemetry providers.
 type ShutdownFunc func(ctx context.Context) error
 
-// Setup installs global tracer/meter providers and W3C propagation.
-// It returns a shutdown function that flushes exporters.
+// Setup installs the global tracer provider and W3C propagation.
+// It returns a shutdown function that flushes the exporter.
 func Setup(ctx context.Context, cfg Config) (ShutdownFunc, error) {
 	res, err := resource.New(ctx,
 		resource.WithAttributes(semconv.ServiceName(cfg.ServiceName)),
