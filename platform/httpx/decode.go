@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
 	"reflect"
 	"strings"
@@ -25,6 +26,13 @@ func newValidator() *validator.Validate {
 	return v
 }
 
+// MaxBodyBytes caps the JSON request body Decode will read (1 MiB).
+const MaxBodyBytes int64 = 1 << 20
+
+// ErrUnsupportedMediaType is returned by Decode when the request Content-Type
+// is present and is not application/json.
+var ErrUnsupportedMediaType = errors.New("httpx: unsupported media type")
+
 // ValidationError reports field-level validation failures.
 type ValidationError struct {
 	Fields map[string]string
@@ -38,10 +46,31 @@ func (e *ValidationError) Error() string {
 // It rejects unknown fields. Returns *ValidationError on validation failure.
 func Decode[T any](r *http.Request) (T, error) {
 	var v T
-	dec := json.NewDecoder(r.Body)
+
+	// FIX 1 — guard nil / empty body before touching it.
+	if r.Body == nil || r.Body == http.NoBody {
+		return v, fmt.Errorf("httpx: decode json: empty request body")
+	}
+
+	// FIX 4 — Content-Type enforcement (lenient when header is absent).
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		mediaType, _, err := mime.ParseMediaType(ct)
+		if err != nil || mediaType != "application/json" {
+			return v, ErrUnsupportedMediaType
+		}
+	}
+
+	// FIX 3 — cap body size to guard against DoS.
+	limited := http.MaxBytesReader(nil, r.Body, MaxBodyBytes)
+	dec := json.NewDecoder(limited)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&v); err != nil {
 		return v, fmt.Errorf("httpx: decode json: %w", err)
+	}
+
+	// FIX 2 — reject trailing data after the JSON value.
+	if dec.More() {
+		return v, fmt.Errorf("httpx: decode json: unexpected trailing data after JSON value")
 	}
 
 	if err := validate.Struct(v); err != nil {
@@ -66,6 +95,13 @@ func WriteDecodeError(w http.ResponseWriter, err error) {
 			Status: http.StatusUnprocessableEntity,
 			Title:  "Validation Failed",
 			Errors: ve.Fields,
+		})
+		return
+	}
+	if errors.Is(err, ErrUnsupportedMediaType) {
+		WriteProblem(w, Problem{
+			Status: http.StatusUnsupportedMediaType,
+			Title:  http.StatusText(http.StatusUnsupportedMediaType),
 		})
 		return
 	}

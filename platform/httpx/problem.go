@@ -18,6 +18,8 @@ type Problem struct {
 }
 
 // WriteProblem writes p as application/problem+json with p.Status.
+// It marshals p before writing the status header so that encode errors
+// never produce a committed-but-empty response.
 func WriteProblem(w http.ResponseWriter, p Problem) {
 	if p.Status == 0 {
 		p.Status = http.StatusInternalServerError
@@ -25,9 +27,15 @@ func WriteProblem(w http.ResponseWriter, p Problem) {
 	if p.Title == "" {
 		p.Title = http.StatusText(p.Status)
 	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		// Extremely unlikely for a plain struct; fall back to text.
+		http.Error(w, p.Title, p.Status)
+		return
+	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(p.Status)
-	_ = json.NewEncoder(w).Encode(p)
+	_, _ = w.Write(b)
 }
 
 // Error writes a minimal problem for the given status and detail.
