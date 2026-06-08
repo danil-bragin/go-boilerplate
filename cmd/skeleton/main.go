@@ -5,13 +5,16 @@ package main
 
 import (
 	"context"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/health"
 	"go-boilerplate/platform/httpserver"
+	"go-boilerplate/platform/httpx"
 	"go-boilerplate/platform/log"
 	"go-boilerplate/platform/run"
 	"go-boilerplate/platform/telemetry"
@@ -62,9 +65,39 @@ func newApp(ctx context.Context) (*app, error) {
 	server.Mux().Method("GET", "/livez", h.LivezHandler())
 	server.Mux().Method("GET", "/readyz", h.ReadyzHandler())
 
+	// Demo routes – exercise the full middleware stack in e2e tests.
+	server.Mux().Get("/ping", func(w http.ResponseWriter, _ *http.Request) {
+		httpx.JSON(w, http.StatusOK, map[string]string{"pong": "true"})
+	})
+	server.Mux().Get("/boom", func(_ http.ResponseWriter, _ *http.Request) {
+		panic("boom in handler")
+	})
+	server.Mux().Get("/slow", func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(150 * time.Millisecond)
+		httpx.JSON(w, http.StatusOK, map[string]string{"slow": "done"})
+	})
+	server.Mux().Post("/echo", func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, "too big")
+			return
+		}
+		httpx.JSON(w, http.StatusOK, map[string]int{"n": len(b)})
+	})
+
+	// Trivial passing readiness check so /readyz exercises the check path.
+	h.AddReadiness("self", func(context.Context) error { return nil })
+
 	closer.Add("http-server", func(ctx context.Context) error {
 		h.SetNotReady() // stop accepting traffic before draining
 		return server.Shutdown(ctx)
+	})
+
+	// A1: emit "service stopping" at the START of shutdown; registered last so
+	// it executes first in the reverse-order teardown sequence.
+	closer.Add("shutdown-log", func(context.Context) error {
+		logger.Info("service stopping")
+		return nil
 	})
 
 	return &app{cfg: cfg, logger: logger, server: server, health: h, closer: closer}, nil
@@ -79,7 +112,6 @@ func (a *app) start() error {
 }
 
 func (a *app) stop(ctx context.Context) error {
-	a.logger.Info("service stopping")
 	return a.closer.Close(ctx)
 }
 
