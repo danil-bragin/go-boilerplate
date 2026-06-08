@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/twmb/franz-go/pkg/kgo"
 
 	"go-boilerplate/platform/kafka"
 	"go-boilerplate/platform/kafka/kafkatest"
@@ -145,4 +146,77 @@ func TestKafkaPublisher_DrainsOutboxToKafka(t *testing.T) {
 	require.NoError(t, pool.Reader().QueryRow(ctx,
 		`select count(*) from outbox where published_at is null`).Scan(&unpublished))
 	require.Equal(t, 0, unpublished, "all outbox rows must be marked published")
+}
+
+// TestKafkaPublisher_BrokerDownLeavesRowsUnpublished verifies that when the
+// Kafka broker is unreachable the relay's ProcessBatch rolls back its
+// transaction and leaves outbox rows with published_at IS NULL.
+//
+// This exercises the at-least-once guarantee from the other direction: a
+// produce failure must NEVER silently mark rows as published. The row is
+// preserved for retry on the next poll cycle.
+//
+// Implementation note: we point the producer at a dead address
+// (127.0.0.1:1) and configure franz-go to give up quickly via
+// RequestRetries(0) and a short ProduceRequestTimeout so the test stays
+// under ~5 s total.
+func TestKafkaPublisher_BrokerDownLeavesRowsUnpublished(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Start Postgres only (no Redpanda).
+	dsn := pgtest.NewDSN(t)
+	require.NoError(t, pg.Migrate(ctx, dsn, testMigrations, "testdata/migrations"))
+
+	pool, err := pg.New(ctx, pg.Config{DSN: dsn})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pool.Close(ctx) })
+
+	// 2. Build a kafka client pointed at an unreachable address.
+	// RequestRetries(0) disables internal request retries so the produce
+	// fails fast; ProduceRequestTimeout bounds how long franz-go waits for
+	// a broker response before giving up.
+	deadCl, err := kgo.NewClient(
+		kgo.SeedBrokers("127.0.0.1:1"),
+		kgo.ClientID("broker-down-test"),
+		kgo.RequestRetries(0),
+		kgo.ProduceRequestTimeout(500*time.Millisecond),
+		kgo.RecordRetries(0),
+		kgo.RetryTimeout(500*time.Millisecond),
+	)
+	require.NoError(t, err)
+	defer deadCl.Close()
+
+	producer := kafka.NewProducer(deadCl)
+
+	// 3. Build KafkaPublisher and relay.
+	pub := outboxkafka.New(producer)
+	relay := outbox.NewRelay(pool, pub, outbox.RelayConfig{BatchSize: 10})
+
+	// 4. Enqueue 1 message.
+	repo := outbox.NewRepository(pool)
+	msgID := uuid.New()
+	require.NoError(t, pg.RunInTx(ctx, pool, func(ctx context.Context) error {
+		return repo.Enqueue(ctx, outbox.Message{
+			ID:            msgID,
+			AggregateType: "order",
+			AggregateID:   "order-99",
+			EventType:     "OrderCreated",
+			Payload:       []byte(`{"order":"99"}`),
+		})
+	}))
+
+	// 5. ProcessBatch with a short deadline — the produce must fail and the
+	// transaction must roll back before the deadline.
+	batchCtx, cancelBatch := context.WithTimeout(ctx, 3*time.Second)
+	defer cancelBatch()
+
+	_, batchErr := relay.ProcessBatch(batchCtx)
+	assert.Error(t, batchErr, "ProcessBatch must return an error when broker is unreachable")
+
+	// 6. The row must still be unpublished (transaction rolled back).
+	var unpublished int
+	require.NoError(t, pool.Reader().QueryRow(ctx,
+		`select count(*) from outbox where published_at is null`).Scan(&unpublished))
+	assert.Equal(t, 1, unpublished,
+		"outbox row must remain unpublished when broker is down (no data loss)")
 }
