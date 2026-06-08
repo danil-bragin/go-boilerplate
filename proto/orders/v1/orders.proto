@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package orders.v1;
+
+option go_package = "go-boilerplate/gen/proto/orders/v1;ordersv1";
+
+// CreateOrderCommand is the command published to the orders.commands topic to
+// request the creation of a new order.
+message CreateOrderCommand {
+  // order_id is the unique identifier pre-assigned to the new order (e.g. UUIDv4).
+  string order_id = 1;
+  // customer_id is the identifier of the customer placing the order.
+  string customer_id = 2;
+  // amount_cents is the total order amount expressed in the smallest currency unit.
+  int64 amount_cents = 3;
+  // currency is the ISO 4217 currency code (e.g. "USD").
+  string currency = 4;
+}
+
+// OrderCreated is the domain event emitted when an order has been successfully
+// created and persisted by the orders service.
+message OrderCreated {
+  // order_id is the unique identifier of the newly created order.
+  string order_id = 1;
+  // customer_id is the identifier of the customer who placed the order.
+  string customer_id = 2;
+  // amount_cents is the total order amount expressed in the smallest currency unit.
+  int64 amount_cents = 3;
+  // currency is the ISO 4217 currency code (e.g. "USD").
+  string currency = 4;
+}
+
+// PaymentProcessed is the domain event emitted when the payments service has
+// finished processing a payment for an order.
+message PaymentProcessed {
+  // order_id is the identifier of the order for which payment was processed.
+  string order_id = 1;
+  // payment_id is the unique identifier of the payment transaction.
+  string payment_id = 2;
+  // status is the outcome of the payment attempt (e.g. "success", "failed").
+  string status = 3;
+}

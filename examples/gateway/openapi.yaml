@@ -1,0 +1,110 @@
+openapi: "3.0.3"
+info:
+  title: Gateway API
+  description: HTTP edge gateway for the order choreography demo.
+  version: "1.0.0"
+
+paths:
+  /orders:
+    post:
+      summary: Create a new order
+      description: Accepts an order creation request, publishes a CreateOrderCommand, and returns 202 with the assigned order ID.
+      operationId: createOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderRequest"
+      responses:
+        "202":
+          description: Order accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateOrderResponse"
+
+  /orders/{id}:
+    get:
+      summary: Get order by ID
+      description: Returns the current view of an order from the read model projection.
+      operationId: getOrder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The unique identifier of the order.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Order found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderView"
+        "404":
+          description: Order not found
+
+  /healthz:
+    get:
+      summary: Health check
+      description: Returns 200 when the gateway is healthy.
+      operationId: healthCheck
+      responses:
+        "200":
+          description: OK
+
+components:
+  schemas:
+    CreateOrderRequest:
+      type: object
+      description: Request body for creating a new order.
+      required:
+        - customer_id
+        - amount_cents
+        - currency
+      properties:
+        customer_id:
+          type: string
+          description: The identifier of the customer placing the order.
+        amount_cents:
+          type: integer
+          format: int64
+          description: The total order amount expressed in the smallest currency unit.
+        currency:
+          type: string
+          description: The ISO 4217 currency code (e.g. "USD").
+
+    CreateOrderResponse:
+      type: object
+      description: Response body returned when an order is accepted.
+      required:
+        - order_id
+      properties:
+        order_id:
+          type: string
+          description: The unique identifier assigned to the new order.
+
+    OrderView:
+      type: object
+      description: Read model view of an order, built from event projections.
+      required:
+        - order_id
+        - status
+        - amount_cents
+        - currency
+      properties:
+        order_id:
+          type: string
+          description: The unique identifier of the order.
+        status:
+          type: string
+          description: The current status of the order (e.g. "created", "paid").
+        amount_cents:
+          type: integer
+          format: int64
+          description: The total order amount expressed in the smallest currency unit.
+        currency:
+          type: string
+          description: The ISO 4217 currency code (e.g. "USD").

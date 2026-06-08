@@ -14,6 +14,8 @@ require (
 	github.com/lestrrat-go/jwx/v2 v2.1.6
 	github.com/maypok86/otter/v2 v2.3.0
 	github.com/minio/minio-go/v7 v7.2.0
+	github.com/oapi-codegen/runtime v1.4.1
+	github.com/open-feature/go-sdk v1.17.2
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/redis/rueidis v1.0.75
 	github.com/stretchr/testify v1.11.1
@@ -44,6 +46,7 @@ require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
+	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
@@ -98,7 +101,6 @@ require (
 	github.com/moby/sys/user v0.4.0 // indirect
 	github.com/moby/sys/userns v0.1.0 // indirect
 	github.com/moby/term v0.5.2 // indirect
-	github.com/open-feature/go-sdk v1.17.2 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
@@ -120,6 +122,7 @@ require (
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.44.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
+	go.uber.org/mock v0.6.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.52.0 // indirect
