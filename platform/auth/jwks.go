@@ -35,6 +35,11 @@ type JWKSVerifier struct {
 //
 // ctx is used to drive the background cache refresh goroutine; it should be
 // the application lifetime context.
+//
+// JWKS keys MUST carry an "alg" field (e.g. "alg":"RS256"). The verifier pins
+// the algorithm from the key, not from the incoming token header — this is the
+// alg-confusion defence. A key without "alg" will cause valid tokens to fail
+// closed (rejected), which is intentional.
 func NewJWKSVerifier(ctx context.Context, jwksURL, issuer, audience string, opts ...Option) (*JWKSVerifier, error) {
 	v := &JWKSVerifier{
 		jwksURL:        jwksURL,
@@ -74,6 +79,7 @@ func (v *JWKSVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 		jwt.WithValidate(true),
 		jwt.WithIssuer(v.issuer),
 		jwt.WithAudience(v.audience),
+		jwt.WithRequiredClaim(jwt.ExpirationKey),
 	)
 	if err != nil {
 		return Principal{}, fmt.Errorf("%w: %w", ErrInvalidToken, err)

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,16 +187,18 @@ func TestJWKSVerifier_BadSignature(t *testing.T) {
 	signed := signToken(t, keys, testIssuer, testAudience, testSubject, testUsername,
 		time.Now().Add(time.Hour), nil)
 
-	// Tamper with the last character of the signature segment.
-	tampered := []byte(string(signed))
-	last := len(tampered) - 1
-	if tampered[last] == 'a' {
-		tampered[last] = 'b'
-	} else {
-		tampered[last] = 'a'
-	}
+	// Replace the entire signature segment with a known-wrong value.
+	// Mutating only the last byte is unreliable: RSA-2048 produces a 256-byte
+	// (342 base64url-char) signature where the last char encodes only 2
+	// significant bits; flipping it can leave the decoded bytes unchanged,
+	// causing the test to pass by coincidence.
+	// strings.LastIndex finds the final dot, everything after it is the sig.
+	s := string(signed)
+	lastDot := strings.LastIndex(s, ".")
+	require.Greater(t, lastDot, 0, "expected at least one dot in JWT")
+	tampered := s[:lastDot+1] + strings.Repeat("A", len(s)-lastDot-1)
 
-	_, err := v.Verify(context.Background(), string(tampered))
+	_, err := v.Verify(context.Background(), tampered)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, auth.ErrInvalidToken))
 }
@@ -356,4 +359,36 @@ func TestRequireRole_UnauthorizedOnNoPrincipal(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+// TestJWKSVerifier_RejectsTokenWithoutExp ensures that a validly-signed token
+// that has no "exp" claim is rejected. Without this check such a token would
+// be permanently valid — a security hole.
+func TestJWKSVerifier_RejectsTokenWithoutExp(t *testing.T) {
+	keys := generateTestKeys(t)
+	srv := startJWKSServer(t, keys)
+	v := newVerifier(t, srv.URL, testIssuer, testAudience)
+
+	// Build a token WITHOUT an expiration claim.
+	tok, err := jwt.NewBuilder().
+		Issuer(testIssuer).
+		Audience([]string{testAudience}).
+		Subject(testSubject).
+		IssuedAt(time.Now()).
+		Claim("preferred_username", testUsername).
+		Build()
+	require.NoError(t, err)
+
+	privJWK, err := jwk.FromRaw(keys.priv)
+	require.NoError(t, err)
+	require.NoError(t, privJWK.Set(jwk.KeyIDKey, "test-key-1"))
+	require.NoError(t, privJWK.Set(jwk.AlgorithmKey, jwa.RS256))
+
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256, privJWK))
+	require.NoError(t, err)
+
+	_, err = v.Verify(context.Background(), string(signed))
+	require.Error(t, err, "token without exp must be rejected")
+	assert.True(t, errors.Is(err, auth.ErrInvalidToken),
+		"expected ErrInvalidToken wrapping, got: %v", err)
 }
