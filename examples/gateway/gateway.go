@@ -10,10 +10,20 @@
 //	app, err := gateway.NewApp(ctx,
 //	    gateway.WithVerifier(myStubVerifier),
 //	)
+//
+// # Auth behaviour
+//
+// When AuthDisabled=false (the default), [NewApp] MUST have a verifier.
+// If [WithVerifier] was not called, NewApp builds a [auth.JWKSVerifier] from
+// the JWKSUrl/JWKSIssuer/JWKSAudience config fields. If that construction
+// fails (empty URL, unreachable endpoint, etc.) NewApp returns an error and the
+// service does NOT start — fail-closed, never open.
+// Set GATEWAY_AUTH_DISABLED=true only for dev/demo; a WARN is logged.
 package gateway
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -98,9 +108,29 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		o(a)
 	}
 
+	// Auth: resolve the verifier EARLY — before connecting to any external
+	// services — so a misconfigured JWKS URL is caught immediately and the
+	// service refuses to start (fail closed). This also means the fail-closed
+	// unit test does not require a running postgres/kafka instance.
+	if !cfg.AuthDisabled {
+		if a.verifier == nil {
+			// Build a JWKS-backed verifier from config. Any error here (empty
+			// URL, unreachable endpoint, …) is fatal: we refuse to serve open.
+			v, err := auth.NewJWKSVerifier(ctx, cfg.JWKSUrl, cfg.JWKSIssuer, cfg.JWKSAudience)
+			if err != nil {
+				return nil, fmt.Errorf("gateway: building JWKS verifier (auth is enabled): %w", err)
+			}
+			a.verifier = v
+		}
+	}
+
 	logger, logSync := log.New(cfg.Log, a.logWriter)
 	a.logger = logger
 	slog.SetDefault(logger)
+
+	if cfg.AuthDisabled {
+		logger.Warn("gateway: auth is DISABLED — all endpoints are open; set GATEWAY_AUTH_DISABLED=false in production")
+	}
 
 	closer := run.NewCloser()
 	closer.Add("log-sync", func(context.Context) error {
@@ -180,12 +210,12 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	apiServer := api.NewServer(pool, producer, cfg.CommandsTopic, logger)
 	strictHandler := api.NewStrictHandler(apiServer, nil)
 
-	// Mount routes. When auth is enabled and a verifier is set, apply auth
-	// middleware to all routes via ChiServerOptions.
+	// Mount routes. When auth is enabled, a.verifier is guaranteed non-nil
+	// (fail-closed above ensures this). Apply auth middleware to all routes.
 	chiOpts := api.ChiServerOptions{
 		BaseRouter: httpSrv.Mux(),
 	}
-	if !cfg.AuthDisabled && a.verifier != nil {
+	if !cfg.AuthDisabled {
 		authMiddleware := auth.Middleware(a.verifier)
 		chiOpts.Middlewares = []api.MiddlewareFunc{
 			func(next http.Handler) http.Handler {
@@ -203,6 +233,14 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 func (a *App) Start() {
 	runCtx, cancel := context.WithCancel(context.Background())
 	a.cancelConsumers = cancel
+
+	// Register the cancel as the LAST entry in the Closer so it runs FIRST
+	// during reverse-order teardown — goroutines stop before their resources
+	// (pg pool, kafka client) are closed.
+	a.closer.Add("consumers-cancel", func(context.Context) error {
+		cancel()
+		return nil
+	})
 
 	// Start projection consumer.
 	go func() {

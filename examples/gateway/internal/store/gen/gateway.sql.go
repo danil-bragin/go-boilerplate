@@ -32,10 +32,11 @@ func (q *Queries) GetOrderView(ctx context.Context, orderID uuid.UUID) (OrdersRe
 }
 
 const markPaid = `-- name: MarkPaid :exec
-update orders_read
-set status     = 'paid',
-    updated_at = now()
-where order_id = $1
+insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)
+values ($1, '', 0, '', 'paid', now())
+on conflict (order_id) do update set
+  status     = 'paid',
+  updated_at = now()
 `
 
 func (q *Queries) MarkPaid(ctx context.Context, orderID uuid.UUID) error {
@@ -46,12 +47,12 @@ func (q *Queries) MarkPaid(ctx context.Context, orderID uuid.UUID) error {
 const upsertOrderCreated = `-- name: UpsertOrderCreated :exec
 insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)
 values ($1, $2, $3, $4, 'created', now())
-on conflict (order_id) do update
-    set customer_id  = excluded.customer_id,
-        amount_cents = excluded.amount_cents,
-        currency     = excluded.currency,
-        status       = excluded.status,
-        updated_at   = excluded.updated_at
+on conflict (order_id) do update set
+  customer_id  = excluded.customer_id,
+  amount_cents = excluded.amount_cents,
+  currency     = excluded.currency,
+  updated_at   = now(),
+  status       = case when orders_read.status = 'paid' then 'paid' else 'created' end
 `
 
 type UpsertOrderCreatedParams struct {

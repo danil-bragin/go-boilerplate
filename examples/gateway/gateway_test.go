@@ -17,6 +17,7 @@ import (
 
 	gateway "go-boilerplate/examples/gateway"
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
+	authpkg "go-boilerplate/platform/auth"
 	"go-boilerplate/platform/kafka"
 	"go-boilerplate/platform/kafka/kafkatest"
 	"go-boilerplate/platform/pg/pgtest"
@@ -252,4 +253,168 @@ func pollOrderStatus(t *testing.T, baseURL, orderID, expectedStatus string, time
 		time.Sleep(300 * time.Millisecond)
 	}
 	t.Fatalf("order %s did not reach status %q within %v", orderID, expectedStatus, timeout)
+}
+
+// stubVerifier is a minimal auth.Verifier for tests.
+// It accepts only the literal token "good" and rejects everything else.
+type stubVerifier struct{}
+
+func (stubVerifier) Verify(_ context.Context, rawToken string) (authpkg.Principal, error) {
+	if rawToken == "good" {
+		return authpkg.Principal{Subject: "test-user"}, nil
+	}
+	return authpkg.Principal{}, authpkg.ErrInvalidToken
+}
+
+// startAppAuthEnabled starts the gateway with AuthDisabled=false and a stub verifier.
+func startAppAuthEnabled(t *testing.T, broker, dsn string) string {
+	t.Helper()
+
+	t.Setenv("PG_DSN", dsn)
+	t.Setenv("KAFKA_BROKERS", broker)
+	t.Setenv("KAFKA_CLIENT_ID", "gateway-test-auth-"+uuid.New().String())
+	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("GATEWAY_AUTH_DISABLED", "false")
+	t.Setenv("LOG_LEVEL", "error")
+
+	ctx := context.Background()
+	a, err := gateway.NewApp(ctx, gateway.WithVerifier(stubVerifier{}))
+	require.NoError(t, err)
+
+	a.Start()
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = a.Stop(stopCtx)
+	})
+
+	return "http://" + a.Addr()
+}
+
+// TestGateway_AuthEnabledRequiresToken verifies that when auth is enabled:
+//   - POST /orders without Authorization → 401
+//   - POST /orders with a valid token → 202
+func TestGateway_AuthEnabledRequiresToken(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+	baseURL := startAppAuthEnabled(t, broker, dsn)
+
+	body := map[string]interface{}{
+		"customer_id":  "cust-auth",
+		"amount_cents": int64(999),
+		"currency":     "USD",
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	// Without Authorization header → 401.
+	resp, err := http.Post(baseURL+"/orders", "application/json", bytes.NewReader(bodyBytes))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode, "expected 401 without auth token")
+
+	// With valid token → 202.
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/orders", bytes.NewReader(bodyBytes))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer good")
+
+	resp2, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	require.Equal(t, http.StatusAccepted, resp2.StatusCode, "expected 202 with valid auth token")
+}
+
+// TestGateway_AuthEnabledNoVerifierFailsClosed verifies that NewApp returns an
+// error (fail closed) when auth is enabled but no verifier can be built.
+// This is a unit-level test — no Docker infra required, because the JWKS
+// check now happens before any postgres/kafka connection is attempted.
+func TestGateway_AuthEnabledNoVerifierFailsClosed(t *testing.T) {
+	t.Setenv("PG_DSN", "postgres://unused:5432/unused") // not dialled in this path
+	t.Setenv("KAFKA_BROKERS", "localhost:9999")         // not dialled in this path
+	t.Setenv("GATEWAY_AUTH_DISABLED", "false")
+	t.Setenv("GATEWAY_JWKS_URL", "http://127.0.0.1:1/nonexistent") // unreachable
+	t.Setenv("GATEWAY_JWKS_ISSUER", "test")
+	t.Setenv("GATEWAY_JWKS_AUDIENCE", "test")
+	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("LOG_LEVEL", "error")
+
+	ctx := context.Background()
+	// Do NOT pass WithVerifier — rely on the JWKS builder path.
+	_, err := gateway.NewApp(ctx)
+	require.Error(t, err, "NewApp must return an error when JWKS is unreachable (fail closed)")
+}
+
+// TestGateway_ProjectionPaidBeforeCreatedStillPaid verifies that the projection
+// is reorder-safe: a PaymentProcessed event arriving before OrderCreated must
+// not be lost, and a subsequent OrderCreated must not downgrade the status.
+func TestGateway_ProjectionPaidBeforeCreatedStillPaid(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+	baseURL := startApp(t, broker, dsn)
+
+	orderID := uuid.New().String()
+
+	// Step 1: produce PaymentProcessed FIRST (no OrderCreated yet).
+	paymentID := uuid.New().String()
+	produceEvent(t, broker, "payments.events", "PaymentProcessed", orderID, func() proto.Message {
+		return &ordersv1.PaymentProcessed{
+			OrderId:   orderID,
+			PaymentId: paymentID,
+			Status:    "success",
+		}
+	})
+
+	// Poll until status == "paid" (MarkPaid upserted the row).
+	pollOrderStatus(t, baseURL, orderID, "paid", 30*time.Second)
+
+	// Step 2: produce OrderCreated LATE — must NOT downgrade status to "created".
+	produceEvent(t, broker, "orders.events", "OrderCreated", orderID, func() proto.Message {
+		return &ordersv1.OrderCreated{
+			OrderId:     orderID,
+			CustomerId:  "cust-reorder",
+			AmountCents: 4200,
+			Currency:    "EUR",
+		}
+	})
+
+	// Poll until currency is filled in (projection consumed the late OrderCreated).
+	// The status must remain "paid" throughout (not downgraded to "created").
+	// The OrderView API exposes currency; we use it to confirm the late upsert ran.
+	deadline := time.Now().Add(30 * time.Second)
+	var finalStatus, finalCurrency string
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(fmt.Sprintf("%s/orders/%s", baseURL, orderID))
+		if err != nil {
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
+		if resp.StatusCode == http.StatusOK {
+			var view struct {
+				Status   string `json:"status"`
+				Currency string `json:"currency"`
+			}
+			_ = json.NewDecoder(resp.Body).Decode(&view)
+			resp.Body.Close()
+			finalStatus = view.Status
+			finalCurrency = view.Currency
+			// Wait until the late OrderCreated fills in the currency.
+			if view.Currency == "EUR" {
+				break
+			}
+		} else {
+			resp.Body.Close()
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	require.Equal(t, "paid", finalStatus, "late OrderCreated must NOT downgrade status from paid to created")
+	require.Equal(t, "EUR", finalCurrency, "late OrderCreated should fill in the currency field via upsert")
 }
