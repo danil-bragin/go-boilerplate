@@ -18,11 +18,11 @@ import (
 // from the record, deduplicates via inbox.ProcessOnce, and dispatches to the
 // decorated CQRS handler.
 //
-// Message-ID derivation: the Kafka header "message-id" is used when present
-// (set by the orders service outbox relay). Otherwise the event's OrderId is
-// used as the idempotency key. Using the OrderId means that reprocessing the
-// same OrderCreated event (same OrderId) is deduplicated by the inbox table —
-// producing exactly-once payment processing even under at-least-once Kafka delivery.
+// Message-ID derivation: the real wire dedup key is the Kafka "message-id"
+// header, which the orders service outbox relay sets to the outbox Message.ID —
+// a stable, unique UUID per event. The OrderId fallback (when the header is
+// absent) is effectively dead in production but kept as a safety net for
+// hand-crafted test messages that omit the header.
 func NewEventHandler(
 	pool *pg.Pool,
 	handler func(context.Context, app.ProcessPayment) (app.ProcessPaymentResult, error),

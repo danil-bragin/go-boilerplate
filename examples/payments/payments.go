@@ -179,6 +179,14 @@ func (a *App) Start() {
 	runCtx, cancel := context.WithCancel(context.Background())
 	a.cancelConsumers = cancel
 
+	// Register the cancel as the LAST entry in the Closer so it runs FIRST
+	// during reverse-order teardown — goroutines stop before their resources
+	// (pg pool, kafka client) are closed.
+	a.closer.Add("consumers-cancel", func(context.Context) error {
+		cancel()
+		return nil
+	})
+
 	go func() {
 		if err := a.relay.Run(runCtx); err != nil && runCtx.Err() == nil {
 			a.logger.Error("relay stopped unexpectedly", "error", err)

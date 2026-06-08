@@ -22,12 +22,11 @@ type Notifier func(orderID, paymentID, status string)
 // event from the record, deduplicates via inbox.ProcessOnce, and invokes the
 // notifier exactly once per (orderID, paymentID) pair.
 //
-// Message-ID derivation: the Kafka header "message-id" is used when present
-// (set by the payments service outbox relay). Otherwise the message ID is
-// derived as "<orderID>-<paymentID>", so the same PaymentProcessed event
-// (same order and payment) is deduplicated by the inbox table even without
-// the header — giving effectively-once notification under at-least-once
-// Kafka delivery.
+// Message-ID derivation: the real wire dedup key is the Kafka "message-id"
+// header, which the payments service outbox relay sets to the outbox Message.ID
+// — a stable, unique UUID per event. The "<orderID>-<paymentID>" fallback
+// (when the header is absent) is effectively dead in production but kept as a
+// safety net for hand-crafted test messages that omit the header.
 func NewEventHandler(pool *pg.Pool, notifier Notifier) kafka.HandlerFunc {
 	return func(ctx context.Context, r kafka.Record) error {
 		var evt ordersv1.PaymentProcessed
