@@ -1,0 +1,133 @@
+package cqrs_test
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+
+	"go-boilerplate/platform/cqrs"
+)
+
+// fakeCache is an in-memory Cache implementation for tests.
+type fakeCache struct {
+	mu    sync.Mutex
+	store map[string][]byte
+}
+
+func newFakeCache() *fakeCache {
+	return &fakeCache{store: make(map[string][]byte)}
+}
+
+func (c *fakeCache) Get(_ context.Context, key string) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v, ok := c.store[key]
+	return v, ok
+}
+
+func (c *fakeCache) Set(_ context.Context, key string, value []byte, _ time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.store[key] = value
+}
+
+type cacheQuery struct{ ID string }
+type cacheResult struct{ Value string }
+
+// TestCaching_ReturnsCachedOnHitAndSkipsHandler verifies the cache-aside
+// pattern: first call is a miss → handler runs; second call with the same key
+// is a hit → handler is NOT called again and the same result is returned.
+func TestCaching_ReturnsCachedOnHitAndSkipsHandler(t *testing.T) {
+	cache := newFakeCache()
+	var callCount int
+
+	handler := cqrs.HandlerFunc[cacheQuery, cacheResult](func(_ context.Context, q cacheQuery) (cacheResult, error) {
+		callCount++
+		return cacheResult{Value: "hello-" + q.ID}, nil
+	})
+
+	keyFor := func(q cacheQuery) string { return q.ID }
+	decorated := cqrs.Decorate(handler, cqrs.CachingJSON[cacheQuery, cacheResult](cache, keyFor, time.Minute))
+
+	ctx := context.Background()
+	q := cacheQuery{ID: "item-1"}
+
+	// First call — cache miss, handler runs.
+	res1, err := decorated(ctx, q)
+	require.NoError(t, err)
+	require.Equal(t, cacheResult{Value: "hello-item-1"}, res1)
+	require.Equal(t, 1, callCount)
+
+	// Second call — cache hit, handler must NOT run.
+	res2, err := decorated(ctx, q)
+	require.NoError(t, err)
+	require.Equal(t, res1, res2)
+	require.Equal(t, 1, callCount, "handler must not be called on cache hit")
+}
+
+// TestCaching_HandlerErrorNotCached verifies that when the handler returns an
+// error the result is not stored in the cache, so the next call retries the
+// handler.
+func TestCaching_HandlerErrorNotCached(t *testing.T) {
+	cache := newFakeCache()
+	var callCount int
+	boom := errors.New("handler error")
+
+	handler := cqrs.HandlerFunc[cacheQuery, cacheResult](func(_ context.Context, _ cacheQuery) (cacheResult, error) {
+		callCount++
+		return cacheResult{}, boom
+	})
+
+	keyFor := func(q cacheQuery) string { return q.ID }
+	decorated := cqrs.Decorate(handler, cqrs.CachingJSON[cacheQuery, cacheResult](cache, keyFor, time.Minute))
+
+	ctx := context.Background()
+	q := cacheQuery{ID: "item-2"}
+
+	_, err := decorated(ctx, q)
+	require.ErrorIs(t, err, boom)
+	require.Equal(t, 1, callCount)
+
+	// Second call — nothing cached, handler must run again.
+	_, err = decorated(ctx, q)
+	require.ErrorIs(t, err, boom)
+	require.Equal(t, 2, callCount, "handler must be called again after prior error")
+}
+
+// TestCaching_MissOnUnmarshalGarbage verifies that garbage bytes pre-seeded in
+// the cache are treated as a miss: the handler runs and the cache is
+// overwritten with valid data.
+func TestCaching_MissOnUnmarshalGarbage(t *testing.T) {
+	cache := newFakeCache()
+	var callCount int
+
+	handler := cqrs.HandlerFunc[cacheQuery, cacheResult](func(_ context.Context, q cacheQuery) (cacheResult, error) {
+		callCount++
+		return cacheResult{Value: "fresh-" + q.ID}, nil
+	})
+
+	keyFor := func(q cacheQuery) string { return q.ID }
+	decorated := cqrs.Decorate(handler, cqrs.CachingJSON[cacheQuery, cacheResult](cache, keyFor, time.Minute))
+
+	ctx := context.Background()
+	q := cacheQuery{ID: "item-3"}
+
+	// Pre-seed garbage bytes for the key.
+	cache.Set(ctx, q.ID, []byte("not valid json {{{}"), time.Minute)
+
+	// Call — unmarshal fails → treated as miss → handler runs.
+	res, err := decorated(ctx, q)
+	require.NoError(t, err)
+	require.Equal(t, cacheResult{Value: "fresh-item-3"}, res)
+	require.Equal(t, 1, callCount, "handler must run on unmarshal failure (cache miss)")
+
+	// Cache should now hold valid data; second call is a hit.
+	res2, err := decorated(ctx, q)
+	require.NoError(t, err)
+	require.Equal(t, res, res2)
+	require.Equal(t, 1, callCount, "handler must not run again after successful cache write")
+}
