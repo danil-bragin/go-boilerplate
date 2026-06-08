@@ -11,8 +11,8 @@ import (
 
 // RelayConfig configures the polling relay.
 type RelayConfig struct {
-	BatchSize    int32         `env:"OUTBOX_BATCH_SIZE" env-default:"100"`
-	PollInterval time.Duration `env:"OUTBOX_POLL_INTERVAL" env-default:"1s"`
+	BatchSize    int32         `env:"OUTBOX_BATCH_SIZE" envDefault:"100"`
+	PollInterval time.Duration `env:"OUTBOX_POLL_INTERVAL" envDefault:"1s"`
 }
 
 // Relay polls unpublished outbox rows and publishes them via a Publisher,

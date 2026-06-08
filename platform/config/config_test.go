@@ -11,9 +11,9 @@ import (
 )
 
 type sampleConfig struct {
-	Port     int    `env:"PORT" env-default:"8080"`
-	LogLevel string `env:"LOG_LEVEL" env-default:"info"`
-	DSN      string `env:"DSN" env-required:"true"`
+	Port     int    `env:"PORT" envDefault:"8080"`
+	LogLevel string `env:"LOG_LEVEL" envDefault:"info"`
+	DSN      string `env:"DSN,required"`
 }
 
 func TestLoad_UsesDefaultsAndEnv(t *testing.T) {
@@ -44,14 +44,18 @@ func TestLoad_NonStructTypeReturnsClearError(t *testing.T) {
 }
 
 type fileConfig struct {
-	Name string `yaml:"name" env:"NAME"`
-	Port int    `yaml:"port" env:"PORT" env-default:"3000"`
+	Name string `env:"NAME"`
+	Port int    `env:"PORT" envDefault:"3000"`
 }
 
-func TestLoadFromFile_ReadsYAMLThenOverlaysEnv(t *testing.T) {
+func TestLoadFromFile_ReadsDotEnvFile(t *testing.T) {
+	// Ensure env vars are not set so the file values are used.
+	os.Unsetenv("NAME")
+	os.Unsetenv("PORT")
+
 	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yaml")
-	require.NoError(t, os.WriteFile(path, []byte("name: from-file\nport: 5000\n"), 0o600))
+	path := filepath.Join(dir, ".env")
+	require.NoError(t, os.WriteFile(path, []byte("NAME=from-file\nPORT=5000\n"), 0o600))
 
 	cfg, err := config.LoadFromFile[fileConfig](path)
 	require.NoError(t, err)
@@ -59,8 +63,23 @@ func TestLoadFromFile_ReadsYAMLThenOverlaysEnv(t *testing.T) {
 	require.Equal(t, 5000, cfg.Port)
 }
 
+func TestLoadFromFile_EnvOverridesFile(t *testing.T) {
+	t.Setenv("NAME", "from-env")
+	os.Unsetenv("PORT")
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	require.NoError(t, os.WriteFile(path, []byte("NAME=from-file\nPORT=5000\n"), 0o600))
+
+	cfg, err := config.LoadFromFile[fileConfig](path)
+	require.NoError(t, err)
+	require.Equal(t, "from-env", cfg.Name)
+	// PORT not set in env, so file value applies
+	require.Equal(t, 5000, cfg.Port)
+}
+
 func TestLoadFromFile_MissingFileFails(t *testing.T) {
-	_, err := config.LoadFromFile[fileConfig]("/no/such/file.yaml")
+	_, err := config.LoadFromFile[fileConfig]("/no/such/file.env")
 	require.Error(t, err)
 }
 

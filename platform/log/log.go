@@ -14,8 +14,8 @@ import (
 
 // Config controls logger construction.
 type Config struct {
-	Level  string `env:"LOG_LEVEL" env-default:"info"`  // debug|info|warn|error
-	Format string `env:"LOG_FORMAT" env-default:"json"` // json|console
+	Level  string `env:"LOG_LEVEL" envDefault:"info"`  // debug|info|warn|error
+	Format string `env:"LOG_FORMAT" envDefault:"json"` // json|console
 }
 
 // ParseLevel maps a level string to slog.Level, defaulting to Info.

@@ -22,9 +22,9 @@ import (
 
 // Config controls telemetry setup.
 type Config struct {
-	ServiceName  string `env:"OTEL_SERVICE_NAME" env-default:"service"`
-	OTLPEndpoint string `env:"OTEL_EXPORTER_OTLP_ENDPOINT" env-default:"localhost:4317"`
-	Enabled      bool   `env:"OTEL_ENABLED" env-default:"false"`
+	ServiceName  string `env:"OTEL_SERVICE_NAME" envDefault:"service"`
+	OTLPEndpoint string `env:"OTEL_EXPORTER_OTLP_ENDPOINT" envDefault:"localhost:4317"`
+	Enabled      bool   `env:"OTEL_ENABLED" envDefault:"false"`
 }
 
 // ShutdownFunc flushes and stops telemetry providers.

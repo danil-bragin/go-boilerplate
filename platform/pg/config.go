@@ -15,13 +15,13 @@ import (
 //
 // ReaderDSN is optional; when empty, reads use the same (writer) pool.
 type Config struct {
-	DSN               string        `env:"PG_DSN" env-default:"postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"`
-	ReaderDSN         string        `env:"PG_READER_DSN" env-default:""`
-	MaxConns          int32         `env:"PG_MAX_CONNS" env-default:"10"`
-	MinConns          int32         `env:"PG_MIN_CONNS" env-default:"2"`
-	MaxConnLifetime   time.Duration `env:"PG_MAX_CONN_LIFETIME" env-default:"30m"`
-	MaxConnIdleTime   time.Duration `env:"PG_MAX_CONN_IDLE_TIME" env-default:"5m"`
-	HealthCheckPeriod time.Duration `env:"PG_HEALTH_CHECK_PERIOD" env-default:"1m"`
+	DSN               string        `env:"PG_DSN" envDefault:"postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"`
+	ReaderDSN         string        `env:"PG_READER_DSN" envDefault:""`
+	MaxConns          int32         `env:"PG_MAX_CONNS" envDefault:"10"`
+	MinConns          int32         `env:"PG_MIN_CONNS" envDefault:"2"`
+	MaxConnLifetime   time.Duration `env:"PG_MAX_CONN_LIFETIME" envDefault:"30m"`
+	MaxConnIdleTime   time.Duration `env:"PG_MAX_CONN_IDLE_TIME" envDefault:"5m"`
+	HealthCheckPeriod time.Duration `env:"PG_HEALTH_CHECK_PERIOD" envDefault:"1m"`
 }
 
 // BuildPoolConfig parses DSN into a *pgxpool.Config and applies sizing/timeout

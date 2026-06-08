@@ -15,15 +15,15 @@ import (
 
 // Config configures the HTTP server.
 type Config struct {
-	Addr              string        `env:"HTTP_ADDR"               env-default:":8080"`
-	ReadHeaderTimeout time.Duration `env:"HTTP_READ_HEADER_TIMEOUT" env-default:"5s"`
-	ReadTimeout       time.Duration `env:"HTTP_READ_TIMEOUT"        env-default:"15s"`
-	WriteTimeout      time.Duration `env:"HTTP_WRITE_TIMEOUT"       env-default:"30s"`
-	IdleTimeout       time.Duration `env:"HTTP_IDLE_TIMEOUT"        env-default:"60s"`
+	Addr              string        `env:"HTTP_ADDR"               envDefault:":8080"`
+	ReadHeaderTimeout time.Duration `env:"HTTP_READ_HEADER_TIMEOUT" envDefault:"5s"`
+	ReadTimeout       time.Duration `env:"HTTP_READ_TIMEOUT"        envDefault:"15s"`
+	WriteTimeout      time.Duration `env:"HTTP_WRITE_TIMEOUT"       envDefault:"30s"`
+	IdleTimeout       time.Duration `env:"HTTP_IDLE_TIMEOUT"        envDefault:"60s"`
 	// MaxBodyBytes caps the request body size (default 1 MiB).
-	MaxBodyBytes int64 `env:"HTTP_MAX_BODY_BYTES" env-default:"1048576"`
+	MaxBodyBytes int64 `env:"HTTP_MAX_BODY_BYTES" envDefault:"1048576"`
 	// HandlerTimeout is the per-request timeout (default 30s).
-	HandlerTimeout time.Duration `env:"HTTP_HANDLER_TIMEOUT" env-default:"30s"`
+	HandlerTimeout time.Duration `env:"HTTP_HANDLER_TIMEOUT" envDefault:"30s"`
 }
 
 // Server wraps a chi router and an http.Server with the standard stack.
