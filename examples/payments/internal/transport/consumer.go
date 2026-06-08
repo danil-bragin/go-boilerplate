@@ -1,0 +1,58 @@
+// Package transport contains the Kafka consumer transport for the payments service.
+package transport
+
+import (
+	"context"
+	"fmt"
+
+	"google.golang.org/protobuf/proto"
+
+	"go-boilerplate/examples/payments/internal/app"
+	ordersv1 "go-boilerplate/gen/proto/orders/v1"
+	"go-boilerplate/platform/inbox"
+	"go-boilerplate/platform/kafka"
+	"go-boilerplate/platform/pg"
+)
+
+// NewEventHandler returns a kafka.HandlerFunc that decodes an OrderCreated event
+// from the record, deduplicates via inbox.ProcessOnce, and dispatches to the
+// decorated CQRS handler.
+//
+// Message-ID derivation: the Kafka header "message-id" is used when present
+// (set by the orders service outbox relay). Otherwise the event's OrderId is
+// used as the idempotency key. Using the OrderId means that reprocessing the
+// same OrderCreated event (same OrderId) is deduplicated by the inbox table —
+// producing exactly-once payment processing even under at-least-once Kafka delivery.
+func NewEventHandler(
+	pool *pg.Pool,
+	handler func(context.Context, app.ProcessPayment) (app.ProcessPaymentResult, error),
+) kafka.HandlerFunc {
+	return func(ctx context.Context, r kafka.Record) error {
+		var evt ordersv1.OrderCreated
+		if err := proto.Unmarshal(r.Value, &evt); err != nil {
+			return fmt.Errorf("payments consumer: unmarshal event: %w", err)
+		}
+
+		// Derive the inbox message id.
+		// Prefer the "message-id" header set by the outbox relay; fall back to
+		// the order id so that duplicate events with the same order id are
+		// deduplicated by the inbox pattern.
+		msgID := r.Headers["message-id"]
+		if msgID == "" {
+			msgID = evt.GetOrderId()
+		}
+		if msgID == "" {
+			return fmt.Errorf("payments consumer: cannot derive message id: no message-id header and order_id is empty")
+		}
+
+		_, err := inbox.ProcessOnce(ctx, pool, "payments", msgID, func(ctx context.Context) error {
+			_, err := handler(ctx, app.ProcessPayment{
+				OrderID:     evt.GetOrderId(),
+				AmountCents: evt.GetAmountCents(),
+				Currency:    evt.GetCurrency(),
+			})
+			return err
+		})
+		return err
+	}
+}
