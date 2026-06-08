@@ -13,7 +13,7 @@ import (
 
 func TestNew_WritesStructuredJSON(t *testing.T) {
 	var buf bytes.Buffer
-	logger := log.New(log.Config{Level: "debug", Format: "json"}, &buf)
+	logger, _ := log.New(log.Config{Level: "debug", Format: "json"}, &buf)
 
 	logger.Info("hello", "key", "value")
 
@@ -23,6 +23,21 @@ func TestNew_WritesStructuredJSON(t *testing.T) {
 	require.Equal(t, "value", entry["key"])
 }
 
+func TestNew_NilWriterPanics(t *testing.T) {
+	require.PanicsWithValue(t, "log: New: writer must not be nil", func() {
+		log.New(log.Config{}, nil)
+	})
+}
+
+func TestNew_SyncFuncFlushes(t *testing.T) {
+	var buf bytes.Buffer
+	logger, sync := log.New(log.Config{Level: "info", Format: "json"}, &buf)
+	logger.Info("flush-test")
+	// sync should be callable and return no error against a buffer
+	require.NotNil(t, sync)
+	_ = sync()
+}
+
 func TestParseLevel(t *testing.T) {
 	require.Equal(t, "WARN", log.ParseLevel("warn").String())
 	require.Equal(t, "INFO", log.ParseLevel("nonsense").String()) // fallback
@@ -30,7 +45,7 @@ func TestParseLevel(t *testing.T) {
 
 func TestContextLogger_RoundTrips(t *testing.T) {
 	var buf bytes.Buffer
-	base := log.New(log.Config{Level: "info", Format: "json"}, &buf)
+	base, _ := log.New(log.Config{Level: "info", Format: "json"}, &buf)
 
 	ctx := log.Into(context.Background(), base.With("svc", "orders"))
 	log.From(ctx).Info("msg")

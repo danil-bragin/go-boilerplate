@@ -32,8 +32,16 @@ func ParseLevel(s string) slog.Level {
 	}
 }
 
-// New builds a *slog.Logger backed by zap writing to w.
-func New(cfg Config, w io.Writer) *slog.Logger {
+// New builds a *slog.Logger backed by zap writing to w. The returned sync
+// function flushes any buffered log data and should be called on shutdown
+// (e.g. registered with run.Closer). Sync errors on os.Stdout/os.Stderr
+// (EINVAL/ENOTTY on some platforms) are common and can be ignored by callers.
+// New panics immediately if w is nil.
+func New(cfg Config, w io.Writer) (*slog.Logger, func() error) {
+	if w == nil {
+		panic("log: New: writer must not be nil")
+	}
+
 	level := zapLevel(ParseLevel(cfg.Level))
 
 	encCfg := zap.NewProductionEncoderConfig()
@@ -49,7 +57,7 @@ func New(cfg Config, w io.Writer) *slog.Logger {
 
 	core := zapcore.NewCore(encoder, zapcore.AddSync(w), level)
 	handler := zapslog.NewHandler(core, zapslog.WithCaller(false))
-	return slog.New(handler)
+	return slog.New(handler), core.Sync
 }
 
 func zapLevel(l slog.Level) zapcore.Level {

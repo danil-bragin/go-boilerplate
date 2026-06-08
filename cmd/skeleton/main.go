@@ -37,10 +37,17 @@ func newApp(ctx context.Context) (*app, error) {
 		return nil, err
 	}
 
-	logger := log.New(cfg.Log, os.Stdout)
+	logger, logSync := log.New(cfg.Log, os.Stdout)
 	slog.SetDefault(logger)
 
 	closer := run.NewCloser()
+	// log-sync is registered first so it runs last in the reverse-order
+	// shutdown sequence — buffered logs are flushed after every other
+	// component has finished logging its own shutdown messages.
+	closer.Add("log-sync", func(context.Context) error {
+		_ = logSync() // stdout sync errors are benign; ignore
+		return nil
+	})
 
 	shutdownTel, err := telemetry.Setup(ctx, cfg.Telemetry)
 	if err != nil {
