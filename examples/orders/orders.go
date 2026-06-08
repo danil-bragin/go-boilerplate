@@ -128,10 +128,11 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		return producer.Close(ctx)
 	})
 
-	// Ensure topics exist.
+	// Ensure topics exist (including the DLT for poison messages).
 	if err := kafka.EnsureTopics(ctx, kafkaClient, 1, 1,
 		cfg.CommandsTopic,
 		"orders.events",
+		cfg.CommandsTopic+".DLT",
 	); err != nil {
 		return nil, err
 	}
@@ -167,8 +168,15 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	})
 	a.consumer = consumer
 
-	// Wire the Kafka handler.
-	a.commandHandler = transport.NewCommandHandler(pool, decoratedHandler)
+	// Wire the Kafka handler, wrapped with retry/DLT so a poison message is
+	// retried up to 3 times then parked in orders.commands.DLT instead of
+	// blocking the partition forever. Other services would do the same.
+	rawCmdHandler := transport.NewCommandHandler(pool, decoratedHandler)
+	a.commandHandler = kafka.WithRetry(rawCmdHandler, kafka.RetryOpts{
+		MaxAttempts: 3,
+		Producer:    producer,
+		Backoff:     100 * time.Millisecond,
+	})
 
 	return a, nil
 }
@@ -178,6 +186,14 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 func (a *App) Start() {
 	runCtx, cancel := context.WithCancel(context.Background())
 	a.cancelConsumers = cancel
+
+	// Register the cancel as the LAST entry in the Closer so it runs FIRST
+	// during reverse-order teardown — goroutines stop before their resources
+	// (pg pool, kafka client) are closed.
+	a.closer.Add("consumers-cancel", func(context.Context) error {
+		cancel()
+		return nil
+	})
 
 	go func() {
 		if err := a.relay.Run(runCtx); err != nil && runCtx.Err() == nil {
