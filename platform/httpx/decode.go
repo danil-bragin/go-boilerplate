@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -45,7 +46,7 @@ func Decode[T any](r *http.Request) (T, error) {
 
 	if err := validate.Struct(v); err != nil {
 		var verrs validator.ValidationErrors
-		if ok := asValidationErrors(err, &verrs); ok {
+		if errors.As(err, &verrs) {
 			fields := make(map[string]string, len(verrs))
 			for _, fe := range verrs {
 				fields[fe.Field()] = fmt.Sprintf("failed on '%s'", fe.Tag())
@@ -57,18 +58,10 @@ func Decode[T any](r *http.Request) (T, error) {
 	return v, nil
 }
 
-func asValidationErrors(err error, target *validator.ValidationErrors) bool {
-	if verrs, ok := err.(validator.ValidationErrors); ok {
-		*target = verrs
-		return true
-	}
-	return false
-}
-
 // WriteDecodeError maps a decode/validation error to an appropriate problem.
 func WriteDecodeError(w http.ResponseWriter, err error) {
 	var ve *ValidationError
-	if asValidation(err, &ve) {
+	if errors.As(err, &ve) {
 		WriteProblem(w, Problem{
 			Status: http.StatusUnprocessableEntity,
 			Title:  "Validation Failed",
@@ -77,20 +70,4 @@ func WriteDecodeError(w http.ResponseWriter, err error) {
 		return
 	}
 	Error(w, http.StatusBadRequest, "invalid request body")
-}
-
-func asValidation(err error, target **ValidationError) bool {
-	for err != nil {
-		if ve, ok := err.(*ValidationError); ok {
-			*target = ve
-			return true
-		}
-		type unwrapper interface{ Unwrap() error }
-		u, ok := err.(unwrapper)
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-	return false
 }
