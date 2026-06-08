@@ -42,6 +42,13 @@ type RetryOpts struct {
 //     h is still made; cancellation is only checked in the sleep between
 //     attempts.
 func WithRetry(h HandlerFunc, opts RetryOpts) HandlerFunc {
+	// Fail fast at wiring time: a nil Producer would panic at runtime only
+	// when the first poison message reaches the DLT path, which is hard to
+	// reproduce in tests and catastrophic in production.
+	if opts.Producer == nil {
+		panic("kafka: WithRetry requires a non-nil Producer for dead-letter routing")
+	}
+
 	// Apply defaults.
 	if opts.MaxAttempts <= 0 {
 		opts.MaxAttempts = 1

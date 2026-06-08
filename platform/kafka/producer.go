@@ -53,10 +53,15 @@ func (p *Producer) Ping(ctx context.Context) error {
 // Close flushes any buffered records and then closes the client.
 // franz-go's Close() does not accept a context, so Flush is called first
 // so that the caller's deadline is respected during the flush phase.
+//
+// The underlying kgo.Client is ALWAYS closed, even if Flush returns an error
+// (e.g. context cancellation). Skipping Close() on a Flush error would leak
+// the client and its goroutines.
 func (p *Producer) Close(ctx context.Context) error {
-	if err := p.cl.Flush(ctx); err != nil {
-		return fmt.Errorf("kafka: flush: %w", err)
+	flushErr := p.cl.Flush(ctx)
+	p.cl.Close() // always release resources, even if flush failed
+	if flushErr != nil {
+		return fmt.Errorf("kafka: flush: %w", flushErr)
 	}
-	p.cl.Close()
 	return nil
 }

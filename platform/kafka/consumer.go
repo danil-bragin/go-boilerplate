@@ -62,6 +62,27 @@ func NewConsumer(cfg Config, topics ...string) (*Consumer, error) {
 //     subsequent records in the same batch. Those offsets will be redelivered
 //     on the next assignment.
 //
+// Duplicate-delivery window:
+//   - There is a small window between a successful handler return and the
+//     CommitRecords RPC completing.  If the process crashes or a rebalance
+//     occurs in that window the record will be redelivered after the partition
+//     is reassigned.  Consumers MUST be idempotent and deduplicate by a
+//     stable idempotency key (e.g. an inbox table keyed on message-id).
+//
+// DLQ / dead-letter behaviour (WithRetry):
+//   - When using WithRetry, a record that exhausts all retry attempts is
+//     produced to the dead-letter topic and the wrapper returns nil so the
+//     consumer commits the offset (park-and-commit).  This means the
+//     handler for records on the DLT must also be idempotent; use the inbox
+//     pattern to deduplicate replays.
+//
+// Fetch/commit error swallowing:
+//   - Non-fatal fetch-level errors (e.g. transient broker errors, auth
+//     hiccups) are currently swallowed so the poll loop can resume once the
+//     condition clears.  Commit errors from CommitRecords are similarly
+//     swallowed (the record may be redelivered but will not be lost).
+//     SP5 will add structured logging and metrics for these discarded errors.
+//
 // The loop stops when ctx is cancelled; Run returns ctx.Err() in that case.
 // It also returns if the underlying client is closed (ErrClientClosed).
 func (c *Consumer) Run(ctx context.Context, h HandlerFunc) error {
