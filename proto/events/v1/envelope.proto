@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package events.v1;
+
+option go_package = "go-boilerplate/gen/proto/events/v1;eventsv1";
+
+import "google/protobuf/timestamp.proto";
+
+// EventEnvelope is the standard wrapper for all domain events published to the
+// event transport layer. It carries routing metadata alongside the raw payload.
+message EventEnvelope {
+  // id is the unique identifier of this event instance (e.g. UUIDv4).
+  string id = 1;
+  // type is the fully-qualified event type name (e.g. "orders.OrderCreated").
+  string type = 2;
+  // aggregate_type identifies the aggregate root that emitted this event.
+  string aggregate_type = 3;
+  // aggregate_id is the identifier of the aggregate root instance.
+  string aggregate_id = 4;
+  // occurred_at is the wall-clock time at which the event occurred.
+  google.protobuf.Timestamp occurred_at = 5;
+  // payload holds the serialised event data (e.g. proto-marshalled message).
+  bytes payload = 6;
+  // headers carries optional key/value metadata (e.g. trace-id, tenant-id).
+  map<string, string> headers = 7;
+}
