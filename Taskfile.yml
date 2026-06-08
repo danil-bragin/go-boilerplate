@@ -1,0 +1,27 @@
+version: "3"
+
+tasks:
+  tidy:
+    desc: Sync go.mod/go.sum
+    cmds:
+      - go mod tidy
+
+  test:
+    desc: Run all tests with race detector
+    cmds:
+      - go test -race ./...
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run ./...
+
+  build:
+    desc: Build the skeleton binary
+    cmds:
+      - go build -o bin/skeleton ./cmd/skeleton
+
+  run:
+    desc: Run the skeleton service
+    cmds:
+      - go run ./cmd/skeleton
