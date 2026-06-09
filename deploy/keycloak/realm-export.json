@@ -108,7 +108,6 @@
       "protocol": "openid-connect",
       "redirectUris": ["*"],
       "webOrigins": ["*"],
-      "defaultRoles": ["user"],
       "protocolMappers": [
         {
           "id": "gateway-audience-mapper",

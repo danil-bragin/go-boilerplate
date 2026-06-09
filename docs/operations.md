@@ -27,6 +27,11 @@ only the services they actually need.
   still start and run normally — OTLP gRPC connections to `otel-collector` are
   established lazily and fail silently, so traces and metrics are simply
   uncollected rather than fatal.
+  > **Note:** running `--profile apps` without `--profile observability` is
+  > fully supported, but each service will log periodic OTLP export errors
+  > because the `otel-collector` hostname is not resolvable. These errors are
+  > non-fatal and can be ignored in local development. Run `task up:full`
+  > (`--profile observability --profile apps`) to get collected telemetry.
 - **`task down` stops everything** (`--profile observability --profile apps`)
   regardless of which profiles were originally used to start the stack, and
   removes volumes (`-v`).
