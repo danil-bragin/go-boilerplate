@@ -171,6 +171,7 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.111.0
     restart: unless-stopped
+    profiles: ["observability"]
     volumes:
       - ./deploy/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
     ports:
@@ -189,6 +190,7 @@ services:
   jaeger:
     image: jaegertracing/all-in-one:1.62.0
     restart: unless-stopped
+    profiles: ["observability"]
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
     ports:
@@ -198,6 +200,7 @@ services:
   prometheus:
     image: prom/prometheus:v2.55.1
     restart: unless-stopped
+    profiles: ["observability"]
     volumes:
       - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -213,6 +216,7 @@ services:
   grafana:
     image: grafana/grafana:11.3.1
     restart: unless-stopped
+    profiles: ["observability"]
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
@@ -231,6 +235,7 @@ services:
   pyroscope:
     image: grafana/pyroscope:1.8.1
     restart: unless-stopped
+    profiles: ["observability"]
     ports:
       - "4040:4040"
 
@@ -243,6 +248,7 @@ services:
       args:
         SERVICE: gateway
     restart: unless-stopped
+    profiles: ["apps"]
     ports:
       - "8080:8080"
     # Runtime resource limits — tune per workload in production.
@@ -297,6 +303,7 @@ services:
       args:
         SERVICE: orders
     restart: unless-stopped
+    profiles: ["apps"]
     # Runtime resource limits — tune per workload in production.
     deploy:
       resources:
@@ -333,6 +340,7 @@ services:
       args:
         SERVICE: payments
     restart: unless-stopped
+    profiles: ["apps"]
     # Runtime resource limits — tune per workload in production.
     deploy:
       resources:
@@ -369,6 +377,7 @@ services:
       args:
         SERVICE: notifications
     restart: unless-stopped
+    profiles: ["apps"]
     # Runtime resource limits — tune per workload in production.
     deploy:
       resources:

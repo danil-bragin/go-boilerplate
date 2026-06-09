@@ -1,5 +1,61 @@
 # Operations: Go runtime tuning
 
+---
+
+## Compose profiles
+
+The `docker-compose.yml` is split into three profiles so every developer runs
+only the services they actually need.
+
+### Profile matrix
+
+| Profile | Services | Task command |
+|---|---|---|
+| _(none — core)_ | postgres, redpanda, redpanda-console, redis, minio, minio-setup, keycloak | `task up` |
+| `observability` | core + otel-collector, jaeger, prometheus, grafana, pyroscope | `task up:obs` |
+| `apps` | core + gateway, orders, payments, notifications | `task up:apps` |
+| `observability` + `apps` | Everything | `task up:full` |
+
+### Notes
+
+- **Core is always included.** Profile-less services (postgres, redpanda, redis,
+  minio, keycloak) start with any `docker compose up` invocation regardless of
+  which profiles are active.
+- **Apps are independent of observability.** The four application services
+  (`gateway`, `orders`, `payments`, `notifications`) do not `depends_on` any
+  observability service.  When the observability profile is absent, the apps
+  still start and run normally — OTLP gRPC connections to `otel-collector` are
+  established lazily and fail silently, so traces and metrics are simply
+  uncollected rather than fatal.
+- **`task down` stops everything** (`--profile observability --profile apps`)
+  regardless of which profiles were originally used to start the stack, and
+  removes volumes (`-v`).
+
+### Dev workflow
+
+```bash
+# Option A — full stack (everything running in containers)
+task up:full
+# Edit code, rebuild a single service:
+docker compose --profile apps up -d --build gateway
+
+# Option B — local development (run one service on the host, rest in containers)
+task up          # starts only core infra
+go run ./examples/gateway  # runs against postgres/redpanda/redis/minio/keycloak on localhost
+
+# Option C — core + observability (no app containers; run services via go run)
+task up:obs
+go run ./examples/gateway  # OTLP traces sent to otel-collector on localhost:4317
+
+# Tail logs from whatever is running
+task logs
+
+# Tear down
+task down
+```
+
+---
+
 This document explains the container runtime knobs applied to every application
 service in this repo and the reasoning behind the chosen values.
 

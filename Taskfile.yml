@@ -74,19 +74,34 @@ tasks:
   # ── Docker Compose stack ────────────────────────────────────────────────────
 
   up:
-    desc: Build images and bring the full stack up in detached mode
+    desc: "Start core infra (pg, kafka, redis, minio, keycloak)"
     cmds:
-      - docker compose up -d --build
+      - docker compose up -d
+
+  up:obs:
+    desc: "Core + observability stack (otel-collector, jaeger, prometheus, grafana, pyroscope)"
+    cmds:
+      - docker compose --profile observability up -d
+
+  up:apps:
+    desc: "Core + the 4 app services (gateway, orders, payments, notifications)"
+    cmds:
+      - docker compose --profile apps up -d --build
+
+  up:full:
+    desc: "Everything: core + observability + apps"
+    cmds:
+      - docker compose --profile observability --profile apps up -d --build
 
   down:
-    desc: Stop and remove all containers and volumes
+    desc: "Stop everything and remove volumes"
     cmds:
-      - docker compose down -v
+      - docker compose --profile observability --profile apps down -v
 
   logs:
     desc: Stream logs from all services
     cmds:
-      - docker compose logs -f
+      - docker compose --profile observability --profile apps logs -f
 
   ps:
     desc: Show running compose services
@@ -94,10 +109,11 @@ tasks:
       - docker compose ps
 
   # Usage: curl -H "Authorization: Bearer $(task token)" http://localhost:8080/orders/<id>
+  # Keycloak is published on host port 8180 (mapped from container port 8080).
   token:
     desc: "Fetch a Keycloak access token (demo/demo) for manual API calls. Requires jq."
     cmds:
-      - 'curl -s -d client_id=gateway -d username=demo -d password=demo -d grant_type=password http://localhost:8080/realms/app/protocol/openid-connect/token | jq -r .access_token'
+      - 'curl -s -d client_id=gateway -d username=demo -d password=demo -d grant_type=password http://localhost:8180/realms/app/protocol/openid-connect/token | jq -r .access_token'
 
   # ── Image builds ────────────────────────────────────────────────────────────
 

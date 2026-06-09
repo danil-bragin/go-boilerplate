@@ -1,6 +1,6 @@
 # go-boilerplate
 
-A **production-grade, opinionated Go microservice boilerplate** for highload / enterprise teams. The repo is split into two zones: `platform/` is the reusable starter kit — config, structured logging, OTel observability, CQRS typed-decorator pipeline, Kafka outbox/inbox, two-tier cache, blob storage, resilience, auth/authz, audit, feature flags, and graceful lifecycle management — all with zero business logic. `examples/` contains four deletable demonstration services (gateway, orders, payments, notifications) that show how to wire the platform together; remove `examples/`, `proto/`, and `gen/` to get a clean blank canvas. The local stack runs entirely via `task up` (`docker compose`): Postgres, PgBouncer, Redpanda (Kafka + Schema Registry), Redis, MinIO, Keycloak, OTel Collector, Jaeger, Prometheus, Grafana, and Pyroscope.
+A **production-grade, opinionated Go microservice boilerplate** for highload / enterprise teams. The repo is split into two zones: `platform/` is the reusable starter kit — config, structured logging, OTel observability, CQRS typed-decorator pipeline, Kafka outbox/inbox, two-tier cache, blob storage, resilience, auth/authz, audit, feature flags, and graceful lifecycle management — all with zero business logic. `examples/` contains four deletable demonstration services (gateway, orders, payments, notifications) that show how to wire the platform together; remove `examples/`, `proto/`, and `gen/` to get a clean blank canvas. The local stack runs via `task up` / `task up:full` (`docker compose` with profiles): Postgres, Redpanda (Kafka + Schema Registry), Redis, MinIO, Keycloak (core), plus OTel Collector, Jaeger, Prometheus, Grafana, Pyroscope (observability profile), and the four app services (apps profile).
 
 ---
 
@@ -66,20 +66,39 @@ All domain state transitions are driven by Kafka events. The gateway owns a **re
 
 **Prerequisites:** Docker, Go 1.25+, [Task](https://taskfile.dev/).
 
+### Compose profiles
+
+The stack is split into three profiles so you only run what you need:
+
+| Profile | Services started | Command |
+|---|---|---|
+| _(none — core)_ | postgres, redpanda, redpanda-console, redis, minio, minio-setup, keycloak | `task up` |
+| `observability` | core + otel-collector, jaeger, prometheus, grafana, pyroscope | `task up:obs` |
+| `apps` | core + gateway, orders, payments, notifications | `task up:apps` |
+| both | Everything | `task up:full` |
+
 ```bash
-# 1. Bring the full stack up (builds images, starts infra + services)
+# Start everything (core infra + observability + apps)
+task up:full
+
+# Or: start just core infra for local development (run services via go run)
 task up
 
-# 2. Create an order (auth disabled by default)
+# Stop everything and remove volumes
+task down
+```
+
+```bash
+# Create an order (auth disabled by default)
 curl -s -XPOST localhost:8080/orders \
   -H 'Content-Type: application/json' \
   -d '{"customer_id":"c1","amount_cents":1500,"currency":"USD"}' | jq .
 
-# 3. Watch the status transition created → paid
+# Watch the status transition created → paid
 ORDER_ID=<id from step 2>
 curl -s localhost:8080/orders/$ORDER_ID | jq .status
 
-# 4. Observe
+# Observe
 open http://localhost:16686   # Jaeger traces
 open http://localhost:8090    # Redpanda Console (topics, messages)
 open http://localhost:3000    # Grafana (admin/admin; Prometheus + Pyroscope datasources)
@@ -102,11 +121,17 @@ Auth is **disabled** by default (`GATEWAY_AUTH_DISABLED=true`). To enable:
 # In docker-compose.yml gateway environment, change to:
 GATEWAY_AUTH_DISABLED: "false"
 GATEWAY_JWKS_URL: http://keycloak:8080/realms/app/protocol/openid-connect/certs
-GATEWAY_JWKS_ISSUER: http://localhost:8180/realms/app
+GATEWAY_JWKS_ISSUER: http://keycloak:8080/realms/app
 GATEWAY_JWKS_AUDIENCE: gateway
 ```
 
-Keycloak runs at `http://localhost:8180` (admin/admin). A pre-configured realm `app` with client `gateway` and roles `admin`/`user` is imported at startup.
+Keycloak is published on **host port 8180** (maps to container port 8080) to avoid conflict with gateway. Admin console: `http://localhost:8180` (admin/admin). A pre-configured realm `app` with client `gateway` and roles `admin`/`user` is imported at startup.
+
+```bash
+# Fetch a demo token and call the API (gateway listens on host port 8080)
+TOKEN=$(task token)
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/orders/<id>
+```
 
 ---
 
@@ -150,7 +175,7 @@ go-boilerplate/
 ├── docs/            ARCHITECTURE.md, ADRs, adding-a-service guide
 ├── Dockerfile       parametric multi-stage (--build-arg SERVICE=<svc>)
 ├── docker-compose.yml full local stack
-├── Taskfile.yml     dev loop: up/down/logs/test/lint/buf/sqlc/build-images
+├── Taskfile.yml     dev loop: up/up:obs/up:apps/up:full/down/logs/test/lint/buf/sqlc/build-images
 └── buf.yaml         buf v2 config (proto lint + breaking rules)
 ```
 
