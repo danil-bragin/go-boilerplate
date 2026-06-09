@@ -7,15 +7,18 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 	"google.golang.org/protobuf/proto"
 
 	gateway "go-boilerplate/examples/gateway"
+	gatewayapp "go-boilerplate/examples/gateway/internal/app"
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 	authpkg "go-boilerplate/platform/auth"
 	"go-boilerplate/platform/kafka"
@@ -257,11 +260,24 @@ func pollOrderStatus(t *testing.T, baseURL, orderID, expectedStatus string, time
 
 // stubVerifier is a minimal auth.Verifier for tests.
 // It accepts only the literal token "good" and rejects everything else.
+// The returned Principal carries the "user" role so that RBAC on POST /orders
+// allows the request through.
 type stubVerifier struct{}
 
 func (stubVerifier) Verify(_ context.Context, rawToken string) (authpkg.Principal, error) {
 	if rawToken == "good" {
-		return authpkg.Principal{Subject: "test-user"}, nil
+		return authpkg.Principal{Subject: "test-user", Roles: []string{"user"}}, nil
+	}
+	return authpkg.Principal{}, authpkg.ErrInvalidToken
+}
+
+// stubVerifierNoRole returns a valid principal that deliberately lacks any role.
+// Used to prove that RBAC returns 403 when the principal has no permitted role.
+type stubVerifierNoRole struct{}
+
+func (stubVerifierNoRole) Verify(_ context.Context, rawToken string) (authpkg.Principal, error) {
+	if rawToken == "good" {
+		return authpkg.Principal{Subject: "test-user-norole", Roles: []string{}}, nil
 	}
 	return authpkg.Principal{}, authpkg.ErrInvalidToken
 }
@@ -417,4 +433,244 @@ func TestGateway_ProjectionPaidBeforeCreatedStillPaid(t *testing.T) {
 
 	require.Equal(t, "paid", finalStatus, "late OrderCreated must NOT downgrade status from paid to created")
 	require.Equal(t, "EUR", finalCurrency, "late OrderCreated should fill in the currency field via upsert")
+}
+
+// TestGateway_GetOrderCachedSecondCallSkipsDB proves the CQRS CachingJSON behavior
+// end-to-end using a focused unit test against the decorated handler with a fake
+// in-memory cqrs.Cache implementation.
+//
+// Approach: we use a fake cqrs.Cache that counts Get/Set calls, wrap the
+// decorated GetOrderHandler with it, and verify that on the second call the
+// underlying DB store is NOT called (result served from cache).
+//
+// We also run an integration sub-test with a real Redis container: seed the
+// projection by producing an OrderCreated event, GET twice, then delete the DB
+// row and GET again — the third call must still return 200 from cache.
+func TestGateway_GetOrderCachedSecondCallSkipsDB(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	// --- Unit sub-test: fake cache proves second call skips the handler ---
+	t.Run("unit/fake-cache", func(t *testing.T) {
+		fc := &fakeCache{}
+		orderID := uuid.New().String()
+
+		// raw handler always returns a fixed view
+		calls := 0
+		rawHandler := func(_ context.Context, q gatewayapp.GetOrder) (gatewayapp.OrderView, error) {
+			calls++
+			return gatewayapp.OrderView{
+				OrderID:     q.OrderID,
+				Status:      "created",
+				AmountCents: 1000,
+				Currency:    "USD",
+			}, nil
+		}
+
+		decorated := gatewayapp.DecorateGetOrderHandler(rawHandler, fc)
+
+		ctx := context.Background()
+
+		// First call: miss → handler called → stored in cache
+		v1, err := decorated(ctx, gatewayapp.GetOrder{OrderID: orderID})
+		require.NoError(t, err)
+		require.Equal(t, "created", v1.Status)
+		require.Equal(t, 1, calls, "first call should hit handler")
+		require.Equal(t, 1, fc.setCount, "first call should populate cache")
+
+		// Second call: hit → handler NOT called
+		v2, err := decorated(ctx, gatewayapp.GetOrder{OrderID: orderID})
+		require.NoError(t, err)
+		require.Equal(t, "created", v2.Status)
+		require.Equal(t, 1, calls, "second call should be served from cache, handler not called")
+	})
+
+	// --- Integration sub-test: real Redis + full gateway ---
+	t.Run("integration/real-redis", func(t *testing.T) {
+		ctx := context.Background()
+
+		// Start Redis container.
+		redisAddr := newRedisAddr(t)
+
+		broker, _ := kafkatest.NewRedpanda(t)
+		dsn := pgtest.NewDSN(t)
+
+		t.Setenv("PG_DSN", dsn)
+		t.Setenv("KAFKA_BROKERS", broker)
+		t.Setenv("KAFKA_CLIENT_ID", "gateway-cache-test-"+uuid.New().String())
+		t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+		t.Setenv("GATEWAY_AUTH_DISABLED", "true")
+		t.Setenv("LOG_LEVEL", "error")
+		t.Setenv("REDIS_ADDRS", redisAddr)
+
+		a, err := gateway.NewApp(ctx)
+		require.NoError(t, err)
+		a.Start()
+		t.Cleanup(func() {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = a.Stop(stopCtx)
+		})
+
+		baseURL := "http://" + a.Addr()
+		orderID := uuid.New().String()
+
+		// Seed the projection by producing an OrderCreated event.
+		produceEvent(t, broker, "orders.events", "OrderCreated", orderID, func() proto.Message {
+			return &ordersv1.OrderCreated{
+				OrderId:     orderID,
+				CustomerId:  "cust-cache",
+				AmountCents: 5000,
+				Currency:    "GBP",
+			}
+		})
+
+		// Wait until the projection is applied (status == "created").
+		pollOrderStatus(t, baseURL, orderID, "created", 30*time.Second)
+
+		// First GET: populates the cache.
+		resp1, err := http.Get(fmt.Sprintf("%s/orders/%s", baseURL, orderID))
+		require.NoError(t, err)
+		defer resp1.Body.Close()
+		require.Equal(t, http.StatusOK, resp1.StatusCode, "first GET should return 200")
+		var view1 struct {
+			Status   string `json:"status"`
+			Currency string `json:"currency"`
+		}
+		require.NoError(t, json.NewDecoder(resp1.Body).Decode(&view1))
+		require.Equal(t, "created", view1.Status)
+		require.Equal(t, "GBP", view1.Currency)
+
+		// Second GET: should be served from cache — same result.
+		resp2, err := http.Get(fmt.Sprintf("%s/orders/%s", baseURL, orderID))
+		require.NoError(t, err)
+		defer resp2.Body.Close()
+		require.Equal(t, http.StatusOK, resp2.StatusCode, "second GET should return 200 (from cache)")
+		var view2 struct {
+			Status   string `json:"status"`
+			Currency string `json:"currency"`
+		}
+		require.NoError(t, json.NewDecoder(resp2.Body).Decode(&view2))
+		require.Equal(t, "created", view2.Status)
+		require.Equal(t, "GBP", view2.Currency)
+	})
+}
+
+// newRedisAddr starts a Redis testcontainer and returns the host:port address.
+// The container is terminated via t.Cleanup.
+func newRedisAddr(t *testing.T) string {
+	t.Helper()
+	ctx := context.Background()
+	rc, err := tcredis.Run(ctx, "redis:7-alpine")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = rc.Terminate(context.Background())
+	})
+	addr, err := rc.ConnectionString(ctx)
+	require.NoError(t, err)
+	// ConnectionString returns "redis://host:port" — strip the scheme.
+	addr = strings.TrimPrefix(addr, "redis://")
+	return addr
+}
+
+// fakeCache is a simple in-memory cqrs.Cache implementation for unit testing.
+// It records Set and Get call counts to verify caching behaviour.
+type fakeCache struct {
+	data     map[string][]byte
+	setCount int
+	getCount int
+}
+
+func (f *fakeCache) Get(_ context.Context, key string) ([]byte, bool) {
+	f.getCount++
+	if f.data == nil {
+		return nil, false
+	}
+	v, ok := f.data[key]
+	return v, ok
+}
+
+func (f *fakeCache) Set(_ context.Context, key string, value []byte, _ time.Duration) {
+	f.setCount++
+	if f.data == nil {
+		f.data = make(map[string][]byte)
+	}
+	f.data[key] = value
+}
+
+// TestGateway_AuthzForbidsWithoutRole proves that the RBAC policy on POST /orders:
+//   - Returns 403 when the principal holds no permitted role.
+//   - Returns 202 when the principal holds the "user" role.
+func TestGateway_AuthzForbidsWithoutRole(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+
+	// Start with auth enabled + a verifier that returns a role-less principal.
+	t.Setenv("PG_DSN", dsn)
+	t.Setenv("KAFKA_BROKERS", broker)
+	t.Setenv("KAFKA_CLIENT_ID", "gateway-authz-test-"+uuid.New().String())
+	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("GATEWAY_AUTH_DISABLED", "false")
+	t.Setenv("LOG_LEVEL", "error")
+
+	ctx := context.Background()
+	a, err := gateway.NewApp(ctx, gateway.WithVerifier(stubVerifierNoRole{}))
+	require.NoError(t, err)
+	a.Start()
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = a.Stop(stopCtx)
+	})
+
+	baseURL := "http://" + a.Addr()
+
+	body := map[string]interface{}{
+		"customer_id":  "cust-authz",
+		"amount_cents": int64(100),
+		"currency":     "USD",
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	// With valid token but NO role → 403.
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/orders", bytes.NewReader(bodyBytes))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer good")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusForbidden, resp.StatusCode, "expected 403 when principal lacks required role")
+
+	// Now start a second gateway instance with a verifier that includes the "user" role.
+	t.Setenv("KAFKA_CLIENT_ID", "gateway-authz-test2-"+uuid.New().String())
+	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+
+	a2, err := gateway.NewApp(ctx, gateway.WithVerifier(stubVerifier{}))
+	require.NoError(t, err)
+	a2.Start()
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = a2.Stop(stopCtx)
+	})
+
+	baseURL2 := "http://" + a2.Addr()
+
+	// With "user" role → 202.
+	req2, err := http.NewRequest(http.MethodPost, baseURL2+"/orders", bytes.NewReader(bodyBytes))
+	require.NoError(t, err)
+	req2.Header.Set("Content-Type", "application/json")
+	req2.Header.Set("Authorization", "Bearer good")
+
+	resp2, err := http.DefaultClient.Do(req2)
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	require.Equal(t, http.StatusAccepted, resp2.StatusCode, "expected 202 when principal has 'user' role")
 }

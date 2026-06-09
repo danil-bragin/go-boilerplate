@@ -6,37 +6,60 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/proto"
 
-	storegen "go-boilerplate/examples/gateway/internal/store/gen"
+	"go-boilerplate/examples/gateway/internal/app"
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
+	"go-boilerplate/platform/auth"
+	"go-boilerplate/platform/authz"
+	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/httpx"
 	"go-boilerplate/platform/kafka"
 	"go-boilerplate/platform/pg"
+	"go-boilerplate/platform/resilience"
 )
+
+// rbacPolicy is the RBAC policy for write operations.
+// "order:create" requires the "user" or "admin" role.
+var rbacPolicy = authz.NewRBAC(map[string][]string{
+	"order:create": {"user", "admin"},
+})
 
 // Server implements StrictServerInterface.
 type Server struct {
-	pool          *pg.Pool
-	producer      *kafka.Producer
-	commandsTopic string
-	logger        *slog.Logger
+	pool            *pg.Pool
+	producer        *kafka.Producer
+	commandsTopic   string
+	logger          *slog.Logger
+	getOrderHandler cqrs.HandlerFunc[app.GetOrder, app.OrderView]
+	authDisabled    bool
 }
 
 // NewServer creates a new Server wired with the given dependencies.
+//
+// getOrderHandler is the decorated CQRS query handler (includes Logging,
+// Tracing, Metrics, and optionally Caching when cache != nil).
+// authDisabled mirrors the gateway AuthDisabled flag — when true, the RBAC
+// check on POST /orders is skipped (no principal in ctx).
 func NewServer(
 	pool *pg.Pool,
 	producer *kafka.Producer,
 	commandsTopic string,
 	logger *slog.Logger,
+	getOrderHandler cqrs.HandlerFunc[app.GetOrder, app.OrderView],
+	authDisabled bool,
 ) *Server {
 	return &Server{
-		pool:          pool,
-		producer:      producer,
-		commandsTopic: commandsTopic,
-		logger:        logger,
+		pool:            pool,
+		producer:        producer,
+		commandsTopic:   commandsTopic,
+		logger:          logger,
+		getOrderHandler: getOrderHandler,
+		authDisabled:    authDisabled,
 	}
 }
 
@@ -46,11 +69,30 @@ func (s *Server) HealthCheck(_ context.Context, _ HealthCheckRequestObject) (Hea
 }
 
 // CreateOrder implements StrictServerInterface.
-// It generates an order ID, publishes a CreateOrderCommand to Kafka, and returns 202.
+//
+// Authorization: when auth is enabled (AuthDisabled=false), the principal in
+// ctx must hold the "user" or "admin" role (enforced via authz.Require RBAC).
+// A missing or insufficiently-privileged principal yields 403.
+//
+// The Kafka publish is wrapped in a resilience policy (Retry×3 + Timeout 2 s)
+// to handle transient broker hiccups without failing the request immediately.
 func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObject) (CreateOrderResponseObject, error) {
 	body := request.Body
 	if body == nil {
 		return nil, fmt.Errorf("missing request body")
+	}
+
+	// RBAC authorization: skip when auth is disabled (e.g. in e2e / dev).
+	if !s.authDisabled {
+		p, ok := auth.From(ctx)
+		if !ok {
+			// No principal — auth middleware should have blocked this, but
+			// be defensive: fail closed.
+			return nil, &authError{status: http.StatusUnauthorized, msg: "no authenticated principal"}
+		}
+		if err := rbacPolicy.Authorize(p, "order:create"); err != nil {
+			return nil, &authError{status: http.StatusForbidden, msg: "insufficient privileges"}
+		}
 	}
 
 	orderID := uuid.New().String()
@@ -66,14 +108,18 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 		return nil, fmt.Errorf("gateway: marshal command: %w", err)
 	}
 
-	if err := s.producer.Produce(ctx, kafka.Record{
-		Topic: s.commandsTopic,
-		Key:   []byte(orderID),
-		Value: payload,
-		Headers: map[string]string{
-			"message-id": orderID,
-		},
-	}); err != nil {
+	// Resilience: retry up to 3 times with exponential back-off, cancel after 2 s.
+	err = resilience.Do(ctx, func(ctx context.Context) error {
+		return s.producer.Produce(ctx, kafka.Record{
+			Topic: s.commandsTopic,
+			Key:   []byte(orderID),
+			Value: payload,
+			Headers: map[string]string{
+				"message-id": orderID,
+			},
+		})
+	}, resilience.Retry(3, 50*time.Millisecond), resilience.Timeout(2*time.Second))
+	if err != nil {
 		return nil, fmt.Errorf("gateway: produce command: %w", err)
 	}
 
@@ -81,26 +127,45 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 }
 
 // GetOrder implements StrictServerInterface.
-// It reads the order from the read model and returns 200 or 404.
+// It delegates to the decorated CQRS query handler (Logging+Tracing+Metrics+
+// optional Caching), mapping ErrOrderNotFound → 404.
 func (s *Server) GetOrder(ctx context.Context, request GetOrderRequestObject) (GetOrderResponseObject, error) {
-	id, err := uuid.Parse(request.Id)
+	view, err := s.getOrderHandler(ctx, app.GetOrder{OrderID: request.Id})
 	if err != nil {
-		return GetOrder404Response{}, nil
-	}
-
-	q := storegen.New(pg.FromContextRead(ctx, s.pool))
-	row, err := q.GetOrderView(ctx, id)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, app.ErrOrderNotFound) {
 			return GetOrder404Response{}, nil
 		}
-		return nil, fmt.Errorf("gateway: get order view: %w", err)
+		return nil, fmt.Errorf("gateway: get order: %w", err)
 	}
 
 	return GetOrder200JSONResponse{
-		OrderId:     row.OrderID.String(),
-		Status:      row.Status,
-		AmountCents: row.AmountCents,
-		Currency:    row.Currency,
+		OrderId:     view.OrderID,
+		Status:      view.Status,
+		AmountCents: view.AmountCents,
+		Currency:    view.Currency,
 	}, nil
+}
+
+// authError carries an HTTP status code so gateway.go can map it correctly.
+type authError struct {
+	status int
+	msg    string
+}
+
+func (e *authError) Error() string { return e.msg }
+
+// WriteAuthError writes an authError as a problem+json response if err is an
+// *authError. Returns true when the error was handled, false otherwise.
+// Used by the strict handler's ResponseErrorHandlerFunc.
+func WriteAuthError(w http.ResponseWriter, err error) bool {
+	var ae *authError
+	if errors.As(err, &ae) {
+		httpx.WriteProblem(w, httpx.Problem{
+			Status: ae.status,
+			Title:  http.StatusText(ae.status),
+			Detail: ae.msg,
+		})
+		return true
+	}
+	return false
 }
