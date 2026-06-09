@@ -1,9 +1,13 @@
 package httpserver
 
 import (
+	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
+
+	"go-boilerplate/platform/web/ratelimit"
 
 	"golang.org/x/time/rate"
 )
@@ -130,17 +134,124 @@ func CORS(opts CORSOptions) func(http.Handler) http.Handler {
 //   - rps:   sustained requests per second (token refill rate).
 //   - burst: maximum burst size (token bucket capacity).
 //
-// NOTE: This is a single global limiter shared across all clients. For
-// production deployments, replace with a per-IP limiter (map[string]*rate.Limiter
-// keyed on r.RemoteAddr or the X-Forwarded-For header) with an LRU eviction
-// policy to prevent memory exhaustion. A Redis-backed distributed rate limiter
-// (e.g., GCRA via redis/rueidis) is the correct choice for multi-instance
-// deployments.
+// Deprecated: use RateLimitPer with ClientIPKey — a global bucket lets one client starve all.
 func RateLimit(rps float64, burst int) func(http.Handler) http.Handler {
 	limiter := rate.NewLimiter(rate.Limit(rps), burst)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !limiter.Allow() {
+				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// ClientIPKey returns a key function that extracts the caller's real IP address
+// from a request. RemoteAddr is authoritative unless it belongs to a trusted
+// proxy prefix, in which case X-Forwarded-For is walked right-to-left and the
+// first hop NOT in trusted is used (the closest untrusted client). XFF from
+// untrusted peers is ignored — it is trivially spoofable.
+//
+// When trusted is nil or empty, the key is always r.RemoteAddr (XFF ignored).
+//
+// Edge case: if all XFF entries are trusted or unparseable, the leftmost XFF
+// entry is returned (it is the closest value to the original client's claim).
+//
+// If RemoteAddr cannot be parsed as a valid IP, it is returned as-is so that
+// callers always receive a stable, non-empty key.
+func ClientIPKey(trusted []netip.Prefix) func(*http.Request) string {
+	return func(r *http.Request) string {
+		raw := r.RemoteAddr
+
+		// Parse the host portion of RemoteAddr.
+		host, _, err := net.SplitHostPort(raw)
+		if err != nil {
+			host = raw // fall back: use whole string
+		}
+		addr, parseErr := netip.ParseAddr(host)
+
+		// No trusted proxies → always use RemoteAddr (never XFF).
+		if len(trusted) == 0 {
+			if parseErr != nil {
+				return raw
+			}
+			return addr.String()
+		}
+
+		// If RemoteAddr can't be parsed, return it raw.
+		if parseErr != nil {
+			return raw
+		}
+
+		// Check whether RemoteAddr is a trusted proxy.
+		if !inAny(addr, trusted) {
+			return addr.String()
+		}
+
+		// RemoteAddr is trusted. Consult X-Forwarded-For.
+		xff := r.Header.Get("X-Forwarded-For")
+		if xff == "" {
+			return addr.String()
+		}
+
+		// Walk right-to-left; skip entries that are trusted or unparseable.
+		hops := strings.Split(xff, ",")
+		leftmost := "" // track leftmost valid entry as fallback
+		for i := len(hops) - 1; i >= 0; i-- {
+			ip := strings.TrimSpace(hops[i])
+			if i == 0 && leftmost == "" {
+				leftmost = ip // record leftmost entry for all-trusted fallback
+			}
+			hopAddr, hopErr := netip.ParseAddr(ip)
+			if hopErr != nil {
+				continue // skip invalid entries
+			}
+			if leftmost == "" {
+				leftmost = hopAddr.String()
+			}
+			if !inAny(hopAddr, trusted) {
+				return hopAddr.String()
+			}
+		}
+
+		// All XFF entries are trusted or invalid → return leftmost entry.
+		if leftmost != "" {
+			return leftmost
+		}
+		return addr.String()
+	}
+}
+
+// inAny reports whether addr is contained in any of the given prefixes.
+func inAny(addr netip.Addr, prefixes []netip.Prefix) bool {
+	for _, p := range prefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// RateLimitPer applies limiter l per key; denied requests receive 429 with a
+// Retry-After: 1 header. The response body matches the shape of the legacy
+// RateLimit middleware ("rate limit exceeded\n").
+//
+// On limiter error the request is denied (fail-closed). Fail-open limiters
+// surface errors as (true, nil) so they never trigger this path.
+//
+// If key(r) returns an empty string, r.RemoteAddr is used instead.
+func RateLimitPer(l ratelimit.Limiter, key func(*http.Request) string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			k := key(r)
+			if k == "" {
+				k = r.RemoteAddr
+			}
+			allowed, err := l.Allow(r.Context(), k)
+			if err != nil || !allowed {
+				w.Header().Set("Retry-After", "1")
 				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 				return
 			}
