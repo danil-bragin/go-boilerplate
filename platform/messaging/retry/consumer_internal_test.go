@@ -108,9 +108,9 @@ func TestOnRevoked_ClearsHeldAndTimers(t *testing.T) {
 
 	c := newBareConsumer()
 
-	tp1 := topicPartition{topic: "orders.retry.5s", partition: 0}
-	tp2 := topicPartition{topic: "orders.retry.5s", partition: 1}
-	tp3 := topicPartition{topic: "orders.retry.5s", partition: 2} // NOT revoked
+	tp1 := topicPartition{topic: "orders.retry.0", partition: 0}
+	tp2 := topicPartition{topic: "orders.retry.0", partition: 1}
+	tp3 := topicPartition{topic: "orders.retry.0", partition: 2} // NOT revoked
 
 	// Populate held and timers for tp1, tp2, tp3.
 	for _, tp := range []topicPartition{tp1, tp2, tp3} {
@@ -238,7 +238,7 @@ func TestProcessPartition_MalformedDLTProduceFailureHolds(t *testing.T) {
 
 	// Build a fake partition with one malformed record (no retry headers).
 	rec := &kgo.Record{
-		Topic:     "base.retry.5s",
+		Topic:     "base.retry.0",
 		Partition: 0,
 		Key:       []byte("k"),
 		Value:     []byte("v"),
@@ -249,7 +249,7 @@ func TestProcessPartition_MalformedDLTProduceFailureHolds(t *testing.T) {
 			Partition: 0,
 			Records:   []*kgo.Record{rec},
 		},
-		Topic: "base.retry.5s",
+		Topic: "base.retry.0",
 	}
 
 	toCommit := c.processPartition(context.Background(), p, nil)
@@ -259,7 +259,7 @@ func TestProcessPartition_MalformedDLTProduceFailureHolds(t *testing.T) {
 	assert.True(t, onErrorCalled.Load(), "onError must be called on DLT produce failure")
 
 	// …and MUST be held for a delayed escalation retry.
-	tp := topicPartition{topic: "base.retry.5s", partition: 0}
+	tp := topicPartition{topic: "base.retry.0", partition: 0}
 	c.mu.Lock()
 	batch, held := c.held[tp]
 	_, timerSet := c.timers[tp]
@@ -279,7 +279,7 @@ func TestProcessPartition_MalformedDLTSuccessCommits(t *testing.T) {
 	c.onError = func(error) {}
 
 	rec := &kgo.Record{
-		Topic:     "base.retry.5s",
+		Topic:     "base.retry.0",
 		Partition: 0,
 		Key:       []byte("k"),
 		Value:     []byte("v"),
@@ -289,7 +289,7 @@ func TestProcessPartition_MalformedDLTSuccessCommits(t *testing.T) {
 			Partition: 0,
 			Records:   []*kgo.Record{rec},
 		},
-		Topic: "base.retry.5s",
+		Topic: "base.retry.0",
 	}
 
 	toCommit := c.processPartition(context.Background(), p, nil)

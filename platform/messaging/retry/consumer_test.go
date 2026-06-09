@@ -2,7 +2,6 @@ package retry_test
 
 import (
 	"testing"
-	"time"
 
 	"go-boilerplate/platform/messaging/retry"
 
@@ -19,11 +18,11 @@ func TestBaseTopic_ValidRetryTopics(t *testing.T) {
 		input    string
 		wantBase string
 	}{
-		{"orders.commands.retry.5s", "orders.commands"},
-		{"orders.commands.retry.30s", "orders.commands"},
-		{"orders.commands.retry.5m0s", "orders.commands"},
-		{"payments.events.retry.1m0s", "payments.events"},
-		{"simple.retry.10s", "simple"},
+		{"orders.commands.retry.0", "orders.commands"},
+		{"orders.commands.retry.1", "orders.commands"},
+		{"orders.commands.retry.2", "orders.commands"},
+		{"payments.events.retry.10", "payments.events"},
+		{"simple.retry.3", "simple"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
@@ -41,6 +40,13 @@ func TestBaseTopic_NonRetryTopics(t *testing.T) {
 		"",
 		".retry.",
 		"base",
+		// Legacy duration-suffixed names from the pre-index naming scheme are
+		// intentionally NOT recognized anymore (see package doc migration note).
+		"orders.commands.retry.5s",
+		"orders.commands.retry.5m0s",
+		// Non-numeric suffixes are not tier topics.
+		"orders.commands.retry.x",
+		".retry.0",
 	}
 	for _, input := range inputs {
 		t.Run(input, func(t *testing.T) {
@@ -50,34 +56,27 @@ func TestBaseTopic_NonRetryTopics(t *testing.T) {
 	}
 }
 
-// TestBaseTopic_RoundTrip verifies BaseTopic(TierTopic(base, d)) == base
-// for all tiers of the default policy.
+// TestBaseTopic_RoundTrip verifies BaseTopic(TierTopic(base, i)) == base
+// for all tier indexes of the default policy.
 func TestBaseTopic_RoundTrip(t *testing.T) {
 	pol := retry.DefaultPolicy()
 	bases := []string{"orders.commands", "payments.events", "foo.bar.baz"}
 
 	for _, base := range bases {
-		for _, d := range pol.Tiers {
-			tierTopic := retry.TierTopic(base, d)
+		for i := range pol.Tiers {
+			tierTopic := retry.TierTopic(base, i)
 			got, ok := retry.BaseTopic(tierTopic)
 			require.Truef(t, ok, "BaseTopic(%q) returned ok=false", tierTopic)
-			assert.Equal(t, base, got, "BaseTopic(TierTopic(%q, %v))", base, d)
+			assert.Equal(t, base, got, "BaseTopic(TierTopic(%q, %d))", base, i)
 		}
 	}
 }
 
-// TestBaseTopic_RoundTrip_CustomDelays verifies round-trip with a broader set
-// of durations that Duration.String() may produce.
-func TestBaseTopic_RoundTrip_CustomDelays(t *testing.T) {
-	delays := []time.Duration{
-		5 * time.Second,
-		30 * time.Second,
-		5 * time.Minute,
-		1 * time.Hour,
-		500 * time.Millisecond,
-	}
-	for _, d := range delays {
-		topic := retry.TierTopic("base.topic", d)
+// TestBaseTopic_RoundTrip_ManyIndexes verifies round-trip for a broader range
+// of tier indexes (multi-digit included).
+func TestBaseTopic_RoundTrip_ManyIndexes(t *testing.T) {
+	for _, i := range []int{0, 1, 2, 9, 10, 42} {
+		topic := retry.TierTopic("base.topic", i)
 		got, ok := retry.BaseTopic(topic)
 		require.Truef(t, ok, "BaseTopic(%q) should succeed", topic)
 		assert.Equal(t, "base.topic", got)

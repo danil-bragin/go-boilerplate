@@ -160,7 +160,7 @@ func TestService_AddConsumerWithRetry(t *testing.T) {
 	})
 
 	// Assert that the tier and DLT topics were created by the harness.
-	tierTopic := retry.TierTopic(baseTopic, pol.Tiers[0])
+	tierTopic := retry.TierTopic(baseTopic, 0)
 	dltTopic := retry.DLTTopic(baseTopic)
 
 	adminCl, err := kafka.NewClient(kafka.Config{

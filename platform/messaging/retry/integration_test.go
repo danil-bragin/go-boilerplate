@@ -40,8 +40,8 @@ func setupIntegration(
 
 	topics := make([]string, 0, 2+len(pol.Tiers))
 	topics = append(topics, base, retry.DLTTopic(base))
-	for _, d := range pol.Tiers {
-		topics = append(topics, retry.TierTopic(base, d))
+	for i := range pol.Tiers {
+		topics = append(topics, retry.TierTopic(base, i))
 	}
 
 	ctx := context.Background()
@@ -437,7 +437,7 @@ func TestRetryConsumer_MalformedRecordToDLT(t *testing.T) {
 	t.Cleanup(func() { _ = retryConsumer.Close(context.Background()) })
 
 	// Produce a record with NO retry headers directly to the tier topic.
-	tierTopic := retry.TierTopic(base, pol.Tiers[0])
+	tierTopic := retry.TierTopic(base, 0)
 	require.NoError(t, prod.Produce(ctx, kafka.Record{
 		Topic: tierTopic,
 		Key:   []byte("bad"),
@@ -514,7 +514,7 @@ func TestRetryConsumer_CloseWithPendingHold(t *testing.T) {
 
 	// Produce a record with retry headers pointing 30s into the future so
 	// the retry consumer holds it immediately on first poll.
-	tierTopic := retry.TierTopic(base, pol.Tiers[0])
+	tierTopic := retry.TierTopic(base, 0)
 	dueAt := time.Now().Add(30 * time.Second)
 	rec := kafka.Record{
 		Topic: tierTopic,
@@ -612,7 +612,7 @@ func TestRetryConsumer_EscalateFailureNoLoss(t *testing.T) {
 	flaky := &flakyProducer{failN: 2, real: prod}
 	esc := retry.NewEscalator(flaky, pol)
 
-	tierTopic := retry.TierTopic(base, time.Second)
+	tierTopic := retry.TierTopic(base, 0)
 	ctx := context.Background()
 
 	// Two already-due records on the single tier partition: bad first, good second.

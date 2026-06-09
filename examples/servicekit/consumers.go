@@ -74,17 +74,21 @@ func (s *Service) AddConsumer(ctx context.Context, groupID string, topics []stri
 // AddConsumerWithRetry wires a consumer whose failures escalate to tiered
 // retry topics (non-blocking redrive) instead of blocking the partition
 // with in-process backoff. The flow: policy.FastAttempts immediate
-// in-process attempts → escalate to <topic>.retry.<tier> → retry consumer
+// in-process attempts → escalate to <topic>.retry.<idx> → retry consumer
 // redelivers when due → after the last tier, <topic>.DLT.
 // Services with strict latency/throughput needs should prefer this over
 // AddConsumer; AddConsumer remains for simple consumers.
+//
+// ORDERING: tiered retry breaks per-key ordering unless the handler is
+// reorder-safe or policy.KeyParkingWindow is set (best-effort key parking —
+// see the retry package documentation for the full trade-off).
 func (s *Service) AddConsumerWithRetry(ctx context.Context, groupID string, topics []string, handler kafka.HandlerFunc, policy retry.Policy) error {
 	// 1. Provision all required topics: base + tier + DLT.
 	allTopics := make([]string, 0, len(topics)*(2+len(policy.Tiers)))
 	allTopics = append(allTopics, topics...)
 	for _, base := range topics {
-		for _, d := range policy.Tiers {
-			allTopics = append(allTopics, retry.TierTopic(base, d))
+		for i := range policy.Tiers {
+			allTopics = append(allTopics, retry.TierTopic(base, i))
 		}
 		allTopics = append(allTopics, retry.DLTTopic(base))
 	}
@@ -92,41 +96,17 @@ func (s *Service) AddConsumerWithRetry(ctx context.Context, groupID string, topi
 		return err
 	}
 
-	// 2. Build the escalator backed by the service producer.
-	esc := retry.NewEscalator(s.producer, policy)
+	// 2. Build the escalator backed by the service producer; opt into key
+	// parking when the policy requests it.
+	var escOpts []retry.EscalatorOption
+	if policy.KeyParkingWindow > 0 {
+		escOpts = append(escOpts, retry.WithKeyParking(policy.KeyParkingWindow))
+	}
+	esc := retry.NewEscalator(s.producer, policy, escOpts...)
 
-	// 3. Wrap the handler: policy.FastAttempts in-process attempts, then escalate.
-	fastAttempts := policy.FastAttempts
-	if fastAttempts <= 0 {
-		fastAttempts = 1
-	}
-	wrapped := func(ctx context.Context, rec kafka.Record) error {
-		var lastErr error
-		for attempt := 1; attempt <= fastAttempts; attempt++ {
-			lastErr = handler(ctx, rec)
-			if lastErr == nil {
-				return nil
-			}
-			// Sleep between attempts (consistent with AddConsumer's WithRetry backoff),
-			// but only when there are more attempts remaining.
-			if attempt < fastAttempts {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(100 * time.Millisecond):
-				}
-			}
-		}
-		// All fast attempts exhausted — escalate to the next retry tier.
-		// Escalation failure: return the error so the record is NOT committed
-		// and will redeliver. Never drop a record.
-		if _, err := esc.Escalate(ctx, rec.Topic, rec, lastErr); err != nil {
-			return err
-		}
-		// Successful escalation: return nil so the consumer commits the offset.
-		// The record will be redelivered by the retry consumer when its due time arrives.
-		return nil
-	}
+	// 3. Wrap the handler: parked-key diversion + policy.FastAttempts
+	// in-process attempts, then escalation to the next retry tier.
+	wrapped := retry.WrapHandler(handler, esc, policy)
 
 	// 4. Build and register the main consumer.
 	consumerCfg := s.cfg.Kafka

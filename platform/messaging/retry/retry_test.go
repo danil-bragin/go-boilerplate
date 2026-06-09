@@ -34,18 +34,18 @@ func (c *captureProducer) Produce(_ context.Context, rec kafka.Record) error {
 
 func TestTierTopic(t *testing.T) {
 	tests := []struct {
-		base  string
-		delay time.Duration
-		want  string
+		base string
+		idx  int
+		want string
 	}{
-		{"orders.commands", 5 * time.Second, "orders.commands.retry.5s"},
-		{"orders.commands", 30 * time.Second, "orders.commands.retry.30s"},
-		{"orders.commands", 5 * time.Minute, "orders.commands.retry.5m0s"},
-		{"payments.events", 1 * time.Minute, "payments.events.retry.1m0s"},
+		{"orders.commands", 0, "orders.commands.retry.0"},
+		{"orders.commands", 1, "orders.commands.retry.1"},
+		{"orders.commands", 2, "orders.commands.retry.2"},
+		{"payments.events", 10, "payments.events.retry.10"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.want, func(t *testing.T) {
-			got := retry.TierTopic(tc.base, tc.delay)
+			got := retry.TierTopic(tc.base, tc.idx)
 			assert.Equal(t, tc.want, got)
 		})
 	}
@@ -179,7 +179,7 @@ func TestEscalator_FirstFailure_RoutesToTier0(t *testing.T) {
 	require.NoError(t, err)
 
 	// destination must be tier-0 topic
-	assert.Equal(t, retry.TierTopic("orders.commands", pol.Tiers[0]), dest)
+	assert.Equal(t, retry.TierTopic("orders.commands", 0), dest)
 	require.Len(t, prod.recs, 1)
 
 	produced := prod.recs[0]
@@ -211,7 +211,7 @@ func TestEscalator_Tier1Record_RoutesToTier1(t *testing.T) {
 	esc := retry.NewEscalator(prod, pol)
 
 	rec := kafka.Record{
-		Topic:   retry.TierTopic("orders.commands", pol.Tiers[0]),
+		Topic:   retry.TierTopic("orders.commands", 0),
 		Key:     []byte("k"),
 		Value:   []byte("v"),
 		Headers: make(map[string]string),
@@ -221,7 +221,7 @@ func TestEscalator_Tier1Record_RoutesToTier1(t *testing.T) {
 
 	dest, err := esc.Escalate(context.Background(), "orders.commands", rec, errors.New("fail again"))
 	require.NoError(t, err)
-	assert.Equal(t, retry.TierTopic("orders.commands", pol.Tiers[1]), dest)
+	assert.Equal(t, retry.TierTopic("orders.commands", 1), dest)
 
 	produced := prod.recs[0]
 	assert.Equal(t, "2", produced.Headers[retry.HeaderAttempt])
@@ -237,7 +237,7 @@ func TestEscalator_FinalTier_RoutesToDLT(t *testing.T) {
 	esc := retry.NewEscalator(prod, pol)
 
 	rec := kafka.Record{
-		Topic:   retry.TierTopic("orders.commands", pol.Tiers[2]),
+		Topic:   retry.TierTopic("orders.commands", 2),
 		Key:     []byte("k"),
 		Value:   []byte("v"),
 		Headers: make(map[string]string),
@@ -287,11 +287,11 @@ func TestEscalator_FullWalk(t *testing.T) {
 
 	steps := []step{
 		// no headers (attempt=0 inferred) → tier-0, attempt becomes 1
-		{0, retry.TierTopic("base", pol.Tiers[0]), "1"},
+		{0, retry.TierTopic("base", 0), "1"},
 		// attempt=1 → tier-1, attempt becomes 2
-		{1, retry.TierTopic("base", pol.Tiers[1]), "2"},
+		{1, retry.TierTopic("base", 1), "2"},
 		// attempt=2 → tier-2, attempt becomes 3
-		{2, retry.TierTopic("base", pol.Tiers[2]), "3"},
+		{2, retry.TierTopic("base", 2), "3"},
 		// attempt=3 (== len(Tiers)) → DLT
 		{3, retry.DLTTopic("base"), "3"},
 	}
