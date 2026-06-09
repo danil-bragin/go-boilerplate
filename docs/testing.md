@@ -49,10 +49,10 @@ Use `task test:unit` for the fast lane and `task test:integration` for the full 
 | External HTTP dependency (REST API, JWKS endpoint, webhook) | `mockhttp.Server` + `mockhttp.JSON` | `platform/testkit/mockhttp` |
 | Auth — live RS256 JWKS + JWT minting | `mockhttp.JWKS(t)` | `platform/testkit/mockhttp` |
 | Real Postgres | `pgtest.NewDSN(t)` | `platform/pg/pgtest` |
-| Real Kafka / Redpanda | `kafkatest.NewBroker(t)` | `platform/kafka/kafkatest` |
-| Real Redis | `redistest` module | `platform/testcontainers/redis` |
-| Real MinIO | `miniotest` module | `platform/testcontainers/minio` |
-| Real Keycloak | `keycloaktest` module | `platform/testcontainers/keycloak` |
+| Real Kafka / Redpanda | `kafkatest.NewRedpanda(t)` | `platform/kafka/kafkatest` |
+| Real Redis | `testcontainers-go/modules/redis` directly (see `platform/cache/cache_test.go`) | `github.com/testcontainers/testcontainers-go/modules/redis` |
+| Real MinIO | `testcontainers-go/modules/minio` directly (see `platform/blob/blob_test.go`) | `github.com/testcontainers/testcontainers-go/modules/minio` |
+| Real Keycloak | generic testcontainers container (see `examples/gateway/keycloak_test.go`) | `github.com/testcontainers/testcontainers-go` |
 | Canonical test data | Builder functions | `platform/testkit/fixtures` |
 
 ### Quick reference
@@ -80,8 +80,8 @@ rec.Requests()  // []RecordedRequest{Method, Path, Body}
 
 // JWKS — auth integration
 js := mockhttp.JWKS(t)
-token := js.Sign(map[string]any{"sub": "u1", "roles": []string{"admin"}})
-verifier, _ := auth.NewJWKSVerifier(ctx, js.URL())
+verifier, _ := auth.NewJWKSVerifier(ctx, js.URL(), "iss", "aud")
+token := js.Sign(map[string]any{"iss": "iss", "aud": "aud", "sub": "u1", "roles": []string{"admin"}})
 
 // fixtures — test data builders
 msg := fixtures.OutboxMessage(fixtures.WithEventType("OrderCreated"))
