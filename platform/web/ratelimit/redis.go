@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"time"
 
 	"github.com/redis/rueidis"
 )
@@ -12,25 +11,33 @@ import (
 // luaTokenBucket is an atomic token-bucket Lua script.
 //
 // KEYS[1] = bucket hash key
-// ARGV[1] = rps       (float, tokens per second)
-// ARGV[2] = burst     (int, maximum token capacity)
-// ARGV[3] = now_ms    (int64, current time in milliseconds)
-// ARGV[4] = idle_ttl_ms (int, key TTL in milliseconds)
+// ARGV[1] = rps          (float, tokens per second)
+// ARGV[2] = burst        (int, maximum token capacity)
+// ARGV[3] = idle_ttl_ms  (int, key TTL in milliseconds)
+//
+// now_ms is derived from Redis TIME so all replicas share the same clock,
+// eliminating over-admission caused by wall-clock skew between app instances.
+//
+// Scripts that call TIME (a non-deterministic command) and then write are safe
+// on Redis ≥7 because replication uses effects-based (AOF) propagation — the
+// written values, not the script itself, are replicated. rueidis targets Redis
+// ≥7, so this is always correct.
 //
 // The script is a single Redis command — it is atomic on a single Redis node
 // and on cluster when KEYS[1] hashes to the same slot.
 //
 //nolint:gosec // G101: luaTokenBucket contains Redis field names ('t','ts'), not credentials.
 const luaTokenBucket = `
+local t      = redis.call('TIME')
+local now    = t[1] * 1000 + math.floor(t[2] / 1000)
 local tokens = tonumber(redis.call('HGET', KEYS[1], 't') or ARGV[2])
-local ts     = tonumber(redis.call('HGET', KEYS[1], 'ts') or ARGV[3])
-local now    = tonumber(ARGV[3])
+local ts     = tonumber(redis.call('HGET', KEYS[1], 'ts') or now)
 local refill = (now - ts) / 1000.0 * tonumber(ARGV[1])
 tokens = math.min(tokens + refill, tonumber(ARGV[2]))
 local allowed = 0
 if tokens >= 1 then tokens = tokens - 1; allowed = 1 end
 redis.call('HSET', KEYS[1], 't', tokens, 'ts', now)
-redis.call('PEXPIRE', KEYS[1], ARGV[4])
+redis.call('PEXPIRE', KEYS[1], ARGV[3])
 return allowed
 `
 
@@ -111,15 +118,16 @@ func NewRedis(client rueidis.Client, rps float64, burst int, opts ...RedisOption
 //   - fail-open (default): returns (true, nil) and calls onError(err).
 //   - fail-closed: returns (false, err) and calls onError(err).
 func (r *Redis) Allow(ctx context.Context, key string) (bool, error) {
-	nowMs := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	rpsStr := strconv.FormatFloat(r.rps, 'f', -1, 64)
 	burstStr := strconv.Itoa(r.burst)
 	bucketKey := r.prefix + key
 
+	// now_ms is no longer passed as ARGV — the Lua script calls Redis TIME
+	// internally to avoid clock skew between application replicas.
 	res := bucketScript.Exec(
 		ctx, r.client,
 		[]string{bucketKey},
-		[]string{rpsStr, burstStr, nowMs, r.idleTTLms},
+		[]string{rpsStr, burstStr, r.idleTTLms},
 	)
 	if err := res.Error(); err != nil {
 		r.onError(fmt.Errorf("ratelimit: redis: %w", err))
