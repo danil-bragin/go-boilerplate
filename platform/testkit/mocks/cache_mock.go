@@ -27,6 +27,9 @@ var _ cqrs.Cache = &CacheMock{}
 //			GetFunc: func(ctx context.Context, key string) ([]byte, bool) {
 //				panic("mock out the Get method")
 //			},
+//			GetOrLoadFunc: func(ctx context.Context, key string, ttl time.Duration, load func(ctx context.Context) ([]byte, error)) ([]byte, error) {
+//				panic("mock out the GetOrLoad method")
+//			},
 //			SetFunc: func(ctx context.Context, key string, value []byte, ttl time.Duration)  {
 //				panic("mock out the Set method")
 //			},
@@ -42,6 +45,9 @@ type CacheMock struct {
 
 	// GetFunc mocks the Get method.
 	GetFunc func(ctx context.Context, key string) ([]byte, bool)
+
+	// GetOrLoadFunc mocks the GetOrLoad method.
+	GetOrLoadFunc func(ctx context.Context, key string, ttl time.Duration, load func(ctx context.Context) ([]byte, error)) ([]byte, error)
 
 	// SetFunc mocks the Set method.
 	SetFunc func(ctx context.Context, key string, value []byte, ttl time.Duration)
@@ -62,6 +68,17 @@ type CacheMock struct {
 			// Key is the key argument value.
 			Key string
 		}
+		// GetOrLoad holds details about calls to the GetOrLoad method.
+		GetOrLoad []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// Key is the key argument value.
+			Key string
+			// TTL is the ttl argument value.
+			TTL time.Duration
+			// Load is the load argument value.
+			Load func(ctx context.Context) ([]byte, error)
+		}
 		// Set holds details about calls to the Set method.
 		Set []struct {
 			// Ctx is the ctx argument value.
@@ -74,9 +91,10 @@ type CacheMock struct {
 			TTL time.Duration
 		}
 	}
-	lockDelete sync.RWMutex
-	lockGet    sync.RWMutex
-	lockSet    sync.RWMutex
+	lockDelete    sync.RWMutex
+	lockGet       sync.RWMutex
+	lockGetOrLoad sync.RWMutex
+	lockSet       sync.RWMutex
 }
 
 // Delete calls DeleteFunc.
@@ -148,6 +166,50 @@ func (mock *CacheMock) GetCalls() []struct {
 	mock.lockGet.RLock()
 	calls = mock.calls.Get
 	mock.lockGet.RUnlock()
+	return calls
+}
+
+// GetOrLoad calls GetOrLoadFunc.
+func (mock *CacheMock) GetOrLoad(ctx context.Context, key string, ttl time.Duration, load func(ctx context.Context) ([]byte, error)) ([]byte, error) {
+	if mock.GetOrLoadFunc == nil {
+		panic("CacheMock.GetOrLoadFunc: method is nil but Cache.GetOrLoad was just called")
+	}
+	callInfo := struct {
+		Ctx  context.Context
+		Key  string
+		TTL  time.Duration
+		Load func(ctx context.Context) ([]byte, error)
+	}{
+		Ctx:  ctx,
+		Key:  key,
+		TTL:  ttl,
+		Load: load,
+	}
+	mock.lockGetOrLoad.Lock()
+	mock.calls.GetOrLoad = append(mock.calls.GetOrLoad, callInfo)
+	mock.lockGetOrLoad.Unlock()
+	return mock.GetOrLoadFunc(ctx, key, ttl, load)
+}
+
+// GetOrLoadCalls gets all the calls that were made to GetOrLoad.
+// Check the length with:
+//
+//	len(mockedCache.GetOrLoadCalls())
+func (mock *CacheMock) GetOrLoadCalls() []struct {
+	Ctx  context.Context
+	Key  string
+	TTL  time.Duration
+	Load func(ctx context.Context) ([]byte, error)
+} {
+	var calls []struct {
+		Ctx  context.Context
+		Key  string
+		TTL  time.Duration
+		Load func(ctx context.Context) ([]byte, error)
+	}
+	mock.lockGetOrLoad.RLock()
+	calls = mock.calls.GetOrLoad
+	mock.lockGetOrLoad.RUnlock()
 	return calls
 }
 

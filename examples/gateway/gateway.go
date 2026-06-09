@@ -152,7 +152,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	decoratedGetOrder := gatewayapp.DecorateGetOrderHandler(rawGetOrder, appCache)
 
 	// Projection consumer subscribes to both events topics.
-	projHandler := projection.NewHandler(svc.Pool(), svc.Logger())
+	projHandler := projection.NewHandler(svc.Pool(), svc.Logger(), appCache)
 	if err := svc.AddConsumer(
 		ctx, "gateway-projection",
 		[]string{cfg.OrdersEventsTopic, cfg.PaymentsEventsTopic},

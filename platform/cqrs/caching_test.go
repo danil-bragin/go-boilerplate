@@ -4,17 +4,22 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"go-boilerplate/platform/cqrs"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/singleflight"
 )
 
-// fakeCache is an in-memory Cache implementation for tests.
+// fakeCache is an in-memory Cache implementation for tests. GetOrLoad
+// collapses concurrent misses via singleflight, mirroring the real
+// platform/storage/cache implementation.
 type fakeCache struct {
 	mu    sync.Mutex
+	sf    singleflight.Group
 	store map[string][]byte
 }
 
@@ -40,6 +45,27 @@ func (c *fakeCache) Delete(_ context.Context, key string) error {
 	defer c.mu.Unlock()
 	delete(c.store, key)
 	return nil
+}
+
+func (c *fakeCache) GetOrLoad(ctx context.Context, key string, ttl time.Duration, load func(ctx context.Context) ([]byte, error)) ([]byte, error) {
+	if v, ok := c.Get(ctx, key); ok {
+		return v, nil
+	}
+	v, err, _ := c.sf.Do(key, func() (any, error) {
+		if v, ok := c.Get(ctx, key); ok {
+			return v, nil
+		}
+		b, err := load(ctx)
+		if err != nil {
+			return nil, err
+		}
+		c.Set(ctx, key, b, ttl)
+		return b, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.([]byte), nil //nolint:forcetypeassert
 }
 
 type (
@@ -139,4 +165,42 @@ func TestCaching_MissOnUnmarshalGarbage(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, res, res2)
 	require.Equal(t, 1, callCount, "handler must not run again after successful cache write")
+}
+
+// TestCaching_ConcurrentMissesCollapseToOneHandlerCall verifies that the
+// Caching behavior routes misses through Cache.GetOrLoad so that a
+// singleflight-capable cache collapses N concurrent misses into ONE handler
+// invocation (stampede protection is reachable from the CQRS pipeline).
+func TestCaching_ConcurrentMissesCollapseToOneHandlerCall(t *testing.T) {
+	cache := newFakeCache()
+	var calls atomic.Int64
+
+	handler := cqrs.HandlerFunc[cacheQuery, cacheResult](func(_ context.Context, q cacheQuery) (cacheResult, error) {
+		calls.Add(1)
+		time.Sleep(50 * time.Millisecond) // widen the in-flight window
+		return cacheResult{Value: "hot-" + q.ID}, nil
+	})
+
+	keyFor := func(q cacheQuery) string { return q.ID }
+	decorated := cqrs.Decorate(handler, cqrs.CachingJSON[cacheQuery, cacheResult](cache, keyFor, time.Minute))
+
+	const goroutines = 50
+	var wg sync.WaitGroup
+	results := make([]cacheResult, goroutines)
+	errs := make([]error, goroutines)
+
+	for i := range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i], errs[i] = decorated(context.Background(), cacheQuery{ID: "hot"})
+		}()
+	}
+	wg.Wait()
+
+	for i := range goroutines {
+		require.NoError(t, errs[i])
+		require.Equal(t, cacheResult{Value: "hot-hot"}, results[i], "goroutine %d", i)
+	}
+	require.Equal(t, int64(1), calls.Load(), "handler must run exactly once for concurrent misses")
 }

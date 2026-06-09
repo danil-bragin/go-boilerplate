@@ -167,6 +167,10 @@ func (c *Cache) Delete(ctx context.Context, key string) error {
 // GetOrLoad returns the cached value for key, loading it with loader on a
 // miss. Concurrent misses for the same key are collapsed via singleflight so
 // loader is called at most once per key across all goroutines.
+//
+// The loader runs on a context DETACHED from the first caller
+// (context.WithoutCancel) bounded by Config.LoaderTimeout: collapsed waiters
+// share one load, so the leader's cancellation must not fail everyone else.
 func (c *Cache) GetOrLoad(ctx context.Context, key string, ttl time.Duration, loader func(ctx context.Context) ([]byte, error)) ([]byte, error) {
 	if v, ok := c.Get(ctx, key); ok {
 		return v, nil
@@ -177,11 +181,20 @@ func (c *Cache) GetOrLoad(ctx context.Context, key string, ttl time.Duration, lo
 		if v, ok := c.Get(ctx, key); ok {
 			return v, nil
 		}
-		val, err := loader(ctx)
+		// Detach from the leader's cancellation; bound with our own timeout
+		// so a hung loader cannot wedge the singleflight slot forever.
+		timeout := c.cfg.LoaderTimeout
+		if timeout <= 0 {
+			timeout = defaultLoaderTimeout
+		}
+		lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+		defer cancel()
+
+		val, err := loader(lctx)
 		if err != nil {
 			return nil, err
 		}
-		c.Set(ctx, key, val, ttl)
+		c.Set(lctx, key, val, ttl)
 		return val, nil
 	})
 	if err != nil {
@@ -195,10 +208,11 @@ func (c *Cache) HealthCheck(ctx context.Context) error {
 	return c.l2.Do(ctx, c.l2.B().Ping().Build()).Error()
 }
 
-// Close stops the invalidation subscriber and releases the rueidis
-// connection pool.
+// Close stops the invalidation subscriber, stops otter's background
+// goroutines and releases the rueidis connection pool.
 func (c *Cache) Close(_ context.Context) error {
 	c.stopInvalidationSubscriber()
+	c.l1.StopAllGoroutines()
 	c.l2.Close()
 	return nil
 }

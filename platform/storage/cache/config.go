@@ -2,6 +2,10 @@ package cache
 
 import "time"
 
+// defaultLoaderTimeout bounds GetOrLoad loaders when Config.LoaderTimeout is
+// unset (the loader runs detached from the caller's cancellation).
+const defaultLoaderTimeout = 10 * time.Second
+
 // Config holds tunable parameters for the two-tier cache.
 // Tags are compatible with github.com/caarlos0/env/v11.
 type Config struct {
@@ -17,4 +21,8 @@ type Config struct {
 	// ("cache:inv:<prefix>"). Instances sharing a prefix form one L1
 	// coherence domain; give each service its own prefix.
 	InvalidationPrefix string `env:"CACHE_INV_PREFIX" envDefault:"default"`
+	// LoaderTimeout bounds a GetOrLoad loader call. The loader runs on a
+	// context detached from the first caller, so this timeout is its only
+	// cancellation source. <= 0 falls back to 10s.
+	LoaderTimeout time.Duration `env:"CACHE_LOADER_TIMEOUT" envDefault:"10s"`
 }

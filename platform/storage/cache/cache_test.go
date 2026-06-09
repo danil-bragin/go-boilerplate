@@ -2,6 +2,7 @@ package cache_test
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -147,6 +148,64 @@ func TestCache_GetOrLoadCollapsesConcurrentMisses(t *testing.T) {
 
 	// Singleflight must have collapsed all misses to a single loader call.
 	assert.Equal(t, int64(1), calls.Load(), "loader should be called exactly once")
+}
+
+// TestCache_GetOrLoad_LoaderSurvivesCallerCancellation verifies that the
+// loader runs on a context detached from the first caller: cancelling the
+// leader's ctx mid-load neither cancels the loader nor fails the collapsed
+// waiters.
+func TestCache_GetOrLoad_LoaderSurvivesCallerCancellation(t *testing.T) {
+	c := newCache(t)
+
+	var (
+		calls        atomic.Int64
+		loaderCtxErr atomic.Value // error observed by the loader at completion
+	)
+	loaderStarted := make(chan struct{})
+
+	loader := func(lctx context.Context) ([]byte, error) {
+		calls.Add(1)
+		close(loaderStarted)
+		time.Sleep(200 * time.Millisecond)
+		if err := lctx.Err(); err != nil {
+			loaderCtxErr.Store(err)
+			return nil, err
+		}
+		return []byte("X"), nil
+	}
+
+	// Leader with a cancellable ctx.
+	leaderCtx, cancel := context.WithCancel(context.Background())
+	leaderDone := make(chan struct{})
+	go func() {
+		defer close(leaderDone)
+		_, _ = c.GetOrLoad(leaderCtx, "hot", time.Minute, loader)
+	}()
+
+	// Wait for the loader to be in flight, then cancel the leader.
+	<-loaderStarted
+	cancel()
+
+	// Collapsed waiters with healthy ctx must still receive the value.
+	const waiters = 5
+	eg := errgroup.Group{}
+	for range waiters {
+		eg.Go(func() error {
+			v, err := c.GetOrLoad(context.Background(), "hot", time.Minute, loader)
+			if err != nil {
+				return err
+			}
+			if string(v) != "X" {
+				return fmt.Errorf("unexpected value %q", v)
+			}
+			return nil
+		})
+	}
+	require.NoError(t, eg.Wait(), "collapsed waiters must get the value despite leader cancellation")
+	<-leaderDone
+
+	assert.Equal(t, int64(1), calls.Load(), "loader must run exactly once")
+	assert.Nil(t, loaderCtxErr.Load(), "loader ctx must not be cancelled by the leader's cancellation")
 }
 
 // TestCache_TTLJitterWithinBounds verifies that JitteredTTL always falls

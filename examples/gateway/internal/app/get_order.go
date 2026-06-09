@@ -25,6 +25,11 @@ type GetOrder struct {
 	OrderID string
 }
 
+// OrderCacheKey returns the cache key for an order view. The read path
+// (Caching behavior) and the write path (projection cache-bust on upsert)
+// MUST use this same helper, or invalidation silently misses.
+func OrderCacheKey(orderID string) string { return "order:" + orderID }
+
 // OrderView is the read-model view returned by the GetOrder handler.
 // Field names match the OpenAPI spec (JSON tags).
 type OrderView struct {
@@ -79,7 +84,7 @@ func DecorateGetOrderHandler(raw cqrs.HandlerFunc[GetOrder, OrderView], cache cq
 			behaviors,
 			cqrs.CachingJSON[GetOrder, OrderView](
 				cache,
-				func(q GetOrder) string { return "order:" + q.OrderID },
+				func(q GetOrder) string { return OrderCacheKey(q.OrderID) },
 				30*time.Second,
 			),
 		)
