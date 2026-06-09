@@ -34,6 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed for buf breaking --against
 
       - uses: bufbuild/buf-action@v1
         with:
@@ -42,14 +44,52 @@ jobs:
       - name: buf lint
         run: buf lint
 
-      # Breaking-change detection against main (commented out for initial runs
-      # where there is no prior image to compare against; uncomment once the
-      # first baseline exists in the BSR or on the branch).
-      #
-      # - name: buf breaking
-      #   run: buf breaking --against 'https://github.com/OWNER/REPO.git#branch=main'
+      # Breaking-change detection against the previous commit on the branch.
+      # continue-on-error guards the very first run (no prior commit to diff
+      # against) and avoids spurious failures when the baseline does not yet
+      # exist. Flip to false once a stable baseline is established.
+      - name: buf breaking
+        run: buf breaking --against '.git#branch=HEAD~1'
+        continue-on-error: true
 
-  # ── Tests ─────────────────────────────────────────────────────────────────
+  # ── Vulnerability scan ────────────────────────────────────────────────────
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+  # ── Fast unit-test lane ───────────────────────────────────────────────────
+  # Runs only tests that honour testing.Short() — no containers, completes
+  # in seconds. Gives fast PR feedback before the slow integration suite.
+  unit:
+    name: Unit tests (fast lane)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: go test -short
+        run: go test -short -race -timeout 2m ./...
+
+  # ── Integration tests ─────────────────────────────────────────────────────
   test:
     name: Test
     runs-on: ubuntu-latest   # ubuntu-latest ships with Docker; testcontainers work out of the box
@@ -71,10 +111,17 @@ jobs:
       - name: go test
         run: go test -race -timeout 10m ./...
 
-  # ── Image builds ──────────────────────────────────────────────────────────
+  # ── Image builds + SBOM + vuln scan ──────────────────────────────────────
   build-images:
     name: Build image (${{ matrix.service }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # id-token: write is required for keyless cosign signing (OIDC).
+      # Uncomment when the cosign sign step below is enabled.
+      # id-token: write
+      # security-events: write is required to upload SARIF to GitHub Security tab.
+      security-events: write
     strategy:
       matrix:
         service: [gateway, orders, payments, notifications]
@@ -90,3 +137,57 @@ jobs:
             --build-arg SERVICE=${{ matrix.service }} \
             -t ${{ matrix.service }}:ci \
             .
+
+      # ── Trivy: image vulnerability scan ──────────────────────────────────
+      # Scans the just-built image for OS + library CVEs.
+      # exit-code: 0 makes this non-blocking so first runs don't fail CI while
+      # the security baseline is being established. Flip to "1" when ready to
+      # enforce CRITICAL/HIGH gating.
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.31.0
+        with:
+          image-ref: "${{ matrix.service }}:ci"
+          format: sarif
+          output: trivy-results-${{ matrix.service }}.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "0"   # non-blocking; change to "1" to gate on HIGH/CRITICAL
+          ignore-unfixed: true
+
+      - name: Upload Trivy SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results-${{ matrix.service }}.sarif
+          category: trivy-${{ matrix.service }}
+
+      # ── Trivy: SBOM generation ────────────────────────────────────────────
+      # Generates a CycloneDX SBOM for the image and uploads it as an artifact.
+      - name: Generate SBOM (Trivy CycloneDX)
+        uses: aquasecurity/trivy-action@0.31.0
+        with:
+          image-ref: "${{ matrix.service }}:ci"
+          format: cyclonedx
+          output: sbom-${{ matrix.service }}.cdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.service }}
+          path: sbom-${{ matrix.service }}.cdx.json
+          retention-days: 90
+
+      # ── Cosign: keyless image signing (OIDC) ─────────────────────────────
+      # This step is commented out because it requires:
+      #   1. A container registry to push to (IMAGE_REF must be a registry ref).
+      #   2. `id-token: write` permission (uncomment above).
+      # To enable: push the image to a registry in the Build step, uncomment
+      # this step, and uncomment `id-token: write` in permissions above.
+      #
+      # - name: Install cosign
+      #   if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+      #   uses: sigstore/cosign-installer@v3.9.2
+      # - name: cosign sign (keyless/OIDC)
+      #   if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+      #   run: |
+      #     cosign sign --yes \
+      #       ${{ secrets.REGISTRY }}/${{ matrix.service }}:${{ github.sha }}
