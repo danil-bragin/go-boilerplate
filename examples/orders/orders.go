@@ -24,6 +24,7 @@ import (
 	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/outbox"
+	"go-boilerplate/platform/messaging/retry"
 	"go-boilerplate/platform/run"
 	"go-boilerplate/platform/security/audit"
 )
@@ -86,8 +87,8 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	decoratedHandler := app.DecorateCreateOrderHandler(rawHandler, auditStore)
 	cmdHandler := transport.NewCommandHandler(svc.Pool(), decoratedHandler)
 
-	// Register consumer; harness wraps with WithRetry+DLT automatically.
-	if err := svc.AddConsumer(ctx, "orders-consumer", []string{cfg.CommandsTopic}, cmdHandler); err != nil {
+	// Register consumer with tiered retry-topic redrive (non-blocking redrive demo).
+	if err := svc.AddConsumerWithRetry(ctx, "orders-consumer", []string{cfg.CommandsTopic}, cmdHandler, retry.DefaultPolicy()); err != nil {
 		return nil, err
 	}
 
