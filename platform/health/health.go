@@ -187,3 +187,38 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+// CheckFunc is a plain function type that satisfies the Check interface.
+// It lets callers register dependency health checks without importing the
+// concrete dependency package, avoiding import cycles.
+//
+// Example — register a pg pool check without importing platform/pg:
+//
+//	h.AddReadiness("postgres", health.CheckFunc(func(ctx context.Context) error {
+//	    return pool.HealthCheck(ctx)
+//	}))
+//
+// Example — register a Kafka check:
+//
+//	h.AddReadiness("kafka", health.CheckFunc(func(ctx context.Context) error {
+//	    return kafkaClient.Ping(ctx)
+//	}))
+type CheckFunc func(ctx context.Context) error
+
+// Check implements the Check function signature by calling f.
+func (f CheckFunc) Check(ctx context.Context) error { return f(ctx) }
+
+// Mount registers GET /livez and GET /readyz on the given chi router.
+// It wires h.LivezHandler() and h.ReadyzHandler() respectively so that a
+// service can expose health endpoints with a single call:
+//
+//	health.Mount(server.Mux(), h)
+//
+// The registered routes use chi's method-scoped handler registration, which
+// means they participate in chi's middleware stack normally.
+func Mount(r interface {
+	Get(pattern string, handlerFn http.HandlerFunc)
+}, h *Health) {
+	r.Get("/livez", h.LivezHandler().ServeHTTP)
+	r.Get("/readyz", h.ReadyzHandler().ServeHTTP)
+}

@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 
 	"go-boilerplate/platform/health"
@@ -157,6 +159,81 @@ func TestReadyz_NotReadyShortCircuits(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
 
 	require.Equal(t, "unavailable", resp.Status)
+}
+
+// TestHealth_MountRegistersEndpoints verifies that Mount registers /livez and
+// /readyz on a chi router. GET /livez → 200, GET /readyz → 200 by default;
+// adding a failing readiness check makes /readyz → 503 JSON.
+func TestHealth_MountRegistersEndpoints(t *testing.T) {
+	t.Run("livez returns 200", func(t *testing.T) {
+		mux := chi.NewRouter()
+		h := health.New()
+		health.Mount(mux, h)
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/livez", nil)
+		mux.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+	})
+
+	t.Run("readyz returns 200 with no checks", func(t *testing.T) {
+		mux := chi.NewRouter()
+		h := health.New()
+		health.Mount(mux, h)
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+		mux.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code)
+	})
+
+	t.Run("readyz returns 503 with failing check", func(t *testing.T) {
+		mux := chi.NewRouter()
+		h := health.New()
+		h.AddReadiness("db", func(context.Context) error {
+			return errors.New("connection refused")
+		})
+		health.Mount(mux, h)
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+		mux.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+		require.Contains(t, rec.Header().Get("Content-Type"), "application/json")
+
+		var resp checkResponse
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+		require.Equal(t, "unavailable", resp.Status)
+	})
+}
+
+// TestHealth_CheckFunc verifies that health.CheckFunc adapts a plain
+// func(ctx) error into a Check, enabling callers to register pg/kafka checks
+// without creating an import cycle.
+func TestHealth_CheckFunc(t *testing.T) {
+	t.Run("passing check func", func(t *testing.T) {
+		var called bool
+		check := health.CheckFunc(func(_ context.Context) error {
+			called = true
+			return nil
+		})
+
+		err := check(context.Background())
+		require.NoError(t, err)
+		require.True(t, called)
+	})
+
+	t.Run("failing check func", func(t *testing.T) {
+		check := health.CheckFunc(func(_ context.Context) error {
+			return errors.New("db down")
+		})
+
+		err := check(context.Background())
+		require.EqualError(t, err, "db down")
+	})
 }
 
 // TestReadyz_HandlerReturnsAtDeadlineEvenIfCheckIgnoresCtx verifies that the
