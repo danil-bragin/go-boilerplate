@@ -2,6 +2,7 @@ package outbox_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,4 +95,50 @@ func TestCleaner_RunCleanup_TickerLoopCancels(t *testing.T) {
 	err := <-done
 	require.ErrorIs(t, err, context.DeadlineExceeded,
 		"RunCleanup must return ctx.Err() on cancellation")
+}
+
+// explainPlan runs EXPLAIN for q in a transaction with sequential scans
+// disabled, returning the plan text. Disabling seqscan forces the planner to
+// pick an index when one is usable — on tiny test tables it would otherwise
+// always prefer a sequential scan, hiding a missing index.
+func explainPlan(t *testing.T, pool *pg.Pool, q string) string {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Writer().Begin(ctx)
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	_, err = tx.Exec(ctx, `set local enable_seqscan = off`)
+	require.NoError(t, err)
+
+	rows, err := tx.Query(ctx, "explain "+q)
+	require.NoError(t, err)
+	defer rows.Close()
+
+	var planLines []string
+	for rows.Next() {
+		var line string
+		require.NoError(t, rows.Scan(&line))
+		planLines = append(planLines, line)
+	}
+	require.NoError(t, rows.Err())
+	plan := strings.Join(planLines, "\n")
+	return plan
+}
+
+// TestCleanup_DeleteUsesPublishedAtIndex asserts the retention cleanup DELETE
+// is served by the partial index on published rows instead of a full-table
+// scan (which previously ran hourly against the whole outbox).
+func TestCleanup_DeleteUsesPublishedAtIndex(t *testing.T) {
+	pool := newPoolWithSchema(t)
+
+	now := time.Now().UTC()
+	for i := 0; i < 5; i++ {
+		insertPublishedAt(t, pool, uuid.New(), &now)
+	}
+
+	plan := explainPlan(t, pool,
+		`delete from outbox where published_at is not null and published_at < now() - interval '24 hours'`)
+	require.Contains(t, plan, "outbox_published_at_idx",
+		"retention DELETE must use the partial published_at index, got plan:\n%s", plan)
 }

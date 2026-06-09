@@ -40,7 +40,7 @@ func TestTransact_ExactlyOnceHappyPath(t *testing.T) {
 	require.NoError(t, err)
 	defer adminCl.Close()
 
-	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, 1, 1, inTopic, outTopic))
+	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, inTopic, outTopic))
 
 	// ── Produce N records to in-topic ────────────────────────────────────────
 	prod := kafka.NewProducer(adminCl)
@@ -206,7 +206,7 @@ func TestTransact_AbortInvisibleAndRedelivered(t *testing.T) {
 	require.NoError(t, err)
 	defer adminCl.Close()
 
-	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, 1, 1, inTopic, outTopic))
+	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, inTopic, outTopic))
 
 	// Produce 3 records; one of them is the poison record (key="poison").
 	const poisonKey = "poison"

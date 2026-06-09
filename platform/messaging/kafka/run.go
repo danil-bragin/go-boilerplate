@@ -163,14 +163,23 @@ func (c *Consumer) Run(ctx context.Context, h HandlerFunc) error {
 		var wg sync.WaitGroup
 
 		fetches.EachPartition(func(p kgo.FetchTopicPartition) {
+			// Record consumer lag for this partition from the fetch's high
+			// watermark: lag = HWM − (last fetched offset + 1). This runs on
+			// the poll goroutine before the workers start.
+			if n := len(p.Records); n > 0 {
+				lastOff := p.Records[n-1].Offset
+				c.metrics.recordLag(ctx, p.Topic, p.Partition, p.HighWatermark-lastOff-1)
+			}
+
 			// Capture by value so the closure is safe to run concurrently.
 			part := p
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				var (
-					last     *kgo.Record
-					firstBad *kgo.Record
+					last      *kgo.Record
+					firstBad  *kgo.Record
+					succeeded int64
 				)
 				part.EachRecord(func(rec *kgo.Record) {
 					if firstBad != nil {
@@ -183,8 +192,13 @@ func (c *Consumer) Run(ctx context.Context, h HandlerFunc) error {
 						firstBad = rec
 						return
 					}
+					succeeded++
 					last = rec
 				})
+				c.metrics.addProcessed(ctx, part.Topic, succeeded)
+				if firstBad != nil {
+					c.metrics.addFailed(ctx, part.Topic)
+				}
 				mu.Lock()
 				defer mu.Unlock()
 				if last != nil {
@@ -267,6 +281,14 @@ func (c *Consumer) commit(ctx context.Context, recs []*kgo.Record) {
 		defer cancel()
 	}
 	if err := c.cl.CommitRecords(commitCtx, recs...); err != nil {
+		seen := map[string]struct{}{}
+		for _, rec := range recs {
+			if _, ok := seen[rec.Topic]; ok {
+				continue
+			}
+			seen[rec.Topic] = struct{}{}
+			c.metrics.addCommitFailure(ctx, rec.Topic)
+		}
 		c.onError(ctx, StageCommit, err)
 	}
 }

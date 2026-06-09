@@ -9,6 +9,7 @@ import (
 	"go-boilerplate/platform/storage/pg"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // RelayConfig configures the polling relay.
@@ -18,11 +19,20 @@ import (
 // fires. Both are used when constructing a Cleaner alongside the Relay.
 //
 // Defaults: RetentionAge 24h, CleanupInterval 1h.
+//
+// SingleActive controls whether the relay should run in advisory-lock leader
+// mode (see WithSingleActive). The flag itself does not change NewRelay
+// behaviour — the option carries the lock pool — but lets harnesses such as
+// servicekit decide whether to pass WithSingleActive. Default true: per-
+// aggregate publish order is preserved out of the box; set
+// OUTBOX_SINGLE_ACTIVE=false to let every instance publish concurrently
+// (higher throughput, NO cross-instance ordering guarantee).
 type RelayConfig struct {
 	BatchSize       int32         `env:"OUTBOX_BATCH_SIZE"        envDefault:"100"`
 	PollInterval    time.Duration `env:"OUTBOX_POLL_INTERVAL"     envDefault:"1s"`
 	RetentionAge    time.Duration `env:"OUTBOX_RETENTION_AGE"    envDefault:"24h"`
 	CleanupInterval time.Duration `env:"OUTBOX_CLEANUP_INTERVAL" envDefault:"1h"`
+	SingleActive    bool          `env:"OUTBOX_SINGLE_ACTIVE"    envDefault:"true"`
 }
 
 // Relay polls unpublished outbox rows and publishes them via a Publisher,
@@ -49,9 +59,15 @@ type RelayConfig struct {
 //     the same rows before phase C completes → both publish → inbox deduplicates
 //     by Message.ID.
 //
-// Multiple relay goroutines/instances are safe and beneficial: SKIP LOCKED
-// ensures that within a single phase-A transaction each relay claims a
-// distinct subset of rows; duplicate publishes across relays are tolerated.
+// ORDERING CAVEAT — multiple concurrent relays: SKIP LOCKED makes concurrent
+// relays SAFE (no loss, duplicates deduplicated downstream), but it does NOT
+// preserve per-aggregate publish order. Two relays can claim interleaved rows
+// of the same aggregate and publish them out of order (and Kafka ordering is
+// per produced batch anyway). If consumers rely on per-aggregate event order
+// — the common case for event-carried state transfer — run the relay in
+// LEADER mode via WithSingleActive: a Postgres advisory lock guarantees only
+// one relay instance publishes at a time, with automatic failover when the
+// leader's lock session dies. Standby instances poll for the lock every tick.
 //
 // OnError (set via SetOnError) is called for each ProcessBatch error during
 // Run. Run never stops on a batch error; it backs off and retries.
@@ -60,17 +76,50 @@ type Relay struct {
 	pub     Publisher
 	cfg     RelayConfig
 	onError func(error)
+
+	// Single-active (leader) mode state — see WithSingleActive.
+	leaderPool *pgxpool.Pool
+	leaderConn *pgxpool.Conn
+
+	metrics relayMetrics
+}
+
+// RelayOption configures optional Relay behaviour.
+type RelayOption func(*Relay)
+
+// WithSingleActive enables leader election via a Postgres advisory lock so
+// that only ONE relay instance publishes at a time (preserving per-aggregate
+// publish order across horizontally-scaled deployments).
+//
+// Mechanics:
+//   - A dedicated connection is acquired from pool and holds a session-level
+//     pg_try_advisory_lock(hashtext('outbox_relay:'||current_schema())).
+//   - The instance that wins the lock is the leader and processes batches;
+//     all others stay hot-standby and re-try the lock every PollInterval.
+//   - The leader health-checks its lock connection every tick. If the
+//     connection (and therefore the lock session) is lost, leadership is
+//     dropped and every instance — including the former leader — competes
+//     for the lock again. Failover takes a few PollIntervals.
+//
+// The lock key is schema-scoped, so multiple services sharing a database
+// (different schemas) elect independent leaders.
+func WithSingleActive(pool *pgxpool.Pool) RelayOption {
+	return func(r *Relay) { r.leaderPool = pool }
 }
 
 // NewRelay creates a Relay.
-func NewRelay(pool *pg.Pool, pub Publisher, cfg RelayConfig) *Relay {
+func NewRelay(pool *pg.Pool, pub Publisher, cfg RelayConfig, opts ...RelayOption) *Relay {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 100
 	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = time.Second
 	}
-	return &Relay{pool: pool, pub: pub, cfg: cfg}
+	r := &Relay{pool: pool, pub: pub, cfg: cfg, metrics: newRelayMetrics()}
+	for _, o := range opts {
+		o(r)
+	}
+	return r
 }
 
 // SetOnError registers a callback that is called for each ProcessBatch error
@@ -129,11 +178,13 @@ func (r *Relay) ProcessBatch(ctx context.Context) (int, error) {
 	// Fall back to per-record Publish for plain Publisher implementations.
 	if bp, ok := r.pub.(BatchPublisher); ok {
 		if err := bp.PublishBatch(ctx, msgs); err != nil {
+			r.metrics.addPublishError(ctx)
 			return 0, fmt.Errorf("outbox: batch publish: %w", err)
 		}
 	} else {
 		for _, msg := range msgs {
 			if err := r.pub.Publish(ctx, msg); err != nil {
+				r.metrics.addPublishError(ctx)
 				return 0, fmt.Errorf("outbox: publish %s: %w", msg.ID, err)
 			}
 		}
@@ -149,7 +200,25 @@ func (r *Relay) ProcessBatch(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("outbox: mark published batch: %w", err)
 	}
 
+	r.metrics.addPublished(ctx, int64(len(msgs)))
 	return len(msgs), nil
+}
+
+// pendingReportInterval is how often Run samples the unpublished-row count
+// for the outbox.pending gauge. The count query hits the partial index on
+// unpublished rows, so it stays cheap even on large outbox tables.
+const pendingReportInterval = 15 * time.Second
+
+// reportPending samples SELECT count(*) of unpublished rows and records the
+// outbox.pending gauge. Errors are ignored — the gauge simply keeps its last
+// value; the relay's own error path covers DB outage visibility.
+func (r *Relay) reportPending(ctx context.Context) {
+	var n int64
+	if err := r.pool.Reader().QueryRow(ctx,
+		`select count(*) from outbox where published_at is null`).Scan(&n); err != nil {
+		return
+	}
+	r.metrics.recordPending(ctx, n)
 }
 
 const (
@@ -157,13 +226,107 @@ const (
 	backoffMax  = 30 * time.Second
 )
 
-// Run polls until ctx is canceled, processing a batch every PollInterval.
-// On ProcessBatch errors it calls OnError (if set) and applies a simple
-// capped exponential backoff before the next attempt (resets on success).
-// Intended to be launched in a goroutine; returns ctx.Err() on cancellation.
+// advisoryLockSQL acquires (non-blocking) the schema-scoped relay leader lock
+// on the CURRENT SESSION. hashtext maps the textual key to the int lock space.
+const advisoryLockSQL = `select pg_try_advisory_lock(hashtext('outbox_relay:'||current_schema()))`
+
+// advisoryUnlockSQL releases the leader lock held by the current session.
+const advisoryUnlockSQL = `select pg_advisory_unlock(hashtext('outbox_relay:'||current_schema()))`
+
+// ensureLeader returns true when this relay currently holds the leader lock.
+// When not yet leader it makes one non-blocking acquisition attempt; when
+// already leader it health-checks the lock connection — a dead connection
+// means the lock session is gone, so leadership is dropped (and re-contested
+// on the next tick alongside every other instance).
+func (r *Relay) ensureLeader(ctx context.Context) bool {
+	if r.leaderConn != nil {
+		// Health-check the dedicated lock connection. Any error ⇒ the session
+		// (and the advisory lock with it) is gone server-side.
+		if _, err := r.leaderConn.Exec(ctx, `select 1`); err != nil {
+			r.dropLeadership(ctx, false)
+			return false
+		}
+		return true
+	}
+
+	conn, err := r.leaderPool.Acquire(ctx)
+	if err != nil {
+		return false
+	}
+	var acquired bool
+	if err := conn.QueryRow(ctx, advisoryLockSQL).Scan(&acquired); err != nil || !acquired {
+		conn.Release()
+		return false
+	}
+	r.leaderConn = conn
+	return true
+}
+
+// dropLeadership releases the leader lock connection. When unlock is true the
+// advisory lock is explicitly released so another instance can take over
+// immediately (graceful shutdown). When the connection is unhealthy the
+// underlying session is destroyed instead of being returned to the pool —
+// returning it would keep the session (and the lock) alive inside the pool.
+func (r *Relay) dropLeadership(ctx context.Context, unlock bool) {
+	conn := r.leaderConn
+	if conn == nil {
+		return
+	}
+	r.leaderConn = nil
+	if unlock {
+		if _, err := conn.Exec(ctx, advisoryUnlockSQL); err == nil {
+			conn.Release()
+			return
+		}
+	}
+	// Unlock failed or connection unhealthy: kill the session so the server
+	// releases the lock, instead of parking a lock-holding conn in the pool.
+	_ = conn.Hijack().Close(ctx)
+}
+
+// Run polls until ctx is canceled. On every tick it DRAINS the backlog:
+// ProcessBatch is repeated as long as it returns a full batch, so a burst of
+// N rows is published in ceil(N/BatchSize) consecutive batches within one
+// tick instead of being capped at BatchSize rows per PollInterval. A partial
+// batch ends the drain loop until the next tick (no busy loop when idle).
+//
+// On ProcessBatch errors it calls OnError (if set), ends the drain loop, and
+// applies a simple capped exponential backoff before the next attempt
+// (resets on success). Intended to be launched in a goroutine; returns
+// ctx.Err() on cancellation.
 func (r *Relay) Run(ctx context.Context) error {
 	ticker := time.NewTicker(r.cfg.PollInterval)
 	defer ticker.Stop()
+
+	// Graceful shutdown in single-active mode: explicitly release the leader
+	// lock so a standby can take over immediately. The release runs on a
+	// short detached context because ctx is already cancelled at that point.
+	if r.leaderPool != nil {
+		defer func() {
+			releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			r.dropLeadership(releaseCtx, true)
+		}()
+	}
+
+	// Backlog gauge: sample the unpublished-row count now and every
+	// pendingReportInterval until ctx is cancelled.
+	pendingDone := make(chan struct{})
+	go func() {
+		defer close(pendingDone)
+		r.reportPending(ctx)
+		pt := time.NewTicker(pendingReportInterval)
+		defer pt.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-pt.C:
+				r.reportPending(ctx)
+			}
+		}
+	}()
+	defer func() { <-pendingDone }()
 
 	var consecutiveFailures int
 
@@ -172,7 +335,23 @@ func (r *Relay) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			_, err := r.ProcessBatch(ctx)
+			// Single-active mode: only the advisory-lock leader processes.
+			// Standbys (and a leader whose lock session died) skip the tick
+			// and re-contest the lock on the next one.
+			if r.leaderPool != nil && !r.ensureLeader(ctx) {
+				continue
+			}
+			// Drain: keep processing while full batches come back — there may
+			// be more backlog waiting. Stop on a partial batch, error, or
+			// context cancellation.
+			var err error
+			for {
+				var n int
+				n, err = r.ProcessBatch(ctx)
+				if err != nil || n < int(r.cfg.BatchSize) || ctx.Err() != nil {
+					break
+				}
+			}
 			if err != nil {
 				if r.onError != nil {
 					r.onError(err)

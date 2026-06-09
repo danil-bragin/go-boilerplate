@@ -21,6 +21,7 @@ type HandlerFunc func(ctx context.Context, r Record) error
 type Consumer struct {
 	cl      *kgo.Client
 	onError func(ctx context.Context, stage string, err error)
+	metrics consumerMetrics
 }
 
 // ConsumerOption configures a Consumer.
@@ -91,6 +92,7 @@ func NewConsumer(cfg Config, topics []string, opts ...ConsumerOption) (*Consumer
 	c := &Consumer{
 		cl:      cl,
 		onError: func(context.Context, string, error) {},
+		metrics: newConsumerMetrics(),
 	}
 	for _, o := range opts {
 		o(c)

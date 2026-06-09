@@ -49,7 +49,7 @@ func TestKafkaPublisher_DrainsOutboxToKafka(t *testing.T) {
 	require.NoError(t, err)
 	defer cl.Close()
 
-	require.NoError(t, kafka.EnsureTopics(ctx, cl, 1, 1, "order"))
+	require.NoError(t, kafka.EnsureTopics(ctx, cl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, "order"))
 
 	producer := kafka.NewProducer(cl)
 	defer func() { _ = producer.Close(ctx) }()
@@ -175,7 +175,7 @@ func TestKafkaPublisher_PublishBatch(t *testing.T) {
 	require.NoError(t, err)
 	defer cl.Close()
 
-	require.NoError(t, kafka.EnsureTopics(ctx, cl, 1, 1, "order"))
+	require.NoError(t, kafka.EnsureTopics(ctx, cl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, "order"))
 
 	producer := kafka.NewProducer(cl)
 	defer func() { _ = producer.Close(ctx) }()

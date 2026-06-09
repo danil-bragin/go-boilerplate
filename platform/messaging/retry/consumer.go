@@ -134,11 +134,11 @@ func NewConsumer(
 		return nil, errors.New("retry: NewConsumer: policy must have at least one tier")
 	}
 
-	// Expand base topics → tier topics.
+	// Expand base topics → index-named tier topics ("<base>.retry.<idx>").
 	tierTopics := make([]string, 0, len(baseTopics)*len(policy.Tiers))
 	for _, base := range baseTopics {
-		for _, d := range policy.Tiers {
-			tierTopics = append(tierTopics, TierTopic(base, d))
+		for i := range policy.Tiers {
+			tierTopics = append(tierTopics, TierTopic(base, i))
 		}
 	}
 

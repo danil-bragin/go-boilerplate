@@ -33,7 +33,7 @@ func TestShutdownCommitsProcessedRecords(t *testing.T) {
 	adminCl, err := kafka.NewClient(kafka.Config{Brokers: []string{broker}, ClientID: "admin"})
 	require.NoError(t, err)
 	defer adminCl.Close()
-	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, 1, 1, topic))
+	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, topic))
 
 	var recs []*kgo.Record
 	for i := 0; i < 5; i++ {
