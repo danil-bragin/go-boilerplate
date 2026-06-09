@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
-	"github.com/lestrrat-go/jwx/v2/jwk"
-	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/lestrrat-go/httprc/v3"
+	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v3/jwt"
 )
 
 // Option configures a JWKSVerifier.
@@ -20,6 +22,28 @@ func WithRolesClaimPath(path string) Option {
 	}
 }
 
+// WithClockSkew sets the acceptable clock skew applied to exp/iat/nbf
+// validation (jwt.WithAcceptableSkew). Distributed issuers and verifiers
+// rarely share a perfectly synchronized clock; a small skew (e.g. 30s,
+// AUTH_CLOCK_SKEW) prevents spurious rejections of freshly-issued tokens
+// whose iat/nbf is marginally in the future. Default: 0 (strict).
+func WithClockSkew(d time.Duration) Option {
+	return func(v *JWKSVerifier) {
+		v.clockSkew = d
+	}
+}
+
+// WithRequiredAZP requires the token's "azp" (authorized party) claim to equal
+// azp (AUTH_REQUIRED_AZP). Use this when several clients share one realm and
+// audience: it pins tokens to the specific OAuth client they were issued to,
+// so a token minted for another client cannot be replayed against this
+// service. Empty string (default) disables the check.
+func WithRequiredAZP(azp string) Option {
+	return func(v *JWKSVerifier) {
+		v.requiredAZP = azp
+	}
+}
+
 // JWKSVerifier verifies RS256 JWTs by fetching and caching the public JWKS
 // from a remote URL. The JWKS is refreshed automatically in the background.
 type JWKSVerifier struct {
@@ -28,6 +52,8 @@ type JWKSVerifier struct {
 	issuer         string
 	audience       string
 	rolesClaimPath string
+	clockSkew      time.Duration
+	requiredAZP    string
 }
 
 // NewJWKSVerifier creates a JWKSVerifier that fetches the JWKS from jwksURL
@@ -51,13 +77,16 @@ func NewJWKSVerifier(ctx context.Context, jwksURL, issuer, audience string, opts
 		o(v)
 	}
 
-	cache := jwk.NewCache(ctx)
-	if err := cache.Register(jwksURL); err != nil {
+	cache, err := jwk.NewCache(ctx, httprc.NewClient())
+	if err != nil {
+		return nil, fmt.Errorf("auth: creating JWKS cache: %w", err)
+	}
+	if err := cache.Register(ctx, jwksURL); err != nil {
 		return nil, fmt.Errorf("auth: registering JWKS URL: %w", err)
 	}
 
 	// Perform an initial fetch so that any configuration error is caught early.
-	if _, err := cache.Refresh(ctx, jwksURL); err != nil {
+	if _, err := cache.Lookup(ctx, jwksURL); err != nil {
 		return nil, fmt.Errorf("auth: initial JWKS fetch from %s: %w", jwksURL, err)
 	}
 
@@ -68,7 +97,7 @@ func NewJWKSVerifier(ctx context.Context, jwksURL, issuer, audience string, opts
 // Verify parses and validates rawToken, returning a populated Principal on
 // success. On any validation failure it returns a wrapped ErrInvalidToken.
 func (v *JWKSVerifier) Verify(ctx context.Context, rawToken string) (Principal, error) {
-	keyset, err := v.cache.Get(ctx, v.jwksURL)
+	keyset, err := v.cache.Lookup(ctx, v.jwksURL)
 	if err != nil {
 		return Principal{}, fmt.Errorf("%w: fetching JWKS: %w", ErrInvalidToken, err)
 	}
@@ -79,28 +108,59 @@ func (v *JWKSVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 		jwt.WithValidate(true),
 		jwt.WithIssuer(v.issuer),
 		jwt.WithAudience(v.audience),
-		jwt.WithRequiredClaim(jwt.ExpirationKey),
+		jwt.WithRequiredClaim("exp"),
+		jwt.WithAcceptableSkew(v.clockSkew),
 	)
 	if err != nil {
 		return Principal{}, fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
 
+	// Authorized-party pinning: when configured, the azp claim must match.
+	if v.requiredAZP != "" {
+		var azp string
+		if err := tok.Get("azp", &azp); err != nil || azp != v.requiredAZP {
+			return Principal{}, fmt.Errorf("%w: azp claim mismatch", ErrInvalidToken)
+		}
+	}
+
+	sub, _ := tok.Subject()
 	p := Principal{
-		Subject: tok.Subject(),
-		Claims:  tok.PrivateClaims(),
+		Subject: sub,
+		Claims:  privateClaims(tok),
 	}
 
 	// Extract preferred_username if present.
-	if u, ok := tok.Get("preferred_username"); ok {
-		if s, ok := u.(string); ok {
-			p.Username = s
-		}
+	var username string
+	if err := tok.Get("preferred_username", &username); err == nil {
+		p.Username = username
 	}
 
 	// Extract roles by walking the dot-separated claim path.
 	p.Roles = v.extractRoles(tok)
 
 	return p, nil
+}
+
+// standardClaims are the registered JWT claims excluded from Principal.Claims
+// (which mirrors jwx v2's PrivateClaims behaviour).
+var standardClaims = map[string]struct{}{
+	"iss": {}, "sub": {}, "aud": {}, "exp": {}, "nbf": {}, "iat": {}, "jti": {},
+}
+
+// privateClaims collects all non-registered claims from tok into a map,
+// mirroring the v2 PrivateClaims() accessor that v3 removed.
+func privateClaims(tok jwt.Token) map[string]any {
+	claims := make(map[string]any)
+	for _, name := range tok.Keys() {
+		if _, std := standardClaims[name]; std {
+			continue
+		}
+		var val any
+		if err := tok.Get(name, &val); err == nil {
+			claims[name] = val
+		}
+	}
+	return claims
 }
 
 // extractRoles walks the configured rolesClaimPath in the token's private
@@ -112,10 +172,13 @@ func (v *JWKSVerifier) extractRoles(tok jwt.Token) []string {
 		return nil
 	}
 
-	// Start from private claims for the first segment.
-	var current any = tok.PrivateClaims()
+	// Fetch the first segment from the token, then walk nested maps.
+	var current any
+	if err := tok.Get(parts[0], &current); err != nil {
+		return nil
+	}
 
-	for _, part := range parts {
+	for _, part := range parts[1:] {
 		m, ok := current.(map[string]any)
 		if !ok {
 			return nil

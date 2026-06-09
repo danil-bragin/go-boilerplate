@@ -6,20 +6,24 @@
 // # Authorization
 //
 // Upload and Download require the principal (set by the auth middleware) to
-// hold the requiredRole (default "user"). Absent principal → 401; missing
-// role → 403.
+// hold the requiredRole (default "user") or the admin role. Absent principal
+// → 401; missing role → 403.
 //
-// # TODO(ownership)
+// # Ownership
 //
-// Production deployments should verify that the order identified by {id}
-// belongs to the authenticated principal (compare principal Subject/claims to
-// the order's owner stored in the read model), not merely check a role. This
-// handler stubs authorization with a role-gate as a boilerplate demonstration.
+// When an OwnerLookup is configured (WithOwnerLookup), the handler verifies
+// that the order identified by {id} belongs to the authenticated principal:
+// the principal's Subject must equal the order's customer_id from the read
+// model, unless the principal holds the admin role. Non-owners receive 403;
+// unknown orders 404; lookup failures 500 (fail closed). Without an
+// OwnerLookup only the role gate applies (boilerplate demo mode).
 package attachments
 
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path"
@@ -28,6 +32,7 @@ import (
 	"time"
 
 	"go-boilerplate/platform/security/auth"
+	"go-boilerplate/platform/security/authz"
 	"go-boilerplate/platform/storage/blob"
 	"go-boilerplate/platform/web/httpx"
 
@@ -39,8 +44,47 @@ const (
 	defaultFlagKey    = "order-attachments-enabled"
 	defaultPresignTTL = 5 * time.Minute
 	defaultRole       = "user"
+	adminRole         = "admin"
 	maxFilenameLen    = 128
 )
+
+// ErrOwnerNotFound is returned by an OwnerLookup when the order does not
+// exist in the read model. The handler maps it to 404.
+var ErrOwnerNotFound = errors.New("attachments: order owner not found")
+
+// OwnerLookup resolves the owner (customer_id / principal subject) of the
+// order identified by orderID from the read model. Return ErrOwnerNotFound
+// when the order is unknown; any other error is treated as an infrastructure
+// failure (500, fail closed).
+type OwnerLookup func(ctx context.Context, orderID string) (string, error)
+
+// Option configures a Handler.
+type Option func(*Handler)
+
+// WithOwnerLookup enables the ownership check: the authenticated principal
+// must own the order (Subject == customer_id) unless it holds the admin role.
+func WithOwnerLookup(lookup OwnerLookup) Option {
+	return func(h *Handler) { h.ownerLookup = lookup }
+}
+
+// ownerPolicy is the resource-aware authz.Policy used for the ownership
+// check: resource is the order's owner subject (string). The principal is
+// authorized when it IS the owner, or when it holds bypassRole.
+type ownerPolicy struct {
+	bypassRole string
+}
+
+// Authorize implements authz.Policy. resource must be the owner subject.
+func (o ownerPolicy) Authorize(_ context.Context, p auth.Principal, action string, resource any) error {
+	owner, _ := resource.(string)
+	if owner != "" && p.Subject == owner {
+		return nil
+	}
+	if slices.Contains(p.Roles, o.bypassRole) {
+		return nil
+	}
+	return fmt.Errorf("%w: principal is not the owner for %q", authz.ErrForbidden, action)
+}
 
 // Handler handles upload and download of order attachments.
 type Handler struct {
@@ -49,20 +93,27 @@ type Handler struct {
 	flagKey      string
 	presignTTL   time.Duration
 	requiredRole string
+	ownerLookup  OwnerLookup
+	ownership    authz.Policy
 }
 
 // New creates a Handler with the given ObjectStore and flag evaluation function.
 // The flagBool func is typically featureflags.Flags.Bool — passing it as a
 // function decouples the handler from the concrete Flags type, making it
 // trivially testable with a closure.
-func New(store blob.ObjectStore, flagBool func(context.Context, string, bool) bool) *Handler {
-	return &Handler{
+func New(store blob.ObjectStore, flagBool func(context.Context, string, bool) bool, opts ...Option) *Handler {
+	h := &Handler{
 		store:        store,
 		flagBool:     flagBool,
 		flagKey:      defaultFlagKey,
 		presignTTL:   defaultPresignTTL,
 		requiredRole: defaultRole,
+		ownership:    ownerPolicy{bypassRole: adminRole},
 	}
+	for _, o := range opts {
+		o(h)
+	}
+	return h
 }
 
 // Mount registers the attachment routes on r.
@@ -113,6 +164,47 @@ func hasRole(p auth.Principal, role string) bool {
 	return slices.Contains(p.Roles, role)
 }
 
+// roleGate enforces the authentication + role requirements shared by Upload
+// and Download. It writes the error response and returns (Principal{}, false)
+// when the request is denied. The admin role always passes the gate.
+func (h *Handler) roleGate(w http.ResponseWriter, r *http.Request) (auth.Principal, bool) {
+	p, ok := auth.From(r.Context())
+	if !ok {
+		httpx.Error(w, http.StatusUnauthorized, "authentication required")
+		return auth.Principal{}, false
+	}
+	if !hasRole(p, h.requiredRole) && !hasRole(p, adminRole) {
+		httpx.Error(w, http.StatusForbidden, "required role: "+h.requiredRole)
+		return auth.Principal{}, false
+	}
+	return p, true
+}
+
+// checkOwnership enforces the ownership policy for the given (already
+// validated) order id. No-op (allow) when no OwnerLookup is configured.
+// It writes the error response and returns false when the request is denied.
+func (h *Handler) checkOwnership(w http.ResponseWriter, r *http.Request, p auth.Principal, orderID string) bool {
+	if h.ownerLookup == nil {
+		return true
+	}
+	ctx := r.Context()
+	owner, err := h.ownerLookup(ctx, orderID)
+	if err != nil {
+		if errors.Is(err, ErrOwnerNotFound) {
+			httpx.Error(w, http.StatusNotFound, "order not found")
+		} else {
+			// Fail closed: an unavailable read model must never grant access.
+			httpx.Error(w, http.StatusInternalServerError, "failed to verify order ownership")
+		}
+		return false
+	}
+	if err := h.ownership.Authorize(ctx, p, "attachment:access", owner); err != nil {
+		httpx.Error(w, http.StatusForbidden, "not the order owner")
+		return false
+	}
+	return true
+}
+
 // Upload stores the request body as an attachment for the order identified by
 // the {id} URL parameter. The object key is "orders/<id>/<filename>" where
 // filename comes from the X-Filename request header (defaulting to "file").
@@ -129,13 +221,8 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Authorization: require authenticated principal with the correct role.
-	p, ok := auth.From(ctx)
+	p, ok := h.roleGate(w, r)
 	if !ok {
-		httpx.Error(w, http.StatusUnauthorized, "authentication required")
-		return
-	}
-	if !hasRole(p, h.requiredRole) {
-		httpx.Error(w, http.StatusForbidden, "required role: "+h.requiredRole)
 		return
 	}
 
@@ -143,6 +230,11 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	rawID := chi.URLParam(r, "id")
 	if _, err := uuid.Parse(rawID); err != nil {
 		httpx.Error(w, http.StatusBadRequest, "invalid order id")
+		return
+	}
+
+	// Ownership: the order must belong to the principal (admin bypasses).
+	if !h.checkOwnership(w, r, p, rawID) {
 		return
 	}
 
@@ -193,13 +285,8 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Authorization: require authenticated principal with the correct role.
-	p, ok := auth.From(ctx)
+	p, ok := h.roleGate(w, r)
 	if !ok {
-		httpx.Error(w, http.StatusUnauthorized, "authentication required")
-		return
-	}
-	if !hasRole(p, h.requiredRole) {
-		httpx.Error(w, http.StatusForbidden, "required role: "+h.requiredRole)
 		return
 	}
 
@@ -207,6 +294,11 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 	rawID := chi.URLParam(r, "id")
 	if _, err := uuid.Parse(rawID); err != nil {
 		httpx.Error(w, http.StatusBadRequest, "invalid order id")
+		return
+	}
+
+	// Ownership: the order must belong to the principal (admin bypasses).
+	if !h.checkOwnership(w, r, p, rawID) {
 		return
 	}
 
