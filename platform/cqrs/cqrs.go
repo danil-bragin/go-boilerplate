@@ -2,6 +2,25 @@
 // pattern (an idiomatic alternative to a reflection-based mediator). A handler
 // is HandlerFunc[C,R]; behaviors are decorators applied with Decorate, applied
 // outermost-first (the first behavior in the list runs first / wraps the rest).
+//
+// # Required behavior order
+//
+// Tracing MUST be the OUTERMOST behavior:
+//
+//	cqrs.Decorate(handler,
+//	    cqrs.Tracing[C, R]("Name"),    // outermost — opens the span
+//	    cqrs.Logging[C, R]("Name"),    // inside — log lines get trace_id/span_id
+//	    cqrs.Metrics[C, R]("Name"),
+//	    cqrs.Validation[C, R](),
+//	    // domain behaviors (Audit, Caching, …) innermost
+//	)
+//
+// Tracing injects the span into ctx for everything it wraps; Logging emits
+// context-aware records (XContext) that the platform/log traceHandler enriches
+// with trace_id/span_id — but only when the span already exists in ctx, i.e.
+// only when Logging runs INSIDE Tracing. With the order reversed, log↔trace
+// correlation silently breaks (logs without trace_id), which is exactly the
+// kind of failure nobody notices until an incident.
 package cqrs
 
 import "context"

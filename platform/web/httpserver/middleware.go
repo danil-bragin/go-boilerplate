@@ -90,7 +90,7 @@ func Recover(next http.Handler) http.Handler {
 				if err, ok := rec.(error); ok && errors.Is(err, http.ErrAbortHandler) {
 					panic(rec)
 				}
-				log.From(r.Context()).Error("panic recovered",
+				log.From(r.Context()).ErrorContext(r.Context(), "panic recovered",
 					"panic", rec, "path", r.URL.Path, "stack", string(debug.Stack()))
 				// A2: only write the 500 if nothing has been sent yet.
 				if !cw.wroteHeader {
