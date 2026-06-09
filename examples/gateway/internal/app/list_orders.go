@@ -130,10 +130,5 @@ func ListOrdersHandler(pool *pg.Pool) cqrs.HandlerFunc[ListOrders, OrderPage] {
 // list pages are cheap keyset scans and cache invalidation for ranges is not
 // worth the staleness risk).
 func DecorateListOrdersHandler(raw cqrs.HandlerFunc[ListOrders, OrderPage]) cqrs.HandlerFunc[ListOrders, OrderPage] {
-	return cqrs.Decorate(
-		raw,
-		cqrs.Logging[ListOrders, OrderPage]("ListOrders"),
-		cqrs.Tracing[ListOrders, OrderPage]("ListOrders"),
-		cqrs.Metrics[ListOrders, OrderPage]("ListOrders"),
-	)
+	return cqrs.StandardPipeline[ListOrders, OrderPage]("ListOrders").Decorate(raw)
 }

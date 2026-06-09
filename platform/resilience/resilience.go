@@ -11,6 +11,7 @@ package resilience
 
 import (
 	"context"
+	"math/rand/v2"
 	"time"
 
 	"github.com/failsafe-go/failsafe-go"
@@ -18,24 +19,41 @@ import (
 	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 	"github.com/failsafe-go/failsafe-go/retrypolicy"
 	"github.com/failsafe-go/failsafe-go/timeout"
-	"golang.org/x/time/rate"
 )
 
-// Retry returns a RetryPolicy[any] with exponential back-off and full jitter.
+// Retry returns a RetryPolicy[any] with exponential back-off and TRUE full
+// jitter (AWS style): each delay is drawn uniformly from [0, backoff] where
+// backoff = min(32×baseDelay, baseDelay·2^retries).
 //
 // maxAttempts is the total number of attempts (1 = no retries).
-// baseDelay is the base delay for the exponential back-off; the cap is 32×baseDelay.
-// Full jitter is approximated with WithJitterFactor(1.0) which causes each delay to be
-// randomised between 0 and delay*jitterFactor.
+//
+// Implementation note: failsafe-go's WithJitterFactor(1.0) randomises the
+// delay in [0, 2×computed_delay] — that is NOT full jitter (the window is
+// twice as wide as the back-off, so worst-case sleeps double). A custom
+// DelayFunc computes the exponential window and draws uniformly inside it.
 func Retry(maxAttempts int, baseDelay time.Duration) retrypolicy.RetryPolicy[any] {
 	maxDelay := baseDelay * 32
 	return retrypolicy.NewBuilder[any]().
 		WithMaxAttempts(maxAttempts).
-		WithBackoff(baseDelay, maxDelay).
-		// jitterFactor of 1.0 → delay is uniformly random in [0, 2×computed_delay]
-		// which provides full jitter (each retry sees a random fraction of the back-off window).
-		WithJitterFactor(1.0).
+		WithDelayFunc(func(exec failsafe.ExecutionAttempt[any]) time.Duration {
+			return fullJitterDelay(baseDelay, maxDelay, exec.Retries())
+		}).
 		Build()
+}
+
+// fullJitterDelay draws a delay uniformly from [0, min(maxDelay, base·2^retries)].
+func fullJitterDelay(base, maxDelay time.Duration, retries int) time.Duration {
+	backoff := maxDelay
+	// Guard the shift: retries ≥ 63 (or overflow past maxDelay) clamps to maxDelay.
+	if retries < 63 {
+		if d := base << uint(retries); d > 0 && d < maxDelay {
+			backoff = d
+		}
+	}
+	if backoff <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int64N(int64(backoff) + 1)) //nolint:gosec // jitter needs speed, not cryptographic randomness
 }
 
 // CircuitBreaker returns a CircuitBreaker[any] that opens after failureThreshold consecutive
@@ -102,23 +120,7 @@ func Get[T any](ctx context.Context, fn func(context.Context) (T, error), polici
 	return result.(T), nil //nolint:forcetypeassert // guaranteed by fn's return type
 }
 
-// RateLimiter is a thin wrapper around golang.org/x/time/rate.Limiter.
-type RateLimiter struct {
-	limiter *rate.Limiter
-}
-
-// NewRateLimiter returns a RateLimiter allowing rps tokens per second with a
-// burst bucket of burst tokens.
-func NewRateLimiter(rps float64, burst int) *RateLimiter {
-	return &RateLimiter{limiter: rate.NewLimiter(rate.Limit(rps), burst)}
-}
-
-// Allow reports whether a token is available right now without blocking.
-func (r *RateLimiter) Allow() bool {
-	return r.limiter.Allow()
-}
-
-// Wait blocks until a token is available or ctx is cancelled.
-func (r *RateLimiter) Wait(ctx context.Context) error {
-	return r.limiter.Wait(ctx)
-}
+// NOTE: the former RateLimiter wrapper (golang.org/x/time/rate) was removed.
+// It had no consumers and was shadowed by platform/web/ratelimit, which is the
+// canonical per-key limiter (in-memory token bucket + distributed Redis Lua
+// bucket) with Result metadata for 429 headers. Use that package instead.

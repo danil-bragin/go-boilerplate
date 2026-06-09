@@ -171,12 +171,3 @@ func TestBulkhead_LimitsConcurrency(t *testing.T) {
 	assert.LessOrEqual(t, peak.Load(), int32(maxConcurrent),
 		"peak concurrency must not exceed bulkhead limit")
 }
-
-// TestRateLimiter_Allow verifies basic token-bucket behaviour: the first
-// Allow succeeds and an immediate second one is rejected.
-func TestRateLimiter_Allow(t *testing.T) {
-	rl := resilience.NewRateLimiter(1, 1) // 1 token/s, burst=1
-
-	assert.True(t, rl.Allow(), "first Allow should consume the initial burst token")
-	assert.False(t, rl.Allow(), "second immediate Allow should be rejected (no tokens)")
-}
