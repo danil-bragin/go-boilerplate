@@ -18,6 +18,13 @@ type Config struct {
 	Kafka     kafka.Config
 	AdminAddr string `env:"ADMIN_HTTP_ADDR" envDefault:":9090"`
 
+	// DrainGrace is how long the service keeps running AFTER flipping /readyz
+	// to 503 and BEFORE any teardown begins. This gives load balancers time to
+	// observe the not-ready state and stop routing new traffic, so in-flight
+	// requests/records drain instead of being cut off. Set to 0 to skip the
+	// grace sleep (useful in tests).
+	DrainGrace time.Duration `env:"DRAIN_GRACE" envDefault:"5s"`
+
 	// Topic provisioning (used by Service.EnsureTopics, which AddConsumer and
 	// AddConsumerWithRetry call for every topic they wire):
 	//
