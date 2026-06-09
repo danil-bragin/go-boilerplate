@@ -10,11 +10,13 @@ package servicekit
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"sync"
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/storage/pg/pgtest"
 	"go-boilerplate/platform/testkit/mockhttp"
@@ -244,4 +246,79 @@ func TestPyroscope_NoopWhenUnset(t *testing.T) {
 	stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	require.NoError(t, svc.Stop(stopCtx))
+}
+
+// TestStart_AdminBindFailureIsFatal: a service whose admin port is already
+// occupied must FAIL Start (no half-alive pods serving traffic without
+// /readyz, /livez, /metrics).
+func TestStart_AdminBindFailureIsFatal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	// Occupy a port first.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+
+	cfg := Config{AdminAddr: ln.Addr().String()} // already taken
+	cfg.PG.DSN = dsn
+	cfg.Kafka.Brokers = []string{broker}
+	cfg.Telemetry.Enabled = false
+	cfg.Log.Level = "error"
+	cfg.InboxCleanupInterval = 0
+
+	svc, err := New(context.Background(), cfg, nil, "")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = svc.Stop(ctx)
+	})
+
+	err = svc.Start()
+	require.Error(t, err, "occupied admin port must make Start fail")
+	require.Contains(t, err.Error(), "admin")
+}
+
+// TestStart_AdminBindOptionalWarnsAndContinues: ADMIN_BIND_OPTIONAL=true
+// restores the old warn-and-continue behavior (e.g. niche test setups).
+func TestStart_AdminBindOptionalWarnsAndContinues(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+
+	cfg := Config{AdminAddr: ln.Addr().String(), AdminBindOptional: true}
+	cfg.PG.DSN = dsn
+	cfg.Kafka.Brokers = []string{broker}
+	cfg.Telemetry.Enabled = false
+	cfg.Log.Level = "error"
+	cfg.InboxCleanupInterval = 0
+
+	svc, err := New(context.Background(), cfg, nil, "")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = svc.Stop(ctx)
+	})
+
+	require.NoError(t, svc.Start(), "ADMIN_BIND_OPTIONAL=true must tolerate the bind failure")
+}
+
+// TestConfig_AdminBindOptionalDefaultFalse: fatal-by-default is the contract.
+func TestConfig_AdminBindOptionalDefaultFalse(t *testing.T) {
+	cfg, err := config.Load[Config]()
+	require.NoError(t, err)
+	require.False(t, cfg.AdminBindOptional, "ADMIN_BIND_OPTIONAL must default to false (fatal)")
 }
