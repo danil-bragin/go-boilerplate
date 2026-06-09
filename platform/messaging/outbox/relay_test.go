@@ -196,6 +196,130 @@ func TestRelay_PublishesOutsideTransaction(t *testing.T) {
 	require.Equal(t, 0, unpublished, "all rows must be marked published after successful batch")
 }
 
+// timingBatchPublisher records the timestamp of every PublishBatch call and
+// all messages received (thread-safe).
+type timingBatchPublisher struct {
+	mu        sync.Mutex
+	received  []outbox.Message
+	callTimes []time.Time
+}
+
+func (f *timingBatchPublisher) Publish(_ context.Context, msg outbox.Message) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.received = append(f.received, msg)
+	f.callTimes = append(f.callTimes, time.Now())
+	return nil
+}
+
+func (f *timingBatchPublisher) PublishBatch(_ context.Context, msgs []outbox.Message) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.received = append(f.received, msgs...)
+	f.callTimes = append(f.callTimes, time.Now())
+	return nil
+}
+
+func (f *timingBatchPublisher) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.received)
+}
+
+func (f *timingBatchPublisher) calls() []time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]time.Time, len(f.callTimes))
+	copy(out, f.callTimes)
+	return out
+}
+
+// TestRelay_RunDrainsBacklogInOneTick verifies that a single poll tick drains
+// the ENTIRE backlog (repeat ProcessBatch while a full batch was returned),
+// instead of publishing at most BatchSize rows per PollInterval.
+func TestRelay_RunDrainsBacklogInOneTick(t *testing.T) {
+	const (
+		total        = 350
+		batchSize    = 100
+		pollInterval = 500 * time.Millisecond
+	)
+	pool := newPoolWithSchema(t)
+	ctx := context.Background()
+	repo := outbox.NewRepository(pool)
+
+	for i := 0; i < total; i++ {
+		require.NoError(t, pg.RunInTx(ctx, pool, func(ctx context.Context) error {
+			return repo.Enqueue(ctx, outbox.Message{
+				ID: uuid.New(), AggregateType: "order", AggregateID: "x",
+				EventType: "OrderCreated", Payload: []byte(`{}`),
+			})
+		}))
+	}
+
+	pub := &timingBatchPublisher{}
+	relay := outbox.NewRelay(pool, pub, outbox.RelayConfig{
+		BatchSize:    batchSize,
+		PollInterval: pollInterval,
+	})
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- relay.Run(runCtx) }()
+
+	require.Eventually(t, func() bool { return pub.count() == total },
+		10*time.Second, 10*time.Millisecond, "all %d rows must be published", total)
+	cancel()
+	<-done
+
+	// All publishes must happen within ONE tick: the spread between the first
+	// and the last PublishBatch call must be well under PollInterval. The old
+	// behaviour (one batch per tick) needs 3 extra ticks = 1.5 s of spread.
+	calls := pub.calls()
+	require.NotEmpty(t, calls)
+	spread := calls[len(calls)-1].Sub(calls[0])
+	require.Less(t, spread, pollInterval,
+		"backlog must drain within a single tick, got spread %v across %d batch calls", spread, len(calls))
+}
+
+// TestRelay_RunPartialBatchSleepsUntilNextTick verifies the drain loop stops
+// on a partial batch (no busy loop): with 50 rows and BatchSize 100, Run must
+// issue at most one publish call per tick after the initial drain.
+func TestRelay_RunPartialBatchSleepsUntilNextTick(t *testing.T) {
+	const (
+		total        = 50
+		batchSize    = 100
+		pollInterval = 100 * time.Millisecond
+	)
+	pool := newPoolWithSchema(t)
+	ctx := context.Background()
+	repo := outbox.NewRepository(pool)
+
+	for i := 0; i < total; i++ {
+		require.NoError(t, pg.RunInTx(ctx, pool, func(ctx context.Context) error {
+			return repo.Enqueue(ctx, outbox.Message{
+				ID: uuid.New(), AggregateType: "order", AggregateID: "x",
+				EventType: "OrderCreated", Payload: []byte(`{}`),
+			})
+		}))
+	}
+
+	pub := &timingBatchPublisher{}
+	relay := outbox.NewRelay(pool, pub, outbox.RelayConfig{
+		BatchSize:    batchSize,
+		PollInterval: pollInterval,
+	})
+
+	runCtx, cancel := context.WithTimeout(ctx, 650*time.Millisecond)
+	defer cancel()
+	_ = relay.Run(runCtx)
+
+	require.Equal(t, total, pub.count(), "all rows published")
+	// ~6 ticks elapsed; a busy drain loop would produce hundreds of calls.
+	require.Less(t, len(pub.calls()), 10,
+		"partial batch must end the drain loop until the next tick (no busy loop)")
+}
+
 // alwaysFailPublisher always returns an error from Publish.
 type alwaysFailPublisher struct {
 	calls atomic.Int64

@@ -157,10 +157,16 @@ const (
 	backoffMax  = 30 * time.Second
 )
 
-// Run polls until ctx is canceled, processing a batch every PollInterval.
-// On ProcessBatch errors it calls OnError (if set) and applies a simple
-// capped exponential backoff before the next attempt (resets on success).
-// Intended to be launched in a goroutine; returns ctx.Err() on cancellation.
+// Run polls until ctx is canceled. On every tick it DRAINS the backlog:
+// ProcessBatch is repeated as long as it returns a full batch, so a burst of
+// N rows is published in ceil(N/BatchSize) consecutive batches within one
+// tick instead of being capped at BatchSize rows per PollInterval. A partial
+// batch ends the drain loop until the next tick (no busy loop when idle).
+//
+// On ProcessBatch errors it calls OnError (if set), ends the drain loop, and
+// applies a simple capped exponential backoff before the next attempt
+// (resets on success). Intended to be launched in a goroutine; returns
+// ctx.Err() on cancellation.
 func (r *Relay) Run(ctx context.Context) error {
 	ticker := time.NewTicker(r.cfg.PollInterval)
 	defer ticker.Stop()
@@ -172,7 +178,17 @@ func (r *Relay) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			_, err := r.ProcessBatch(ctx)
+			// Drain: keep processing while full batches come back — there may
+			// be more backlog waiting. Stop on a partial batch, error, or
+			// context cancellation.
+			var err error
+			for {
+				var n int
+				n, err = r.ProcessBatch(ctx)
+				if err != nil || n < int(r.cfg.BatchSize) || ctx.Err() != nil {
+					break
+				}
+			}
 			if err != nil {
 				if r.onError != nil {
 					r.onError(err)
