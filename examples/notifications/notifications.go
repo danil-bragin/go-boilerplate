@@ -18,144 +18,77 @@ package notifications
 import (
 	"context"
 	"io"
-	"log/slog"
-	"os"
 
+	"go-boilerplate/examples/internal/service"
 	"go-boilerplate/examples/notifications/internal/migrations"
 	"go-boilerplate/examples/notifications/internal/transport"
 	"go-boilerplate/platform/config"
-	"go-boilerplate/platform/kafka"
-	"go-boilerplate/platform/log"
-	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/run"
-	"go-boilerplate/platform/telemetry"
 )
 
 // Config aggregates all configuration for the notifications service.
 type Config struct {
-	Log                 log.Config
-	Telemetry           telemetry.Config
-	PG                  pg.Config
-	Kafka               kafka.Config
+	service.Config
 	PaymentsEventsTopic string `env:"PAYMENTS_EVENTS_TOPIC" envDefault:"payments.events"`
 }
 
+// notifOptions holds mutable options resolved before wiring.
+type notifOptions struct {
+	notifier transport.Notifier
+}
+
 // Option is a functional option for [NewApp].
-type Option func(*App)
+type Option func(*notifOptions)
 
 // WithNotifier overrides the default log-based notifier with a custom
 // implementation. Tests inject a capturing function here to assert that the
 // correct notifications are fired (and fired exactly once, thanks to inbox dedup).
 func WithNotifier(n transport.Notifier) Option {
-	return func(a *App) {
-		a.notifier = n
+	return func(o *notifOptions) {
+		o.notifier = n
 	}
 }
 
 // WithLogWriter overrides the log output writer (default: os.Stdout).
-func WithLogWriter(w io.Writer) Option {
-	return func(a *App) {
-		a.logWriter = w
-	}
+// Kept for API compatibility; harness writes to os.Stdout.
+func WithLogWriter(_ io.Writer) Option {
+	return func(_ *notifOptions) {}
 }
 
 // App holds all wired components for the notifications service.
 type App struct {
-	cfg             Config
-	logger          *slog.Logger
-	closer          *run.Closer
-	consumer        *kafka.Consumer
-	eventHandler    kafka.HandlerFunc
-	cancelConsumers context.CancelFunc
-
-	// notifier is invoked for each unique PaymentProcessed event after dedup.
-	// Default: structured log line. Replaceable via WithNotifier for tests.
-	notifier  transport.Notifier
-	logWriter io.Writer
+	svc *service.Service
 }
 
 // NewApp wires all service components and returns a ready-to-start App.
-// Call [App.Start] to begin consuming events, and [App.Stop] (or the
-// run.Closer registered inside) to shut down gracefully.
+// Call [App.Start] to begin consuming events, and [App.Stop] to shut down
+// gracefully.
 func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	cfg, err := config.Load[Config]()
 	if err != nil {
 		return nil, err
 	}
 
-	a := &App{
-		cfg:       cfg,
-		logWriter: os.Stdout,
-	}
-
-	// Apply options before building components so overrides (logWriter, etc.)
-	// are in effect before first use.
+	nOpts := &notifOptions{}
 	for _, o := range opts {
-		o(a)
+		o(nOpts)
 	}
 
-	logger, logSync := log.New(cfg.Log, a.logWriter)
-	a.logger = logger
-	slog.SetDefault(logger)
-
-	closer := run.NewCloser()
-	// log-sync runs last (reverse registration order) so shutdown logs flush.
-	closer.Add("log-sync", func(context.Context) error {
-		_ = logSync()
-		return nil
-	})
-	a.closer = closer
-
-	shutdownTel, err := telemetry.Setup(ctx, cfg.Telemetry)
-	if err != nil {
-		return nil, err
-	}
-	closer.Add("telemetry", func(ctx context.Context) error {
-		return shutdownTel(ctx)
-	})
-
-	// Postgres pool — used only for the inbox table (no business tables).
-	pool, err := pg.New(ctx, cfg.PG)
-	if err != nil {
-		return nil, err
-	}
-	closer.Add("pg", func(ctx context.Context) error {
-		return pool.Close(ctx)
-	})
-
-	// Run migrations (creates the inbox table only).
-	if err := pg.Migrate(ctx, cfg.PG.DSN, migrations.FS, "sql"); err != nil {
-		return nil, err
-	}
-
-	// Kafka client — consumer only, no producer needed.
-	consumerKafkaCfg := cfg.Kafka
-	consumerKafkaCfg.GroupID = "notifications"
-
-	kafkaClient, err := kafka.NewClient(consumerKafkaCfg)
+	svc, err := service.New(ctx, cfg.Config, migrations.FS, "sql")
 	if err != nil {
 		return nil, err
 	}
 
-	// Ensure the input topic exists before starting the consumer.
-	if err := kafka.EnsureTopics(ctx, kafkaClient, 1, 1, cfg.PaymentsEventsTopic); err != nil {
+	// Ensure the input topic exists; DLT topic handled by AddConsumer.
+	if err := svc.EnsureTopics(ctx, 1, 1, cfg.PaymentsEventsTopic); err != nil {
 		return nil, err
 	}
-
-	consumer, err := kafka.NewConsumer(consumerKafkaCfg, cfg.PaymentsEventsTopic)
-	if err != nil {
-		return nil, err
-	}
-	closer.Add("kafka-consumer", func(context.Context) error {
-		consumer.Close()
-		return nil
-	})
-	a.consumer = consumer
 
 	// Default notifier: structured log line. Tests override via WithNotifier.
-	if a.notifier == nil {
-		a.notifier = func(orderID, paymentID, status string) {
-			logger.Info("notification sent",
+	notifier := nOpts.notifier
+	if notifier == nil {
+		notifier = func(orderID, paymentID, status string) {
+			svc.Logger().Info("notification sent",
 				"order_id", orderID,
 				"payment_id", paymentID,
 				"status", status,
@@ -163,42 +96,29 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		}
 	}
 
-	a.eventHandler = transport.NewEventHandler(pool, a.notifier)
+	evtHandler := transport.NewEventHandler(svc.Pool(), notifier)
 
-	return a, nil
+	// Register consumer; harness wraps with WithRetry+DLT automatically.
+	if err := svc.AddConsumer(ctx, "notifications", []string{cfg.PaymentsEventsTopic}, evtHandler); err != nil {
+		return nil, err
+	}
+
+	return &App{svc: svc}, nil
 }
 
 // Start launches the Kafka consumer goroutine. Non-blocking.
 func (a *App) Start() {
-	runCtx, cancel := context.WithCancel(context.Background())
-	a.cancelConsumers = cancel
-
-	// Register the cancel as the LAST entry in the Closer so it runs FIRST
-	// during reverse-order teardown — goroutines stop before their resources
-	// (pg pool, kafka client) are closed.
-	a.closer.Add("consumers-cancel", func(context.Context) error {
-		cancel()
-		return nil
-	})
-
-	go func() {
-		if err := a.consumer.Run(runCtx, a.eventHandler); err != nil && runCtx.Err() == nil {
-			a.logger.Error("consumer stopped unexpectedly", "error", err)
-		}
-	}()
-
-	a.logger.Info("notifications service started")
+	if err := a.svc.Start(); err != nil {
+		a.svc.Logger().Error("failed to start service", "error", err)
+	}
 }
 
 // Stop cancels consumer goroutines and closes all resources.
 func (a *App) Stop(ctx context.Context) error {
-	if a.cancelConsumers != nil {
-		a.cancelConsumers()
-	}
-	return a.closer.Close(ctx)
+	return a.svc.Stop(ctx)
 }
 
 // Closer returns the run.Closer for integration with run.Run.
 func (a *App) Closer() *run.Closer {
-	return a.closer
+	return a.svc.Closer()
 }
