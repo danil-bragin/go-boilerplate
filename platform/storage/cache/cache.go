@@ -1,6 +1,13 @@
 // Package cache provides a two-tier cache: L1 in-process (otter v2) and L2
 // distributed (rueidis/Redis). Concurrent misses for the same key are
 // collapsed via singleflight. TTLs are jittered to spread expiry load.
+//
+// # Key convention
+//
+// Cache keys follow "<svc>:v<N>:<entity>:<id>" (e.g. "gw:v1:order:1234").
+// The version segment is bumped whenever the cached value's shape changes —
+// old entries become unreachable and simply expire, instead of unmarshalling
+// stale bytes into the new shape. See docs/conventions.md for the full rule.
 package cache
 
 import (

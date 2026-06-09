@@ -196,3 +196,24 @@ type Health struct { ... }
 **Context.** `context.Context` is always the first parameter of any function that accepts one. Never store a context in a struct field except where the Go stdlib pattern requires it (noted explicitly in the code with `//nolint:containedctx` and a comment explaining why).
 
 **Naming.** Constructors are `New` or `New<Type>`. Config structs are `Config`. Unexported type aliases used only within a file are fine; exported types used across packages go in the package-level file named for the concept.
+
+---
+
+## 6. Cache key convention
+
+Every cache key is **versioned**: `<svc>:v<N>:<entity>:<id>`.
+
+| Segment | Meaning | Example |
+|---|---|---|
+| `<svc>` | Short service prefix (also namespaces services sharing one Redis) | `gw` |
+| `v<N>` | Result-shape version — **bump N whenever the cached value's shape changes** | `v1` |
+| `<entity>` | What is cached | `order` |
+| `<id>` | Entity identifier | `1b4e28ba-…` |
+
+Example: `gw:v1:order:1b4e28ba-2fa1-11d2-883f-0016d3cca427` (see `examples/gateway/internal/app.OrderCacheKey`).
+
+Rules:
+
+1. **One helper per key shape.** Define a single `XxxCacheKey(id)` function and use it from BOTH the read path (`cqrs.Caching` keyFor) and every write path that busts the entry (`cache.Delete`). Two hand-rolled format strings will eventually drift and invalidation silently misses.
+2. **Bump the version on shape change.** When the cached struct gains/renames fields or changes semantics, bump `v1` → `v2`. Old entries become unreachable and expire naturally — no flush, no mixed-shape unmarshalling.
+3. **Never reuse a version.** A rolled-back deploy that reused `v2` with a different shape would poison the cache for the roll-forward.
