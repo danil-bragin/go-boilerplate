@@ -9,9 +9,11 @@ import (
 // Start starts the admin HTTP server and all registered consumer/relay/cleaner
 // goroutines. Non-blocking.
 //
-// Admin server start failure is treated as a warning (logged, not returned) since
-// the admin endpoint is observability-only and must not prevent service startup.
-// This is important in tests where multiple services share the same default port.
+// Admin server bind failure is FATAL by default: without /livez, /readyz and
+// /metrics the pod is a half-alive blind spot — orchestrators cannot probe it
+// and operators cannot see it. ADMIN_BIND_OPTIONAL=true restores the old
+// warn-and-continue behavior for setups that accept that risk. Tests use
+// AdminAddr "127.0.0.1:0" (ephemeral port), so they are unaffected.
 //
 // Ordering guarantee: a runCtx is created and cancelRun is registered as the
 // LAST entry in the Closer (so it fires FIRST in LIFO teardown). This means
@@ -19,10 +21,12 @@ import (
 // are closed.
 func (s *Service) Start() error {
 	if err := s.adminServer.Start(); err != nil {
-		// Non-fatal: log and continue. The admin endpoint is observability-only;
-		// a port-bind failure (e.g. during tests with multiple services sharing
-		// the default port) must not prevent the service from consuming messages.
-		s.logger.Warn("admin server failed to start", "error", err, "addr", s.adminServer.Addr())
+		if !s.cfg.AdminBindOptional {
+			return fmt.Errorf("servicekit: admin server failed to start on %s "+
+				"(set ADMIN_BIND_OPTIONAL=true to tolerate): %w", s.adminServer.Addr(), err)
+		}
+		s.logger.Warn("admin server failed to start — continuing without /livez,/readyz,/metrics (ADMIN_BIND_OPTIONAL=true)",
+			"error", err, "addr", s.adminServer.Addr())
 	}
 
 	runCtx, cancelRun := context.WithCancel(context.Background())

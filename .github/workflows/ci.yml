@@ -56,6 +56,25 @@ jobs:
         run: buf breaking --against '.git#branch=HEAD~1'
 
 
+  # ── SQL migration lint (squawk) ───────────────────────────────────────────
+  # BLOCKING: squawk catches dangerous DDL (table rewrites, lock-heavy ALTERs,
+  # non-concurrent index builds on hot tables). Config: .squawk.toml.
+  sql-lint:
+    name: SQL lint (squawk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download squawk
+        run: |
+          curl -sSfL -o /usr/local/bin/squawk \
+            https://github.com/sbdchd/squawk/releases/download/v2.57.0/squawk-linux-x64
+          chmod +x /usr/local/bin/squawk
+          squawk --version
+
+      - name: squawk lint migrations
+        run: squawk $(git ls-files '*/migrations/*.sql' '*/migrations/sql/*.sql')
+
   # ── Vulnerability scan ────────────────────────────────────────────────────
   govulncheck:
     name: govulncheck

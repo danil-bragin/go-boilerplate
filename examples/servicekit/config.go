@@ -18,6 +18,21 @@ type Config struct {
 	Kafka     kafka.Config
 	AdminAddr string `env:"ADMIN_HTTP_ADDR" envDefault:":9090"`
 
+	// AdminBindOptional downgrades an admin-server bind failure in Start from
+	// fatal error to a logged warning. Default false: a pod that cannot serve
+	// /livez, /readyz and /metrics is invisible to orchestration and MUST NOT
+	// come up half-alive. Set true only where that trade-off is understood
+	// (e.g. ad-hoc local runs with a port squatter).
+	AdminBindOptional bool `env:"ADMIN_BIND_OPTIONAL" envDefault:"false"`
+
+	// MigrateOnStart controls whether New applies the service's embedded
+	// migrations (advisory-locked, idempotent) before wiring anything else.
+	// Default true — right for dev/test and single-team setups. In production
+	// prefer a dedicated migrate job (run `cmd/migrate` or `just migrate <svc>`
+	// in a pre-deploy step) and set MIGRATE_ON_START=false so app replicas
+	// never race a long migration during rollout.
+	MigrateOnStart bool `env:"MIGRATE_ON_START" envDefault:"true"`
+
 	// PyroscopeAddr enables continuous profiling: when set (e.g.
 	// "http://pyroscope:4040") the harness starts the grafana/pyroscope-go
 	// profiler in New and stops it via the Closer. Empty (default) = no

@@ -5,6 +5,8 @@ package run
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"sync"
 )
 
@@ -35,12 +37,19 @@ func NewCloser() *Closer { return &Closer{} }
 
 // Add registers a named teardown callback. If Close has already been called,
 // the teardown is run immediately (best-effort, using context.Background()) so
-// that late-registered resources are never silently dropped.
+// that late-registered resources are never silently dropped; a failure on this
+// late path is logged via slog.Default (Add has no error return and the
+// Close() error has already been delivered, so logging is the only channel
+// left to surface it).
 func (c *Closer) Add(name string, fn TeardownFunc) {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
-		_ = fn(context.Background()) // closer already ran; clean up immediately
+		// Closer already ran; clean up immediately.
+		if err := fn(context.Background()); err != nil {
+			slog.Default().Error("run: teardown added after Close failed",
+				"resource", name, "error", err)
+		}
 		return
 	}
 	c.items = append(c.items, teardown{name: name, fn: fn})
@@ -49,6 +58,13 @@ func (c *Closer) Add(name string, fn TeardownFunc) {
 
 // Close runs every teardown in reverse order. All callbacks run even if some
 // fail; the returned error joins all failures (with their resource names).
+//
+// Teardown budget: ctx bounds the WHOLE teardown. When ctx expires midway,
+// Close still attempts every remaining teardown (each callback observes the
+// expired ctx and should bail out fast — best-effort cleanup beats leaked
+// resources) and records the context error once in the returned error so the
+// caller knows the budget was exhausted.
+//
 // Close is idempotent; subsequent calls are no-ops.
 func (c *Closer) Close(ctx context.Context) error {
 	c.mu.Lock()
@@ -62,7 +78,12 @@ func (c *Closer) Close(ctx context.Context) error {
 	c.mu.Unlock()
 
 	var errs []error
+	ctxErrRecorded := false
 	for i := len(items) - 1; i >= 0; i-- {
+		if err := ctx.Err(); err != nil && !ctxErrRecorded {
+			ctxErrRecorded = true
+			errs = append(errs, fmt.Errorf("run: teardown budget exhausted before %q: %w", items[i].name, err))
+		}
 		if err := items[i].fn(ctx); err != nil {
 			errs = append(errs, closeError{name: items[i].name, err: err})
 		}

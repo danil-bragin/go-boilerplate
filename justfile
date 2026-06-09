@@ -70,6 +70,10 @@ test-cover:
 lint:
     golangci-lint run ./...
 
+# Lint migration SQL with squawk (config: .squawk.toml) — same gate as CI
+lint-sql:
+    npx -y squawk-cli@latest $(git ls-files '*/migrations/*.sql' '*/migrations/sql/*.sql')
+
 # Run golangci-lint with auto-fix
 lint-fix:
     golangci-lint run --fix ./...
@@ -127,6 +131,10 @@ build-images:
     docker build --build-arg SERVICE=notifications -t go-boilerplate/notifications:local .
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
+
+# Apply a service's embedded migrations (PG_DSN / PG_MIGRATE_URL from env; svc: gateway|orders|payments|notifications|all)
+migrate svc:
+    go run ./cmd/migrate -service {{svc}}
 
 # Fetch a Keycloak access token (demo/demo) for manual API calls — requires jq
 # Usage: curl -H "Authorization: Bearer $(just token)" http://localhost:8080/v1/orders/<id>

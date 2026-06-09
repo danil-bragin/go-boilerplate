@@ -6,6 +6,7 @@ package pg
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -73,13 +74,36 @@ const (
 // Set StatementCacheMode to StatementCacheModeDescribeExec when connecting
 // through PgBouncer in transaction-mode pooling. See StatementCacheMode docs.
 type Config struct {
-	DSN               string        `env:"PG_DSN" envDefault:"postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"`
-	ReaderDSN         string        `env:"PG_READER_DSN" envDefault:""`
+	DSN       string `env:"PG_DSN" envDefault:"postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"`
+	ReaderDSN string `env:"PG_READER_DSN" envDefault:""`
+
+	// MigrateURL, when set, is the DSN Migrate dials instead of DSN. REQUIRED
+	// when DSN points at PgBouncer in transaction pooling mode: migrations
+	// need a direct-Postgres session for the advisory lock (see Migrate docs).
+	MigrateURL        string        `env:"PG_MIGRATE_URL" envDefault:""`
 	MaxConns          int32         `env:"PG_MAX_CONNS" envDefault:"25"`
 	MinConns          int32         `env:"PG_MIN_CONNS" envDefault:"5"`
 	MaxConnLifetime   time.Duration `env:"PG_MAX_CONN_LIFETIME" envDefault:"30m"`
 	MaxConnIdleTime   time.Duration `env:"PG_MAX_CONN_IDLE_TIME" envDefault:"5m"`
 	HealthCheckPeriod time.Duration `env:"PG_HEALTH_CHECK_PERIOD" envDefault:"1m"`
+
+	// ReaderMaxConns / ReaderMinConns size the READER pool independently from
+	// the writer (replicas often tolerate more connections than the primary,
+	// or the reverse when many service replicas share one read endpoint).
+	// Zero (the default) inherits the writer's MaxConns/MinConns.
+	ReaderMaxConns int32 `env:"PG_READER_MAX_CONNS" envDefault:"0"`
+	ReaderMinConns int32 `env:"PG_READER_MIN_CONNS" envDefault:"0"`
+
+	// ConnectTimeout bounds the TCP+startup handshake of every new connection
+	// (pgconn ConnectTimeout). Zero falls back to 5s — never unbounded.
+	ConnectTimeout time.Duration `env:"PG_CONNECT_TIMEOUT" envDefault:"5s"`
+
+	// StatementTimeout is applied as the statement_timeout runtime parameter
+	// on every connection of BOTH pools: any single statement running longer
+	// is cancelled server-side. The env default is 30s; set 0 to disable
+	// (e.g. for bulk/analytical workloads). Long-running migrations are NOT
+	// affected — Migrate connects separately, not through these pools.
+	StatementTimeout time.Duration `env:"PG_STATEMENT_TIMEOUT" envDefault:"30s"`
 
 	// StatementCacheMode controls the pgx query execution mode.
 	// Default (0) leaves pgx's CachedPlan behaviour unchanged.
@@ -89,30 +113,70 @@ type Config struct {
 
 // BuildPoolConfig parses DSN into a *pgxpool.Config and applies sizing/timeout
 // settings, defaulting zero durations to sane values.
+//
+// Pool-acquire timeouts: pgxpool has no separate acquire-timeout knob —
+// Acquire (and every query through the pool) honors the caller's ctx, so a
+// request-scoped deadline (cqrs.Deadline, http request ctx) IS the acquire
+// bound. Never call pool methods with context.Background() on a request path.
 func (c Config) BuildPoolConfig() (*pgxpool.Config, error) {
 	return c.buildPoolConfig(c.DSN)
 }
 
 func (c Config) buildPoolConfig(dsn string) (*pgxpool.Config, error) {
+	return c.buildSizedPoolConfig(dsn, c.MaxConns, c.MinConns)
+}
+
+// buildReaderPoolConfig sizes the reader pool from ReaderMaxConns/ReaderMinConns,
+// inheriting the writer values when they are zero.
+func (c Config) buildReaderPoolConfig(dsn string) (*pgxpool.Config, error) {
+	maxConns := c.ReaderMaxConns
+	if maxConns <= 0 {
+		maxConns = c.MaxConns
+	}
+	minConns := c.ReaderMinConns
+	if minConns <= 0 {
+		minConns = c.MinConns
+	}
+	return c.buildSizedPoolConfig(dsn, maxConns, minConns)
+}
+
+func (c Config) buildSizedPoolConfig(dsn string, maxConns, minConns int32) (*pgxpool.Config, error) {
 	pc, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("pg: parse dsn: %w", err)
 	}
-	if c.MaxConns > 0 {
-		pc.MaxConns = c.MaxConns
+	if maxConns > 0 {
+		pc.MaxConns = maxConns
 	}
-	if c.MinConns > 0 {
-		pc.MinConns = c.MinConns
+	if minConns > 0 {
+		pc.MinConns = minConns
 	}
 	pc.MaxConnLifetime = nonZeroDur(c.MaxConnLifetime, 30*time.Minute)
 	pc.MaxConnIdleTime = nonZeroDur(c.MaxConnIdleTime, 5*time.Minute)
 	pc.HealthCheckPeriod = nonZeroDur(c.HealthCheckPeriod, time.Minute)
+	pc.ConnConfig.ConnectTimeout = nonZeroDur(c.ConnectTimeout, 5*time.Second)
+
+	if c.StatementTimeout > 0 {
+		if pc.ConnConfig.RuntimeParams == nil {
+			pc.ConnConfig.RuntimeParams = map[string]string{}
+		}
+		pc.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(c.StatementTimeout.Milliseconds(), 10)
+	}
 
 	if c.StatementCacheMode == StatementCacheModeDescribeExec {
 		pc.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
 	}
 
 	return pc, nil
+}
+
+// MigrateDSN returns the DSN migrations should dial: MigrateURL when set
+// (direct Postgres behind PgBouncer), otherwise the pool DSN.
+func (c Config) MigrateDSN() string {
+	if c.MigrateURL != "" {
+		return c.MigrateURL
+	}
+	return c.DSN
 }
 
 func nonZeroDur(v, def time.Duration) time.Duration {
