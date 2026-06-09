@@ -9,12 +9,12 @@ Three serious Go Kafka clients exist: `confluent-kafka-go` (CGO wrapper around l
 
 ## Decision
 
-Use `twmb/franz-go` as the sole Kafka client. It is wrapped in `platform/kafka` behind producer and consumer-group abstractions that handle OTel tracing, retry-topics, DLT routing, and graceful shutdown.
+Use `twmb/franz-go` as the sole Kafka client. It is wrapped in `platform/messaging/kafka` behind producer and consumer-group abstractions that handle OTel tracing, retry-topics, DLT routing, and graceful shutdown.
 
 ## Consequences
 
 - Pure-Go: distroless container images, no CGO cross-compilation issues, no librdkafka version pinning.
 - Cooperative-sticky rebalancing reduces partition churn on rolling deployments.
 - `GroupTransactSession` is available for the future Kafka EOS path (ADR-0004).
-- franz-go is a single-maintainer project; this is an accepted risk mitigated by the wrapper abstraction — swapping the underlying client requires only changes to `platform/kafka`.
+- franz-go is a single-maintainer project; this is an accepted risk mitigated by the wrapper abstraction — swapping the underlying client requires only changes to `platform/messaging/kafka`.
 - `segmentio/kafka-go` and `confluent-kafka-go` are excluded as dependencies.

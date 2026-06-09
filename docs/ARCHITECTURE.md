@@ -6,29 +6,29 @@
 
 `platform/` is the reusable boilerplate layer. It has zero business logic and zero imports from `examples/`. Each package is independently usable.
 
-| Package | Purpose |
-|---|---|
-| `config` | `caarlos0/env` struct-tag loader; `Load[T]()` returns a typed config value |
-| `log` | `log/slog` setup; optional zap backend via `zapslog`; `FromContext`/`WithContext`; trace-id injection |
-| `run` | Signal handling (`SIGINT`/`SIGTERM`), ordered `Start`, reverse-order `Closer`, two-phase shutdown |
-| `telemetry` | OTel tracer + meter + logger providers; OTLP/gRPC exporter; `Shutdown` |
-| `httpserver` | chi server; middleware stack (SecurityHeaders, recover, req-id, OTel, access-log, max-bytes, timeout); CORS and RateLimit opt-in; graceful `Shutdown` |
-| `httpx` | `Decode`+validate request bodies; RFC 7807 `ProblemJSON` error responses |
-| `health` | `/livez` + `/readyz` aggregator; `Checker` interface; liveness always 200, readiness gates on registered checks |
-| `pg` | `pgxpool` factory with tuned defaults; `RunInTx`; `FromContext` (pulls tx or pool); reader/writer pool split; health check |
-| `outbox` | Outbox table (`outbox_messages`); `Repository.Enqueue`; polling `Relay` (`FOR UPDATE SKIP LOCKED`); AT-LEAST-ONCE delivery to Kafka |
-| `kafka` | franz-go producer + consumer group; OTel instrumentation; cooperative-sticky; retry-topics (`<topic>.retry.N`) + DLT |
-| `serde` | Protobuf ↔ Confluent Schema Registry serializer; schema registration + caching |
-| `inbox` | `ProcessOnce(consumer, msgID, fn)` — inserts inbox row + runs `fn` in the SAME transaction; duplicate messages silently no-op |
-| `outboxkafka` | Wires `outbox.Relay` to the Kafka producer; resolves the circular-import problem |
-| `cqrs` | `HandlerFunc[C,R]`, `Behavior[C,R]`, `Decorate` — typed generic decorator pipeline |
-| `cache` | Two-tier `Get`/`Set`/`Delete`: L1 = otter v2 (in-process), L2 = rueidis (Redis); singleflight stampede prevention; TTL jitter |
-| `blob` | `ObjectStore` interface + minio-go v7 implementation; `Put`/`Get`/`Delete`/`PresignGet` |
-| `resilience` | failsafe-go policy builders: `Retry`, `CircuitBreaker`, `Timeout`, `Bulkhead`, `RateLimit`; compose via `failsafe.With` |
-| `auth` | OIDC/JWT validation via lestrrat jwx/v2; JWKS auto-refresh; `Principal` in `ctx`; pluggable middleware interface |
-| `authz` | RBAC `Behavior` — extracts roles from `ctx` principal; returns 403 if required permission absent |
-| `audit` | `Behavior` — on successful command writes an audit entry (who/what/when/resource) to the audit table via `pg.FromContext` |
-| `featureflags` | OpenFeature Go SDK wrapper; `BoolValue`/`StringValue` helpers; swappable provider (env-var provider included) |
+| Package | Import path (under `go-boilerplate/`) | Purpose |
+|---|---|---|
+| `config` | `platform/config` | `caarlos0/env` struct-tag loader; `Load[T]()` returns a typed config value |
+| `log` | `platform/observability/log` | `log/slog` setup; optional zap backend via `zapslog`; `FromContext`/`WithContext`; trace-id injection |
+| `run` | `platform/run` | Signal handling (`SIGINT`/`SIGTERM`), ordered `Start`, reverse-order `Closer`, two-phase shutdown |
+| `telemetry` | `platform/observability/telemetry` | OTel tracer + meter + logger providers; OTLP/gRPC exporter; `Shutdown` |
+| `httpserver` | `platform/web/httpserver` | chi server; middleware stack (SecurityHeaders, recover, req-id, OTel, access-log, max-bytes, timeout); CORS and RateLimit opt-in; graceful `Shutdown` |
+| `httpx` | `platform/web/httpx` | `Decode`+validate request bodies; RFC 7807 `ProblemJSON` error responses |
+| `health` | `platform/observability/health` | `/livez` + `/readyz` aggregator; `Checker` interface; liveness always 200, readiness gates on registered checks |
+| `pg` | `platform/storage/pg` | `pgxpool` factory with tuned defaults; `RunInTx`; `FromContext` (pulls tx or pool); reader/writer pool split; health check |
+| `outbox` | `platform/messaging/outbox` | Outbox table (`outbox_messages`); `Repository.Enqueue`; polling `Relay` (`FOR UPDATE SKIP LOCKED`); AT-LEAST-ONCE delivery to Kafka |
+| `kafka` | `platform/messaging/kafka` | franz-go producer + consumer group; OTel instrumentation; cooperative-sticky; retry-topics (`<topic>.retry.N`) + DLT |
+| `serde` | `platform/messaging/serde` | Protobuf ↔ Confluent Schema Registry serializer; schema registration + caching |
+| `inbox` | `platform/messaging/inbox` | `ProcessOnce(consumer, msgID, fn)` — inserts inbox row + runs `fn` in the SAME transaction; duplicate messages silently no-op |
+| `outboxkafka` | `platform/messaging/outboxkafka` | Wires `outbox.Relay` to the Kafka producer; resolves the circular-import problem |
+| `cqrs` | `platform/cqrs` | `HandlerFunc[C,R]`, `Behavior[C,R]`, `Decorate` — typed generic decorator pipeline |
+| `cache` | `platform/storage/cache` | Two-tier `Get`/`Set`/`Delete`: L1 = otter v2 (in-process), L2 = rueidis (Redis); singleflight stampede prevention; TTL jitter |
+| `blob` | `platform/storage/blob` | `ObjectStore` interface + minio-go v7 implementation; `Put`/`Get`/`Delete`/`PresignGet` |
+| `resilience` | `platform/resilience` | failsafe-go policy builders: `Retry`, `CircuitBreaker`, `Timeout`, `Bulkhead`, `RateLimit`; compose via `failsafe.With` |
+| `auth` | `platform/security/auth` | OIDC/JWT validation via lestrrat jwx/v2; JWKS auto-refresh; `Principal` in `ctx`; pluggable middleware interface |
+| `authz` | `platform/security/authz` | RBAC `Behavior` — extracts roles from `ctx` principal; returns 403 if required permission absent |
+| `audit` | `platform/security/audit` | `Behavior` — on successful command writes an audit entry (who/what/when/resource) to the audit table via `pg.FromContext` |
+| `featureflags` | `platform/featureflags` | OpenFeature Go SDK wrapper; `BoolValue`/`StringValue` helpers; swappable provider (env-var provider included) |
 
 ---
 
@@ -113,10 +113,10 @@ DB-per-service (separate logical databases in one Postgres instance locally). Ea
 
 ## Observability
 
-- **Traces:** OTel SDK → OTLP/gRPC → OTel Collector → Jaeger UI (`localhost:16686`). Trace IDs are injected into structured log entries via the `traceHandler` in `platform/log`, so every log line carries `trace_id` and `span_id` when a span is active.
-- **Metrics:** OTel SDK MeterProvider wired in every service via `platform/telemetry`. Two export paths:
+- **Traces:** OTel SDK → OTLP/gRPC → OTel Collector → Jaeger UI (`localhost:16686`). Trace IDs are injected into structured log entries via the `traceHandler` in `platform/observability/log`, so every log line carries `trace_id` and `span_id` when a span is active.
+- **Metrics:** OTel SDK MeterProvider wired in every service via `platform/observability/telemetry`. Two export paths:
   1. OTLP/gRPC → OTel Collector → Prometheus exporter (`otel-collector:8889`) — batch export.
-  2. Direct Prometheus scrape endpoint `/metrics` on each service's admin HTTP server (`platform/telemetry` registers a Prometheus exporter with the MeterProvider and mounts it on the admin mux).
+  2. Direct Prometheus scrape endpoint `/metrics` on each service's admin HTTP server (`platform/observability/telemetry` registers a Prometheus exporter with the MeterProvider and mounts it on the admin mux).
 - **Logs:** `log/slog` API with trace-id injection; JSON format in production. Trace correlation available in every request handler via `log.From(ctx)`.
 - **Profiling:** Pyroscope continuous profiling agent (`localhost:4040`); `pprof` endpoints behind auth guard.
 - **Health:** `/livez` and `/readyz` endpoints are mounted on every service's admin HTTP server. Liveness always returns 200 while the process is alive; readiness gates on registered checks (DB pool ping, Kafka client connectivity). The gateway additionally registers a Redis cache readiness check when cache is configured.
@@ -142,14 +142,14 @@ The following items were previously listed as deferred but are now implemented:
 
 | Item | Status |
 |---|---|
-| Per-service `/metrics` Prometheus endpoint | Wired via `platform/telemetry` — Prometheus exporter registered on MeterProvider; `/metrics` mounted on admin server for every service |
-| Trace ID in logs | Wired via `platform/log` traceHandler — `trace_id` + `span_id` injected into every log entry when a span is active |
-| Health endpoints | `/livez` + `/readyz` mounted on every service's admin HTTP server via `platform/health` |
+| Per-service `/metrics` Prometheus endpoint | Wired via `platform/observability/telemetry` — Prometheus exporter registered on MeterProvider; `/metrics` mounted on admin server for every service |
+| Trace ID in logs | Wired via `platform/observability/log` traceHandler — `trace_id` + `span_id` injected into every log entry when a span is active |
+| Health endpoints | `/livez` + `/readyz` mounted on every service's admin HTTP server via `platform/observability/health` |
 | Security headers | `SecurityHeaders` middleware in default `httpserver.New` chain; sets `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Content-Security-Policy`, `X-XSS-Protection` |
-| Edge rate limiting (global) | `RateLimit(rps, burst)` token-bucket middleware in `platform/httpserver`; wired on the gateway's public server at 100 rps / burst 200 |
-| CORS | `CORS(CORSOptions)` middleware in `platform/httpserver`; wired on the gateway's public server; opt-in elsewhere |
+| Edge rate limiting (global) | `RateLimit(rps, burst)` token-bucket middleware in `platform/web/httpserver`; wired on the gateway's public server at 100 rps / burst 200 |
+| CORS | `CORS(CORSOptions)` middleware in `platform/web/httpserver`; wired on the gateway's public server; opt-in elsewhere |
 | Resilience + caching + authz in gateway | Circuit-breaker retry wraps Kafka publish; CQRS caching behavior on GetOrder query; RBAC authz behavior on CreateOrder command |
-| CDC outbox relay (polling) | Polling relay (`platform/outbox`) with `FOR UPDATE SKIP LOCKED`, publish-after-commit, AT-LEAST-ONCE delivery wired in all services |
+| CDC outbox relay (polling) | Polling relay (`platform/messaging/outbox`) with `FOR UPDATE SKIP LOCKED`, publish-after-commit, AT-LEAST-ONCE delivery wired in all services |
 | Image signing (cosign) | Step present in `.github/workflows/ci.yml` (commented; requires registry credentials + `id-token: write`) |
 
 ---
@@ -161,7 +161,7 @@ The following items are genuine gaps deferred to a later iteration:
 | Item | Notes |
 |---|---|
 | Kafka EOS (`GroupTransactSession`) | Outbox+inbox is simpler and covers v1 requirements; EOS reserved for money-grade atomic consume→produce |
-| Stateless retry-topics | Framework support exists in `platform/kafka` (DLT wiring); tiered retry topic routing not yet wired per service |
+| Stateless retry-topics | Framework support exists in `platform/messaging/kafka` (DLT wiring); tiered retry topic routing not yet wired per service |
 | Distributed rate limiting (per-IP, Redis-backed) | Current edge limiter is a single global process-local token bucket. For multi-instance or per-client limiting, replace with Redis GCRA (e.g. `redis_rate` or rueidis scripted GCRA). Per-IP limiting requires an LRU map of `*rate.Limiter` keyed on `r.RemoteAddr`. |
 | Multi-tenancy | Tenant-id context + event propagation is a documented seam; not built in v1 |
 | TLS (inter-service) | All connections are plaintext (HTTP, OTLP `WithInsecure`, `sslmode=disable`, Kafka `PLAINTEXT`). In production TLS terminates at the ingress layer or service mesh. |

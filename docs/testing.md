@@ -48,10 +48,10 @@ Use `just test-unit` for the fast lane and `just test-integration` for the full 
 | Stateful in-memory behaviour (cache, publisher, store) | Hand fake | `platform/testkit/fakes` |
 | External HTTP dependency (REST API, JWKS endpoint, webhook) | `mockhttp.Server` + `mockhttp.JSON` | `platform/testkit/mockhttp` |
 | Auth — live RS256 JWKS + JWT minting | `mockhttp.JWKS(t)` | `platform/testkit/mockhttp` |
-| Real Postgres | `pgtest.NewDSN(t)` | `platform/pg/pgtest` |
-| Real Kafka / Redpanda | `kafkatest.NewRedpanda(t)` | `platform/kafka/kafkatest` |
-| Real Redis | `testcontainers-go/modules/redis` directly (see `platform/cache/cache_test.go`) | `github.com/testcontainers/testcontainers-go/modules/redis` |
-| Real MinIO | `testcontainers-go/modules/minio` directly (see `platform/blob/blob_test.go`) | `github.com/testcontainers/testcontainers-go/modules/minio` |
+| Real Postgres | `pgtest.NewDSN(t)` | `platform/storage/pg/pgtest` |
+| Real Kafka / Redpanda | `kafkatest.NewRedpanda(t)` | `platform/messaging/kafka/kafkatest` |
+| Real Redis | `testcontainers-go/modules/redis` directly (see `platform/storage/cache/cache_test.go`) | `github.com/testcontainers/testcontainers-go/modules/redis` |
+| Real MinIO | `testcontainers-go/modules/minio` directly (see `platform/storage/blob/blob_test.go`) | `github.com/testcontainers/testcontainers-go/modules/minio` |
 | Real Keycloak | generic testcontainers container (see `examples/gateway/keycloak_test.go`) | `github.com/testcontainers/testcontainers-go` |
 | Canonical test data | Builder functions | `platform/testkit/fixtures` |
 

@@ -13,13 +13,13 @@ Practical reference for contributors. Read this before adding a new file, packag
 | Rule | Example |
 |---|---|
 | A type and its constructor live in the same file | `health.go` defines `Health` and `New()` |
-| `Config` structs go in `config.go` | `platform/kafka/config.go`, `examples/internal/service/config.go` |
+| `Config` structs go in `config.go` | `platform/messaging/kafka/config.go`, `examples/servicekit/config.go` |
 | HTTP handlers (request/response logic) are separate from routing wiring | `handlers.go` vs `routes.go` in `examples/gateway/` |
-| Each sub-system or behaviour gets its own file | `relay.go`, `cleanup.go`, `consumers.go` in `examples/internal/service/` |
+| Each sub-system or behaviour gets its own file | `relay.go`, `cleanup.go`, `consumers.go` in `examples/servicekit/` |
 
 ### Real examples from this repo
 
-**`platform/health`** — three files, each with a distinct responsibility:
+**`platform/observability/health`** — three files, each with a distinct responsibility:
 
 | File | Owns |
 |---|---|
@@ -27,7 +27,7 @@ Practical reference for contributors. Read this before adding a new file, packag
 | `check.go` | `Check` function type and `CheckFunc` adapter (consumer-defined interface seam) |
 | `handlers.go` | `LivezHandler()`, `ReadyzHandler()`, `Mount()` (HTTP wiring) |
 
-**`examples/internal/service`** — the shared consumer harness split by sub-system:
+**`examples/servicekit`** — the shared consumer harness split by sub-system (package `servicekit`):
 
 | File | Owns |
 |---|---|
@@ -62,7 +62,35 @@ Split when a file mixes two or more responsibilities **or** exceeds ~200–250 l
 | Per package | One cohesive concern per package. Packages are named for what they provide, not what uses them |
 | Interfaces | Defined by the **consumer**, not the producer (`health.Check`, `outbox.Publisher`). Keeps `platform/` packages independently usable |
 
-`platform/` packages never depend on each other circularly; the `outboxkafka` package exists specifically to bridge `platform/outbox` and `platform/kafka` without creating a cycle.
+### Platform group map
+
+`platform/` is organised into domain groups (≤2 levels). Use the grouped import paths:
+
+| Group | Packages |
+|---|---|
+| `platform/messaging/` | `kafka`, `serde`, `outbox`, `inbox`, `outboxkafka` |
+| `platform/observability/` | `log`, `telemetry`, `health` |
+| `platform/web/` | `httpserver`, `httpx` |
+| `platform/security/` | `auth`, `authz`, `audit` |
+| `platform/storage/` | `pg`, `cache`, `blob` |
+| standalone | `config`, `run`, `cqrs`, `resilience`, `featureflags`, `testkit` |
+
+`platform/` packages never depend on each other circularly; the `messaging/outboxkafka` package exists specifically to bridge `messaging/outbox` and `messaging/kafka` without creating a cycle.
+
+### Standard example-service internal layout
+
+```
+examples/<service>/
+├── cmd/<service>/main.go
+├── internal/
+│   ├── app/           command/query handlers + Decorate wiring
+│   ├── transport/     Kafka consumers (inbox.ProcessOnce wrapping)
+│   ├── store/         sqlc queries + pgx; never opens transactions
+│   └── migrations/    goose embed SQL
+└── <service>.go       NewApp / Start / Stop / Closer
+```
+
+Role-specific extras: `gateway` adds `internal/api/` (oapi-codegen), `internal/attachments/`, `internal/projection/`; `notifications` is terminal (transport + inbox only, no app layer).
 
 Deleting `examples/`, `proto/`, and `gen/` leaves a clean `platform/`-only starter — this works because the boundary is enforced.
 

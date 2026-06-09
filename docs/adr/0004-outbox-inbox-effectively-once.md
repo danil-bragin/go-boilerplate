@@ -11,7 +11,7 @@ The boilerplate needs a strategy for reliable, effectively-once event delivery b
 
 Use **transactional outbox + inbox** for v1:
 
-- **Outbox:** command handlers enqueue domain event rows in the same DB transaction as the state change. A polling relay (`platform/outbox.Relay`) publishes unpublished rows to Kafka using `FOR UPDATE SKIP LOCKED`, then marks them published — AT-LEAST-ONCE delivery to Kafka. The relay stamps each record with a stable `message-id` header (the outbox row UUID).
+- **Outbox:** command handlers enqueue domain event rows in the same DB transaction as the state change. A polling relay (`platform/messaging/outbox.Relay`) publishes unpublished rows to Kafka using `FOR UPDATE SKIP LOCKED`, then marks them published — AT-LEAST-ONCE delivery to Kafka. The relay stamps each record with a stable `message-id` header (the outbox row UUID).
 - **Inbox:** consumers call `inbox.ProcessOnce(consumer, messageID, fn)` which inserts a dedup row and runs the business logic in the same DB transaction — giving atomic dedup + effect, effectively-once per `(consumer, messageID)`.
 
 Kafka EOS (`GroupTransactSession`) is reserved for money-grade atomic consume→produce flows and documented as a future enhancement.

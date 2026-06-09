@@ -142,29 +142,36 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/orders/<id>
 ```
 go-boilerplate/
 ├── platform/        ★ THE BOILERPLATE — reusable, zero business logic
+│   ├── messaging/
+│   │   ├── kafka/       franz-go producer + consumer group, OTel, retry-topics, DLT
+│   │   ├── serde/       protobuf ↔ Schema Registry serializer
+│   │   ├── outbox/      outbox table + polling relay (DB → Kafka)
+│   │   ├── inbox/       idempotent-consumer (inbox pattern, ProcessOnce)
+│   │   └── outboxkafka/ wires outbox.Relay to the Kafka producer
+│   ├── observability/
+│   │   ├── log/         slog setup (zapslog backend), ctx logger, trace-id injection
+│   │   ├── telemetry/   OTel tracer + meter + log providers, OTLP exporters
+│   │   └── health/      /livez + /readyz aggregator
+│   ├── web/
+│   │   ├── httpserver/  chi server, middleware (recover, req-id, OTel, slog, rate-limit, auth)
+│   │   └── httpx/       decode+validate helpers, RFC 7807 problem+JSON errors
+│   ├── security/
+│   │   ├── auth/        OIDC/JWT validation (Keycloak JWKS), pluggable middleware, ctx principal
+│   │   ├── authz/       RBAC behavior + policy seam
+│   │   └── audit/       audit behavior → audit topic/table
+│   ├── storage/
+│   │   ├── pg/          pgxpool factory (tuned), tx runner, reader/writer split, health
+│   │   ├── cache/       two-tier: otter v2 (L1) + rueidis (L2) + singleflight + TTL jitter
+│   │   └── blob/        ObjectStore interface + minio-go implementation
 │   ├── config/      caarlos0/env loader
-│   ├── log/         slog setup (zapslog backend), ctx logger, trace-id injection
 │   ├── run/         lifecycle: signal handling, ordered start, Closer, two-phase shutdown
-│   ├── telemetry/   OTel tracer + meter + log providers, OTLP exporters
-│   ├── httpserver/  chi server, middleware (recover, req-id, OTel, slog, rate-limit, auth)
-│   ├── httpx/       decode+validate helpers, RFC 7807 problem+JSON errors
-│   ├── health/      /livez + /readyz aggregator
-│   ├── pg/          pgxpool factory (tuned), tx runner, reader/writer split, health
-│   ├── outbox/      outbox table + polling relay (DB → Kafka)
-│   ├── kafka/       franz-go producer + consumer group, OTel, retry-topics, DLT
-│   ├── serde/       protobuf ↔ Schema Registry serializer
-│   ├── inbox/       idempotent-consumer (inbox pattern, ProcessOnce)
-│   ├── outboxkafka/ wires outbox.Relay to the Kafka producer
 │   ├── cqrs/        HandlerFunc + Behavior decorators (log/trace/metrics/validate/tx/cache)
-│   ├── cache/       two-tier: otter v2 (L1) + rueidis (L2) + singleflight + TTL jitter
-│   ├── blob/        ObjectStore interface + minio-go implementation
 │   ├── resilience/  failsafe-go policy builders
-│   ├── auth/        OIDC/JWT validation (Keycloak JWKS), pluggable middleware, ctx principal
-│   ├── authz/       RBAC behavior + policy seam
-│   ├── audit/       audit behavior → audit topic/table
-│   └── featureflags/ OpenFeature wrapper + provider
+│   ├── featureflags/ OpenFeature wrapper + provider
+│   └── testkit/     test doubles: fakes, mockhttp, mocks, fixtures
 │
 ├── examples/        ★ DELETABLE — demonstrates platform usage
+│   ├── servicekit/  shared consumer service harness (logger, pg, kafka, health, admin server)
 │   ├── gateway/     REST edge; publishes commands; owns read-model projection
 │   ├── orders/      consumes commands; emits OrderCreated via outbox
 │   ├── payments/    consumes OrderCreated; emits PaymentProcessed via outbox

@@ -31,7 +31,7 @@ Legend: **LOCKED** = decided · **REC** = research-recommended, confirm · **OPT
 | Edge contract | **OpenAPI spec-first + oapi-codegen v2** | LOCKED | generates chi/net-http server + types + Swagger UI |
 | Read path | **CQRS projections** (gateway owns read-model DB from events) | LOCKED | eventual consistency; larger systems may split a read service |
 | Auth (edge) | **Keycloak (OIDC) + pluggable auth middleware** | LOCKED | RS256/JWKS validation, ctx principal; middleware iface = swap IdP |
-| AuthZ | **RBAC behavior** (roles/perms from token claims) | LOCKED | `platform/authz` seam, applied per command/query |
+| AuthZ | **RBAC behavior** (roles/perms from token claims) | LOCKED | `platform/security/authz` seam, applied per command/query |
 | Audit | **audit behavior** (who-did-what on commands) → audit topic/table | LOCKED | |
 | Feature flags | **OpenFeature** Go SDK + simple provider | LOCKED | runtime toggles; example provider, swap to real |
 | Multi-tenancy | tenant-id ctx/event propagation | DEFERRED | documented seam, not built in v1 |
@@ -76,31 +76,40 @@ go-boilerplate/
 ├── go.mod  Taskfile.yml  buf.yaml  buf.gen.yaml  docker-compose.yml  .env.example  openapi.yaml
 │
 ├── platform/            ★ THE BOILERPLATE — zero business logic, reusable
+│   ├── messaging/
+│   │   ├── kafka/       franz-go producer + consumer-group, otel, cooperative-sticky, retry-topics + DLT
+│   │   ├── serde/       protobuf <-> schema-registry serializer
+│   │   ├── outbox/      outbox table + polling relay (DB→Kafka)
+│   │   ├── inbox/       idempotent-consumer dedup (ProcessOnce)
+│   │   └── outboxkafka/ bridges outbox.Relay to the Kafka producer
+│   ├── observability/
+│   │   ├── log/         slog setup (+ optional zapslog backend), ctx logger, trace-id
+│   │   ├── telemetry/   OTel tracer+meter+log providers, OTLP exporters, shutdown
+│   │   └── health/      /livez + /readyz aggregator
+│   ├── web/
+│   │   ├── httpserver/  chi server, middleware (recover, reqid, otel, slog, ratelimit, auth), graceful stop
+│   │   └── httpx/       decode+validate, RFC7807 problem+json errors
+│   ├── security/
+│   │   ├── auth/        OIDC/JWT validation (Keycloak JWKS), pluggable middleware, ctx principal
+│   │   ├── authz/       RBAC behavior + policy seam (roles/perms from claims)
+│   │   └── audit/       audit behavior → audit topic/table
+│   ├── storage/
+│   │   ├── pg/          pgxpool factory (tuned), tx runner, reader/writer split, health
+│   │   ├── cache/       two-tier: otter v2 (L1) + rueidis (L2) + singleflight + jitter
+│   │   └── blob/        ObjectStore interface + minio-go impl
 │   ├── config/          cleanenv loader, typed
-│   ├── log/             slog setup (+ optional zapslog backend), ctx logger, trace-id
-│   ├── telemetry/       OTel tracer+meter+log providers, OTLP exporters, shutdown
-│   ├── httpserver/      chi server, middleware (recover, reqid, otel, slog, ratelimit, auth), graceful stop
-│   ├── httpx/           decode+validate, RFC7807 problem+json errors
+│   ├── run/             lifecycle: signals, ordered start, reverse-order Closer, two-phase shutdown
 │   ├── cqrs/            Handler[C,R] + Behavior decorators (log/trace/metrics/validate/tx/cache)
-│   ├── pg/              pgxpool factory (tuned), tx runner, reader/writer split, health
-│   ├── kafka/           franz-go producer + consumer-group, otel, cooperative-sticky, retry-topics + DLT, inbox
-│   ├── outbox/          outbox table + polling relay (DB→Kafka)
-│   ├── serde/           protobuf <-> schema-registry serializer
-│   ├── cache/           two-tier: otter v2 (L1) + rueidis (L2) + singleflight + jitter
-│   ├── blob/            ObjectStore interface + minio-go impl
 │   ├── resilience/      failsafe-go policy builders (retry/CB/timeout/bulkhead/ratelimit)
-│   ├── auth/            OIDC/JWT validation (Keycloak JWKS), pluggable middleware, ctx principal
-│   ├── authz/          RBAC behavior + policy seam (roles/perms from claims)
-│   ├── audit/          audit behavior → audit topic/table
-│   ├── featureflags/   OpenFeature wrapper + provider
-│   ├── health/          /livez + /readyz aggregator
-│   └── run/             lifecycle: signals, ordered start, reverse-order Closer, two-phase shutdown
+│   ├── featureflags/    OpenFeature wrapper + provider
+│   └── testkit/         test doubles: fakes, mockhttp, mocks, fixtures
 │
 ├── proto/               ★ event contracts (+ committed gen/)
 │   └── <domain>/v1/*.proto
 │
 ├── examples/            ★ DELETABLE — demonstrates platform usage
-│   ├── api-gateway/     REST edge (oapi-codegen); Keycloak auth; publishes commands;
+│   ├── servicekit/      shared consumer service harness (package servicekit)
+│   ├── gateway/         REST edge (oapi-codegen); Keycloak auth; publishes commands;
 │   │                    owns read-model DB (projections from events) → serves queries
 │   ├── orders/          owns orders DB; commands (tx) emit OrderCreated via outbox
 │   ├── payments/        consumes OrderCreated → emits PaymentProcessed
@@ -173,7 +182,7 @@ Pipeline: Logging → Tracing → Metrics → Validation → [Caching: queries] 
 - **O1 Read path:** ✅ CQRS projections — gateway owns read-model DB, populated by consuming domain events; serves queries from it. Eventual consistency.
 - **O2 DB topology:** ✅ DB-per-service (separate DB per service in one Postgres container locally).
 - **O3 Command flow:** gateway validates REST → publishes command event to Kafka → owning service consumes, executes command (tx), emits domain event via outbox. Gateway projection consumes domain events.
-- **O4 Auth:** ✅ Keycloak (OIDC) in compose + pluggable auth middleware (`platform/auth`, RS256/JWKS). IdP swappable via interface.
+- **O4 Auth:** ✅ Keycloak (OIDC) in compose + pluggable auth middleware (`platform/security/auth`, RS256/JWKS). IdP swappable via interface.
 - **O10 Enterprise:** ✅ RBAC + Audit + Feature flags (OpenFeature) in v1. Multi-tenancy = documented seam, deferred.
 
 Minor (sensible defaults, adjust if desired):
