@@ -201,5 +201,6 @@ The `platform/messaging/retry` package implements tiered retry routing. Topics a
 | Step | Action |
 |---|---|
 | Check lag | `kafka-consumer-groups.sh --describe --group <group>.retry` — watch lag on each retry tier |
-| DLT redrive | Messages on `<topic>.DLT` can be republished to the original topic; procedure unchanged from standard DLT redrive |
+| DLT redrive | `go run ./cmd/redrive --brokers <b> --dlt <topic>.DLT` republishes each record to its `x-original-topic`/`retry-orig-topic` header destination with retry/diagnostic headers stripped. `--dry-run` lists only; `--limit N` bounds the batch. Progress is committed (group `redrive`) only after a successful republish, so interrupted runs resume safely |
+| Replay modes | Default preserves `message-id` → consumers that already processed the message dedup via the inbox (safe redelivery). `--fresh-ids` mints new message-ids → inbox dedup is bypassed and side effects run again on purpose (projection rebuild). A DLT record with neither orig-topic header aborts the run — nothing is guessed |
 | Tuning tiers | Edit `platform/messaging/retry` tier definitions and redeploy — each tier is a separate consumer group with its own lag metric |
