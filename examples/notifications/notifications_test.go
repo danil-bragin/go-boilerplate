@@ -110,6 +110,7 @@ func producePaymentProcessed(t *testing.T, broker string, evt *ordersv1.PaymentP
 			// Use OrderId-PaymentId as the canonical message-id so that
 			// duplicate records (same order+payment) hit the inbox dedup path.
 			"message-id": evt.OrderId + "-" + evt.PaymentId,
+			"event-type": "orders.PaymentProcessed.v1",
 		},
 	}))
 }

@@ -22,14 +22,21 @@ func NewRepository(pool *pg.Pool) *Repository {
 }
 
 // Enqueue inserts a message into the outbox using the context's DBTX.
+// Message.Topic defaults to Message.AggregateType when empty (legacy callers
+// that encoded the topic in the aggregate type).
 func (r *Repository) Enqueue(ctx context.Context, msg Message) error {
 	headers := msg.Headers
 	if headers == nil {
 		headers = []byte("{}")
 	}
+	topic := msg.Topic
+	if topic == "" {
+		topic = msg.AggregateType
+	}
 	q := gen.New(pg.FromContext(ctx, r.pool))
 	err := q.InsertOutbox(ctx, gen.InsertOutboxParams{
 		ID:            msg.ID,
+		Topic:         topic,
 		AggregateType: msg.AggregateType,
 		AggregateID:   msg.AggregateID,
 		EventType:     msg.EventType,

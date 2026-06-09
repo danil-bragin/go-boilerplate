@@ -37,12 +37,12 @@
 //
 // # RBAC
 //
-// POST /orders requires the "user" or "admin" role when AuthDisabled=false.
+// POST /v1/orders requires the "user" or "admin" role when AuthDisabled=false.
 // A principal without either role receives 403.
 //
 // # Resilience
 //
-// The Kafka command publish inside POST /orders is wrapped with a resilience
+// The Kafka command publish inside POST /v1/orders is wrapped with a resilience
 // policy (Retry×3 with 50 ms base back-off + 2 s timeout) so transient broker
 // hiccups are retried automatically.
 package gateway
@@ -56,11 +56,13 @@ import (
 	"go-boilerplate/examples/gateway/internal/projection"
 	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/config"
+	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/run"
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/web/httpserver"
 
 	gatewayapp "go-boilerplate/examples/gateway/internal/app"
+	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
 // Option is a functional option for [NewApp].
@@ -133,6 +135,18 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		return nil, err
 	}
 
+	// Schema Registry (no-op when SERDE_SR_URL is unset): commands the gateway
+	// produces and events the projection consumes.
+	if err := svc.RegisterSchema(ctx, cfg.CommandsTopic, "orders.CreateOrderCommand.v1", &ordersv1.CreateOrderCommand{}); err != nil {
+		return nil, err
+	}
+	if err := svc.RegisterSchema(ctx, cfg.OrdersEventsTopic, projection.OrderCreatedEventType, &ordersv1.OrderCreated{}); err != nil {
+		return nil, err
+	}
+	if err := svc.RegisterSchema(ctx, cfg.PaymentsEventsTopic, projection.PaymentProcessedEventType, &ordersv1.PaymentProcessed{}); err != nil {
+		return nil, err
+	}
+
 	// Parse trusted-proxy CIDRs (fail fast on invalid CIDR).
 	trustedPrefixes, err := ParseTrustedProxies(cfg.TrustedProxies)
 	if err != nil {
@@ -147,12 +161,17 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	// Build the per-IP rate limiter (memory or Redis).
 	limiter := buildLimiter(cfg, svc)
 
-	// Build the CQRS GetOrder query handler (raw → decorated).
+	// Build the CQRS query handlers (raw → decorated).
 	rawGetOrder := gatewayapp.GetOrderHandler(svc.Pool())
 	decoratedGetOrder := gatewayapp.DecorateGetOrderHandler(rawGetOrder, appCache)
+	decoratedListOrders := gatewayapp.DecorateListOrdersHandler(gatewayapp.ListOrdersHandler(svc.Pool()))
 
 	// Projection consumer subscribes to both events topics.
-	projHandler := projection.NewHandler(svc.Pool(), svc.Logger(), appCache)
+	var consumeOpts []consume.Option
+	if sd := svc.Serde(); sd != nil {
+		consumeOpts = append(consumeOpts, consume.WithSerde(sd))
+	}
+	projHandler := projection.NewHandler(svc.Pool(), svc.Logger(), appCache, consumeOpts...)
 	if err := svc.AddConsumer(
 		ctx, "gateway-projection",
 		[]string{cfg.OrdersEventsTopic, cfg.PaymentsEventsTopic},
@@ -175,8 +194,12 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		cfg.CommandsTopic,
 		svc.Logger(),
 		decoratedGetOrder,
+		decoratedListOrders,
 		cfg.AuthDisabled,
 	)
+	if sd := svc.Serde(); sd != nil {
+		apiServer.SetEncoder(sd)
+	}
 
 	// Apply edge security and mount all routes.
 	applyEdgeSecurity(cfg, httpSrv.Mux(), limiter, trustedPrefixes)

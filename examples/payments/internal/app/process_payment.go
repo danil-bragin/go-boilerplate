@@ -59,9 +59,10 @@ func ProcessPaymentHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.Ha
 
 		if err := outboxRepo.Enqueue(ctx, outbox.Message{
 			ID:            uuid.New(),
-			AggregateType: "payments.events",
+			Topic:         "payments.events",
+			AggregateType: "payment",
 			AggregateID:   cmd.OrderID,
-			EventType:     "PaymentProcessed",
+			EventType:     "orders.PaymentProcessed.v1",
 			Payload:       protoBytes,
 		}); err != nil {
 			return ProcessPaymentResult{}, fmt.Errorf("process_payment: enqueue event: %w", err)

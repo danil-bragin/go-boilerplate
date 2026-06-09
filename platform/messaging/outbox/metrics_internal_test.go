@@ -84,8 +84,8 @@ func insertUnpublished(t *testing.T, pool *pg.Pool, n int) {
 	ctx := context.Background()
 	for i := 0; i < n; i++ {
 		_, err := pool.Writer().Exec(ctx,
-			`insert into outbox (id, aggregate_type, aggregate_id, event_type, payload, headers)
-			 values ($1, 'order', 'x', 'Test', '{}', '{}')`, uuid.New())
+			`insert into outbox (id, topic, aggregate_type, aggregate_id, event_type, payload, headers)
+			 values ($1, 'orders.events', 'order', 'x', 'Test', '{}', '{}')`, uuid.New())
 		require.NoError(t, err)
 	}
 }

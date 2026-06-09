@@ -26,15 +26,17 @@ dev svc='gateway':
 tidy:
     go mod tidy
 
-# Run all code generators (buf + sqlc + mocks)
+# Run all code generators (buf + sqlc + oapi + mocks)
 gen:
     buf generate
-    sqlc generate -f examples/gateway/internal/store/sqlc.yaml
-    sqlc generate -f examples/orders/internal/store/sqlc.yaml
-    sqlc generate -f examples/payments/internal/store/sqlc.yaml
-    sqlc generate -f platform/messaging/outbox/sqlc.yaml
+    find . -name 'sqlc.yaml' -not -path '*/node_modules/*' | xargs -n1 sqlc generate -f
+    just oapi
     go generate ./platform/testkit/mocks/...
     goimports -w -local go-boilerplate platform/testkit/mocks/
+
+# Regenerate the gateway HTTP server from openapi.yaml (oapi-codegen)
+oapi:
+    cd examples/gateway && oapi-codegen --config oapi.gen.yaml openapi.yaml
 
 # Regenerate moq mocks for platform interfaces (goimports normalizes moq's import grouping)
 gen-mocks:
@@ -127,7 +129,7 @@ build-images:
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
 # Fetch a Keycloak access token (demo/demo) for manual API calls — requires jq
-# Usage: curl -H "Authorization: Bearer $(just token)" http://localhost:8080/orders/<id>
+# Usage: curl -H "Authorization: Bearer $(just token)" http://localhost:8080/v1/orders/<id>
 token:
     curl -s -d client_id=gateway -d username=demo -d password=demo -d grant_type=password http://localhost:8180/realms/app/protocol/openid-connect/token | jq -r .access_token
 

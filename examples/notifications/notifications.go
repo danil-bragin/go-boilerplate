@@ -23,7 +23,10 @@ import (
 	"go-boilerplate/examples/notifications/internal/transport"
 	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/config"
+	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/run"
+
+	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
 // Config aggregates all configuration for the notifications service.
@@ -84,6 +87,11 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		return nil, err
 	}
 
+	// Schema Registry (no-op when SERDE_SR_URL is unset).
+	if err := svc.RegisterSchema(ctx, cfg.PaymentsEventsTopic, transport.PaymentProcessedEventType, &ordersv1.PaymentProcessed{}); err != nil {
+		return nil, err
+	}
+
 	// Default notifier: structured log line. Tests override via WithNotifier.
 	notifier := nOpts.notifier
 	if notifier == nil {
@@ -97,7 +105,11 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		}
 	}
 
-	evtHandler := transport.NewEventHandler(svc.Pool(), notifier)
+	var consumeOpts []consume.Option
+	if sd := svc.Serde(); sd != nil {
+		consumeOpts = append(consumeOpts, consume.WithSerde(sd))
+	}
+	evtHandler := transport.NewEventHandler(svc.Pool(), notifier, consumeOpts...)
 
 	// Register consumer; harness wraps with WithRetry+DLT automatically.
 	if err := svc.AddConsumer(ctx, "notifications", []string{cfg.PaymentsEventsTopic}, evtHandler); err != nil {

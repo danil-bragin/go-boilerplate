@@ -16,5 +16,4 @@ sql:
           - db_type: "jsonb"
             go_type:
               import: "encoding/json"
-              package: "json"
               type: "RawMessage"

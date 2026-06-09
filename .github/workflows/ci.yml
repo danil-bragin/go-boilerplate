@@ -49,12 +49,12 @@ jobs:
         run: buf lint
 
       # Breaking-change detection against the previous commit on the branch.
-      # continue-on-error guards the very first run (no prior commit to diff
-      # against) and avoids spurious failures when the baseline does not yet
-      # exist. Flip to false once a stable baseline is established.
+      # BLOCKING: a contract break fails CI. If a break is intentional,
+      # coordinate the version bump (new vN proto package) instead of
+      # weakening this gate.
       - name: buf breaking
         run: buf breaking --against '.git#branch=HEAD~1'
-        continue-on-error: true
+
 
   # ── Vulnerability scan ────────────────────────────────────────────────────
   govulncheck:
@@ -173,9 +173,8 @@ jobs:
 
       # ── Trivy: image vulnerability scan ──────────────────────────────────
       # Scans the just-built image for OS + library CVEs.
-      # exit-code: 0 makes this non-blocking so first runs don't fail CI while
-      # the security baseline is being established. Flip to "1" when ready to
-      # enforce CRITICAL/HIGH gating.
+      # BLOCKING on HIGH/CRITICAL fixable findings (ignore-unfixed: true keeps
+      # unfixable base-image CVEs from wedging CI).
       - name: Trivy vulnerability scan
         uses: aquasecurity/trivy-action@0.31.0
         with:
@@ -183,7 +182,7 @@ jobs:
           format: sarif
           output: trivy-results-${{ matrix.service }}.sarif
           severity: HIGH,CRITICAL
-          exit-code: "0"   # non-blocking; change to "1" to gate on HIGH/CRITICAL
+          exit-code: "1"
           ignore-unfixed: true
 
       - name: Upload Trivy SARIF to GitHub Security

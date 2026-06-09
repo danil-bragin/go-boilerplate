@@ -95,3 +95,27 @@ just test           # run all tests
 ```
 
 Run `just` (no args) to list all available recipes.
+
+## Supply-chain gates (CI)
+
+CI enforces two blocking contract/security gates: `buf breaking` (no breaking
+proto changes — ship intentional breaks as a new `vN` proto package) and Trivy
+(HIGH/CRITICAL fixable image CVEs fail the build). Release artifacts
+(checksums) are already cosign-signed keylessly in `release.yml`.
+
+### Activating cosign image signing
+
+Container-image signing is scaffolded but commented out in
+`.github/workflows/ci.yml` because it needs a registry. To activate:
+
+1. Push images to a registry in the build step (set `IMAGE_REF` to a registry
+   reference, e.g. `ghcr.io/<org>/<service>:<sha>`), with registry credentials
+   configured as repo secrets.
+2. Uncomment `id-token: write` under the `build-images` job permissions
+   (required for keyless OIDC signing).
+3. Uncomment the `Install cosign` and `cosign sign (keyless/OIDC)` steps and
+   point them at the pushed reference.
+4. Verify in a follow-up job or at deploy time:
+   `cosign verify --certificate-identity-regexp 'github.com/<org>/<repo>' --certificate-oidc-issuer https://token.actions.githubusercontent.com <image-ref>`.
+5. Enforce at the cluster boundary (admission policy, e.g. sigstore
+   policy-controller or Kyverno `verifyImages`) so unsigned images cannot run.

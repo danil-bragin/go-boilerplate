@@ -94,7 +94,7 @@ func TestIntegration_AttachmentRoundTrip(t *testing.T) {
 
 	// --- Upload ---
 	content := []byte("integration test content")
-	req := httptest.NewRequest(http.MethodPost, "/orders/"+integrationOrderID+"/attachment", bytes.NewReader(content))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+integrationOrderID+"/attachment", bytes.NewReader(content))
 	req.Header.Set("Content-Type", "text/plain")
 	req.Header.Set("X-Filename", "report.txt")
 	req = withIntegrationPrincipal(req)
@@ -104,7 +104,7 @@ func TestIntegration_AttachmentRoundTrip(t *testing.T) {
 	require.Equal(t, http.StatusCreated, rw.Code, "upload should return 201")
 
 	// --- Download route → 302 redirect ---
-	req2 := httptest.NewRequest(http.MethodGet, "/orders/"+integrationOrderID+"/attachment/report.txt", http.NoBody)
+	req2 := httptest.NewRequest(http.MethodGet, "/v1/orders/"+integrationOrderID+"/attachment/report.txt", http.NoBody)
 	req2 = withIntegrationPrincipal(req2)
 	rw2 := httptest.NewRecorder()
 	r.ServeHTTP(rw2, req2)

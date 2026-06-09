@@ -65,9 +65,10 @@ func CreateOrderHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.Handl
 
 		if err := outboxRepo.Enqueue(ctx, outbox.Message{
 			ID:            uuid.New(),
-			AggregateType: "orders.events",
+			Topic:         "orders.events",
+			AggregateType: "order",
 			AggregateID:   cmd.OrderID,
-			EventType:     "OrderCreated",
+			EventType:     "orders.OrderCreated.v1",
 			Payload:       protoBytes,
 		}); err != nil {
 			return CreateOrderResult{}, fmt.Errorf("create_order: enqueue event: %w", err)

@@ -23,10 +23,13 @@ import (
 	"go-boilerplate/examples/orders/internal/transport"
 	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/config"
+	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/messaging/retry"
 	"go-boilerplate/platform/run"
 	"go-boilerplate/platform/security/audit"
+
+	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
 // Config aggregates all configuration for the orders service.
@@ -75,6 +78,15 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		return nil, err
 	}
 
+	// Schema Registry (no-op when SERDE_SR_URL is unset): register the schema
+	// of every consumed and produced message type, fail-fast on registry errors.
+	if err := svc.RegisterSchema(ctx, cfg.CommandsTopic, transport.CommandEventType, &ordersv1.CreateOrderCommand{}); err != nil {
+		return nil, err
+	}
+	if err := svc.RegisterSchema(ctx, "orders.events", "orders.OrderCreated.v1", &ordersv1.OrderCreated{}); err != nil {
+		return nil, err
+	}
+
 	// Outbox relay + cleaner (publishes OrderCreated events).
 	outboxRepo := outbox.NewRepository(svc.Pool())
 	svc.AddOutboxRelay(svc.DefaultOutboxPublisher(), outbox.RelayConfig{
@@ -85,7 +97,11 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	auditStore := audit.NewPgStore(svc.Pool())
 	rawHandler := app.CreateOrderHandler(svc.Pool(), outboxRepo)
 	decoratedHandler := app.DecorateCreateOrderHandler(rawHandler, auditStore)
-	cmdHandler := transport.NewCommandHandler(svc.Pool(), decoratedHandler)
+	var consumeOpts []consume.Option
+	if sd := svc.Serde(); sd != nil {
+		consumeOpts = append(consumeOpts, consume.WithSerde(sd))
+	}
+	cmdHandler := transport.NewCommandHandler(svc.Pool(), decoratedHandler, consumeOpts...)
 
 	// Register consumer with tiered retry-topic redrive (non-blocking redrive demo).
 	if err := svc.AddConsumerWithRetry(ctx, "orders-consumer", []string{cfg.CommandsTopic}, cmdHandler, retry.DefaultPolicy()); err != nil {

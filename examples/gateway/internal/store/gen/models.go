@@ -22,4 +22,5 @@ type OrdersRead struct {
 	Currency    string
 	Status      string
 	UpdatedAt   pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
 }

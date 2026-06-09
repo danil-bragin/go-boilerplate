@@ -21,6 +21,8 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 
+	storegen "go-boilerplate/examples/gateway/internal/store/gen"
+
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
@@ -30,37 +32,57 @@ var rbacPolicy = authz.NewRBAC(map[string][]string{
 	"order:create": {"user", "admin"},
 })
 
+// idempotencyNS is the fixed UUIDv5 namespace for deriving deterministic
+// order ids from client-supplied Idempotency-Key values. NEVER change it:
+// a different namespace would break retry dedup across deploys.
+var idempotencyNS = uuid.MustParse("8a4f7c52-1f3b-4e09-9c2a-6d8f0b3e5a71")
+
+// Encoder frames a proto message for the wire (Confluent Schema Registry
+// format). Implemented by serde.Serde; nil means raw protobuf.
+type Encoder interface {
+	Encode(msg proto.Message) ([]byte, error)
+}
+
 // Server implements StrictServerInterface.
 type Server struct {
-	pool            *pg.Pool
-	producer        *kafka.Producer
-	commandsTopic   string
-	logger          *slog.Logger
-	getOrderHandler cqrs.HandlerFunc[app.GetOrder, app.OrderView]
-	authDisabled    bool
+	pool              *pg.Pool
+	producer          *kafka.Producer
+	commandsTopic     string
+	logger            *slog.Logger
+	getOrderHandler   cqrs.HandlerFunc[app.GetOrder, app.OrderView]
+	listOrdersHandler cqrs.HandlerFunc[app.ListOrders, app.OrderPage]
+	authDisabled      bool
+	encoder           Encoder
 }
+
+// SetEncoder enables Schema Registry wire-format framing of produced command
+// payloads (SERDE_SR_URL). Must be called before the server starts handling
+// requests.
+func (s *Server) SetEncoder(enc Encoder) { s.encoder = enc }
 
 // NewServer creates a new Server wired with the given dependencies.
 //
 // getOrderHandler is the decorated CQRS query handler (includes Logging,
 // Tracing, Metrics, and optionally Caching when cache != nil).
 // authDisabled mirrors the gateway AuthDisabled flag — when true, the RBAC
-// check on POST /orders is skipped (no principal in ctx).
+// check on POST /v1/orders is skipped (no principal in ctx).
 func NewServer(
 	pool *pg.Pool,
 	producer *kafka.Producer,
 	commandsTopic string,
 	logger *slog.Logger,
 	getOrderHandler cqrs.HandlerFunc[app.GetOrder, app.OrderView],
+	listOrdersHandler cqrs.HandlerFunc[app.ListOrders, app.OrderPage],
 	authDisabled bool,
 ) *Server {
 	return &Server{
-		pool:            pool,
-		producer:        producer,
-		commandsTopic:   commandsTopic,
-		logger:          logger,
-		getOrderHandler: getOrderHandler,
-		authDisabled:    authDisabled,
+		pool:              pool,
+		producer:          producer,
+		commandsTopic:     commandsTopic,
+		logger:            logger,
+		getOrderHandler:   getOrderHandler,
+		listOrdersHandler: listOrdersHandler,
+		authDisabled:      authDisabled,
 	}
 }
 
@@ -96,7 +118,15 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 		}
 	}
 
-	orderID := uuid.New().String()
+	// Idempotency: a client-supplied key maps deterministically (UUIDv5) to
+	// the order id, so a retried POST produces the same id and the same
+	// command message-id — downstream inbox dedup collapses the duplicate.
+	var orderID string
+	if key := request.Params.IdempotencyKey; key != nil && *key != "" {
+		orderID = uuid.NewSHA1(idempotencyNS, []byte(*key)).String()
+	} else {
+		orderID = uuid.New().String()
+	}
 
 	cmd := &ordersv1.CreateOrderCommand{
 		OrderId:     orderID,
@@ -104,27 +134,106 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 		AmountCents: body.AmountCents,
 		Currency:    body.Currency,
 	}
-	payload, err := proto.Marshal(cmd)
+	var payload []byte
+	var err error
+	if s.encoder != nil {
+		payload, err = s.encoder.Encode(cmd)
+	} else {
+		payload, err = proto.Marshal(cmd)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("gateway: marshal command: %w", err)
 	}
 
+	// Propagate the authenticated principal so downstream audit trails record
+	// the real actor (transport metadata, not authentication — see
+	// auth.InjectHeaders for the trust-boundary note).
+	headers := map[string]string{
+		"message-id": orderID,
+		"event-type": "orders.CreateOrderCommand.v1",
+	}
+	auth.InjectHeaders(ctx, headers)
+
 	// Resilience: retry up to 3 times with exponential back-off, cancel after 2 s.
 	err = resilience.Do(ctx, func(ctx context.Context) error {
 		return s.producer.Produce(ctx, kafka.Record{
-			Topic: s.commandsTopic,
-			Key:   []byte(orderID),
-			Value: payload,
-			Headers: map[string]string{
-				"message-id": orderID,
-			},
+			Topic:   s.commandsTopic,
+			Key:     []byte(orderID),
+			Value:   payload,
+			Headers: headers,
 		})
 	}, resilience.Retry(3, 50*time.Millisecond), resilience.Timeout(2*time.Second))
 	if err != nil {
 		return nil, fmt.Errorf("gateway: produce command: %w", err)
 	}
 
-	return CreateOrder202JSONResponse{OrderId: orderID}, nil
+	// Persist the read-model row as "pending" so an immediate GET returns
+	// 200 instead of 404. ON CONFLICT DO NOTHING keeps this upsert-safe: a
+	// racing OrderCreated/PaymentProcessed projection write or an idempotent
+	// POST retry is never downgraded. A failed insert does not fail the
+	// request — the command is already accepted; the projection will create
+	// the row when OrderCreated arrives.
+	id, err := uuid.Parse(orderID)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: parse generated order id: %w", err)
+	}
+	if err := storegen.New(s.pool.Writer()).InsertPendingOrder(ctx, storegen.InsertPendingOrderParams{
+		OrderID:     id,
+		CustomerID:  body.CustomerId,
+		AmountCents: body.AmountCents,
+		Currency:    body.Currency,
+	}); err != nil {
+		s.logger.WarnContext(ctx, "gateway: pending projection row insert failed",
+			"order_id", orderID, "error", err)
+	}
+
+	return CreateOrder202JSONResponse{
+		Body:    CreateOrderResponse{OrderId: orderID},
+		Headers: CreateOrder202ResponseHeaders{Location: "/v1/orders/" + orderID},
+	}, nil
+}
+
+// ListOrders implements StrictServerInterface: cursor-paginated listing of
+// the read model (keyset over (created_at, order_id) descending). An
+// undecodable cursor maps to 400 problem+json.
+func (s *Server) ListOrders(ctx context.Context, request ListOrdersRequestObject) (ListOrdersResponseObject, error) {
+	q := app.ListOrders{}
+	if request.Params.Cursor != nil {
+		q.Cursor = *request.Params.Cursor
+	}
+	if request.Params.Limit != nil {
+		q.Limit = *request.Params.Limit
+	}
+
+	page, err := s.listOrdersHandler(ctx, q)
+	if err != nil {
+		if errors.Is(err, app.ErrInvalidCursor) {
+			detail := "invalid cursor parameter"
+			return ListOrders400ApplicationProblemPlusJSONResponse{
+				BadRequestApplicationProblemPlusJSONResponse(Problem{
+					Title:  http.StatusText(http.StatusBadRequest),
+					Status: http.StatusBadRequest,
+					Detail: &detail,
+				}),
+			}, nil
+		}
+		return nil, fmt.Errorf("gateway: list orders: %w", err)
+	}
+
+	items := make([]OrderView, len(page.Items))
+	for i, v := range page.Items {
+		items[i] = OrderView{
+			OrderId:     v.OrderID,
+			Status:      v.Status,
+			AmountCents: v.AmountCents,
+			Currency:    v.Currency,
+		}
+	}
+	out := ListOrders200JSONResponse{Items: items}
+	if page.NextCursor != "" {
+		out.NextCursor = &page.NextCursor
+	}
+	return out, nil
 }
 
 // GetOrder implements StrictServerInterface.
@@ -134,7 +243,14 @@ func (s *Server) GetOrder(ctx context.Context, request GetOrderRequestObject) (G
 	view, err := s.getOrderHandler(ctx, app.GetOrder{OrderID: request.Id})
 	if err != nil {
 		if errors.Is(err, app.ErrOrderNotFound) {
-			return GetOrder404Response{}, nil
+			detail := "order " + request.Id + " not found"
+			return GetOrder404ApplicationProblemPlusJSONResponse{
+				NotFoundApplicationProblemPlusJSONResponse(Problem{
+					Title:  http.StatusText(http.StatusNotFound),
+					Status: http.StatusNotFound,
+					Detail: &detail,
+				}),
+			}, nil
 		}
 		return nil, fmt.Errorf("gateway: get order: %w", err)
 	}

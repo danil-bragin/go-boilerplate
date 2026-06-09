@@ -1,15 +1,38 @@
 openapi: "3.0.3"
 info:
   title: Gateway API
-  description: HTTP edge gateway for the order choreography demo.
+  description: >
+    HTTP edge gateway for the order choreography demo. All API resources are
+    versioned under /v1. Errors use RFC 7807 problem+json. Endpoints require a
+    bearer token (JWT) unless explicitly marked otherwise.
   version: "1.0.0"
 
+security:
+  - bearerAuth: []
+
 paths:
-  /orders:
+  /v1/orders:
     post:
       summary: Create a new order
-      description: Accepts an order creation request, publishes a CreateOrderCommand, and returns 202 with the assigned order ID.
+      description: >
+        Accepts an order creation request, persists a "pending" row in the
+        read model, publishes a CreateOrderCommand, and returns 202 with the
+        assigned order ID. The order becomes "created" once the orders service
+        processes the command, and "paid" after payment — poll the Location
+        URL to observe progress.
       operationId: createOrder
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: >
+            Client-chosen key making the request retry-safe: the order id is
+            derived deterministically (UUIDv5) from this key, so retries with
+            the same key return the same order id and downstream consumers
+            deduplicate the command. Omit for a fresh id per request.
+          schema:
+            type: string
+            maxLength: 255
       requestBody:
         required: true
         content:
@@ -18,16 +41,70 @@ paths:
               $ref: "#/components/schemas/CreateOrderRequest"
       responses:
         "202":
-          description: Order accepted
+          description: Order accepted for asynchronous processing.
+          headers:
+            Location:
+              description: URL of the created order resource (initially status "pending").
+              schema:
+                type: string
+              required: true
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/CreateOrderResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
 
-  /orders/{id}:
+    get:
+      summary: List orders
+      description: >
+        Returns orders from the read model, newest first, using cursor
+        (keyset) pagination over (created_at, order_id). Pass the next_cursor
+        value from the previous page to fetch the following page; an empty
+        next_cursor means the listing is exhausted.
+      operationId: listOrders
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque pagination cursor returned by a previous page.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Page size (default 20, maximum 100).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: One page of orders.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /v1/orders/{id}:
     get:
       summary: Get order by ID
-      description: Returns the current view of an order from the read model projection.
+      description: >
+        Returns the current view of an order from the read model projection.
+        Status lifecycle: pending → created → paid.
       operationId: getOrder
       parameters:
         - name: id
@@ -43,20 +120,92 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrderView"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
-          description: Order not found
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
 
   /healthz:
     get:
       summary: Health check
-      description: Returns 200 when the gateway is healthy.
+      description: >
+        Returns 200 when the gateway is healthy. Unversioned and
+        unauthenticated by design: it is an infrastructure endpoint for load
+        balancers, not an API resource.
       operationId: healthCheck
+      security: []
       responses:
         "200":
           description: OK
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC access token (e.g. issued by Keycloak).
+
+  responses:
+    BadRequest:
+      description: Malformed request (invalid JSON, missing fields, bad parameters).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Unauthorized:
+      description: Missing, malformed, or invalid bearer token.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Forbidden:
+      description: Authenticated but not allowed to perform this operation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: The requested resource does not exist.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    TooManyRequests:
+      description: >
+        Rate limit exceeded. Retry-After indicates when to retry.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
   schemas:
+    Problem:
+      type: object
+      description: RFC 7807 problem details.
+      required:
+        - title
+        - status
+      properties:
+        type:
+          type: string
+          description: URI reference identifying the problem type.
+          default: "about:blank"
+        title:
+          type: string
+          description: Short, human-readable summary of the problem type.
+        status:
+          type: integer
+          description: HTTP status code.
+        detail:
+          type: string
+          description: Human-readable explanation specific to this occurrence.
+        instance:
+          type: string
+          description: URI reference identifying this specific occurrence.
+
     CreateOrderRequest:
       type: object
       description: Request body for creating a new order.
@@ -100,7 +249,7 @@ components:
           description: The unique identifier of the order.
         status:
           type: string
-          description: The current status of the order (e.g. "created", "paid").
+          description: The current status of the order ("pending", "created", "paid").
         amount_cents:
           type: integer
           format: int64
@@ -108,3 +257,19 @@ components:
         currency:
           type: string
           description: The ISO 4217 currency code (e.g. "USD").
+
+    OrderList:
+      type: object
+      description: One cursor-paginated page of orders, newest first.
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderView"
+        next_cursor:
+          type: string
+          description: >
+            Cursor for the next page. Absent or empty when there are no more
+            results. Treat as opaque.

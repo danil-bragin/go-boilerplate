@@ -21,16 +21,16 @@ func insertPublishedAt(t *testing.T, pool *pg.Pool, id uuid.UUID, publishedAt *t
 	if publishedAt == nil {
 		_, err := pool.Writer().Exec(
 			ctx,
-			`insert into outbox (id, aggregate_type, aggregate_id, event_type, payload, headers)
-			 values ($1, 'order', 'x', 'Test', '{}', '{}')`,
+			`insert into outbox (id, topic, aggregate_type, aggregate_id, event_type, payload, headers)
+			 values ($1, 'orders.events', 'order', 'x', 'Test', '{}', '{}')`,
 			id,
 		)
 		require.NoError(t, err)
 	} else {
 		_, err := pool.Writer().Exec(
 			ctx,
-			`insert into outbox (id, aggregate_type, aggregate_id, event_type, payload, headers, published_at)
-			 values ($1, 'order', 'x', 'Test', '{}', '{}', $2)`,
+			`insert into outbox (id, topic, aggregate_type, aggregate_id, event_type, payload, headers, published_at)
+			 values ($1, 'orders.events', 'order', 'x', 'Test', '{}', '{}', $2)`,
 			id, *publishedAt,
 		)
 		require.NoError(t, err)

@@ -2,10 +2,14 @@ package servicekit
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/messaging/outboxkafka"
+	"go-boilerplate/platform/messaging/serde"
+
+	"google.golang.org/protobuf/proto"
 )
 
 // AddOutboxRelay wires an outbox relay + cleaner. Uses the passed publisher
@@ -55,8 +59,31 @@ func (s *Service) AddOutboxRelay(publisher outbox.Publisher, cfg outbox.RelayCon
 }
 
 // DefaultOutboxPublisher builds the standard outboxkafka publisher backed by
-// the service's producer. Convenience helper for services using the default
-// topic-per-aggregate-type mapping.
+// the service's producer. When SERDE_SR_URL is configured the publisher frames
+// record values in the Confluent wire format via the service serde — register
+// every produced event type with RegisterSchema BEFORE the relay starts.
 func (s *Service) DefaultOutboxPublisher() outbox.Publisher {
-	return outboxkafka.New(s.producer)
+	var opts []outboxkafka.Option
+	if s.serde != nil {
+		opts = append(opts, outboxkafka.WithEncoder(s.serde))
+	}
+	return outboxkafka.New(s.producer, opts...)
+}
+
+// Serde returns the Schema Registry serde, or nil when SERDE_SR_URL is unset.
+func (s *Service) Serde() *serde.Serde { return s.serde }
+
+// RegisterSchema registers msg's proto schema under "<topic>-value" and binds
+// it to the versioned eventType (e.g. "orders.OrderCreated.v1") for both the
+// outbox publisher (encode) and consumers (decode). No-op when SERDE_SR_URL
+// is unset. Idempotent; fails fast on registry errors — call it during
+// service wiring, before Start.
+func (s *Service) RegisterSchema(ctx context.Context, topic, eventType string, msg proto.Message) error {
+	if s.serde == nil {
+		return nil
+	}
+	if err := s.serde.Register(ctx, topic+"-value", eventType, msg); err != nil {
+		return fmt.Errorf("servicekit: register schema for %s on %s: %w", eventType, topic, err)
+	}
+	return nil
 }

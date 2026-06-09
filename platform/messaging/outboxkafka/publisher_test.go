@@ -12,6 +12,7 @@ import (
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/messaging/outboxkafka"
+	"go-boilerplate/platform/messaging/serde"
 	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/storage/pg/pgtest"
 
@@ -19,6 +20,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"google.golang.org/protobuf/proto"
+
+	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
 //go:embed testdata/migrations/*.sql
@@ -316,4 +320,96 @@ func TestKafkaPublisher_BrokerDownLeavesRowsUnpublished(t *testing.T) {
 		`select count(*) from outbox where published_at is null`).Scan(&unpublished))
 	assert.Equal(t, 1, unpublished,
 		"outbox row must remain unpublished when broker is down (no data loss)")
+}
+
+// TestKafkaPublisher_SchemaRegistryWireFormat verifies the SR-framed publish
+// path (WithEncoder): record values carry the Confluent wire header and decode
+// back to the original proto via the consumer-side serde; unregistered event
+// types fail the publish (fail fast, row stays unpublished).
+func TestKafkaPublisher_SchemaRegistryWireFormat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
+	ctx := context.Background()
+
+	broker, srURL := kafkatest.NewRedpanda(t)
+
+	cl, err := kafka.NewClient(kafka.Config{Brokers: []string{broker}, ClientID: "t-sr"})
+	require.NoError(t, err)
+	defer cl.Close()
+	require.NoError(t, kafka.EnsureTopics(ctx, cl,
+		kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, "orders.events"))
+
+	producer := kafka.NewProducer(cl)
+	defer func() { _ = producer.Close(ctx) }()
+
+	s, err := serde.New(srURL)
+	require.NoError(t, err)
+	require.NoError(t, s.Register(ctx, "orders.events-value", "orders.OrderCreated.v1", &ordersv1.OrderCreated{}))
+
+	pub := outboxkafka.New(producer, outboxkafka.WithEncoder(s))
+
+	event := &ordersv1.OrderCreated{OrderId: "o1", CustomerId: "c1", AmountCents: 100, Currency: "USD"}
+	payload, err := proto.Marshal(event)
+	require.NoError(t, err)
+
+	require.NoError(t, pub.Publish(ctx, outbox.Message{
+		ID:            uuid.New(),
+		Topic:         "orders.events",
+		AggregateType: "order",
+		AggregateID:   "o1",
+		EventType:     "orders.OrderCreated.v1",
+		Payload:       payload,
+	}))
+
+	// Unregistered event type must fail fast.
+	err = pub.Publish(ctx, outbox.Message{
+		ID:            uuid.New(),
+		Topic:         "orders.events",
+		AggregateType: "order",
+		AggregateID:   "o2",
+		EventType:     "orders.Bogus.v1",
+		Payload:       payload,
+	})
+	require.Error(t, err, "publishing an unregistered event type must fail")
+
+	consumer, err := kafka.NewConsumer(kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "t-sr-consumer",
+		GroupID:  "t-sr-grp",
+	}, []string{"orders.events"})
+	require.NoError(t, err)
+	defer func() { _ = consumer.Close(context.Background()) }()
+
+	consumeCtx, cancelConsume := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelConsume()
+
+	var (
+		mu  sync.Mutex
+		rec kafka.Record
+		got bool
+	)
+	done := make(chan struct{})
+	go func() {
+		_ = consumer.Run(consumeCtx, func(_ context.Context, r kafka.Record) error {
+			mu.Lock()
+			rec, got = r, true
+			mu.Unlock()
+			cancelConsume()
+			return nil
+		})
+		close(done)
+	}()
+	<-done
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.True(t, got, "expected one record from orders.events")
+	require.Greater(t, len(rec.Value), 5)
+	assert.Equal(t, byte(0x00), rec.Value[0], "record value must start with the Confluent magic byte")
+	assert.Equal(t, "orders.OrderCreated.v1", rec.Headers["event-type"])
+
+	decoded := &ordersv1.OrderCreated{}
+	require.NoError(t, s.Decode(rec.Value, decoded))
+	assert.True(t, proto.Equal(event, decoded), "decoded event must equal original")
 }

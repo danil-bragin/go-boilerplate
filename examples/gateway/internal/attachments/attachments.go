@@ -67,11 +67,11 @@ func New(store blob.ObjectStore, flagBool func(context.Context, string, bool) bo
 
 // Mount registers the attachment routes on r.
 //
-//	POST /orders/{id}/attachment         → Upload
-//	GET  /orders/{id}/attachment/{name}  → Download
+//	POST /v1/orders/{id}/attachment         → Upload
+//	GET  /v1/orders/{id}/attachment/{name}  → Download
 func (h *Handler) Mount(r chi.Router) {
-	r.Post("/orders/{id}/attachment", h.Upload)
-	r.Get("/orders/{id}/attachment/{name}", h.Download)
+	r.Post("/v1/orders/{id}/attachment", h.Upload)
+	r.Get("/v1/orders/{id}/attachment/{name}", h.Download)
 }
 
 // sanitizeName strips directory components from s (via path.Base) and

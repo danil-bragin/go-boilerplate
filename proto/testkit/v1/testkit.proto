@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package testkit.v1;
+
+option go_package = "go-boilerplate/gen/proto/testkit/v1;testkitv1";
+
+import "google/protobuf/timestamp.proto";
+
+// TimestampedEvent is a test-support message exercising well-known types
+// (google.protobuf.Timestamp) and map fields in serde round-trip tests.
+// It is NOT part of the service contract; it exists so the Schema Registry
+// serde keeps proving that WKT imports resolve without explicit schema
+// references (Redpanda SR ships the WKTs built in).
+message TimestampedEvent {
+  // id is the unique identifier of this event instance.
+  string id = 1;
+  // occurred_at is the wall-clock time at which the event occurred.
+  google.protobuf.Timestamp occurred_at = 2;
+  // labels carries optional key/value metadata.
+  map<string, string> labels = 3;
+}

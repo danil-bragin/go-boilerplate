@@ -42,4 +42,5 @@ type Outbox struct {
 	Headers       []byte
 	CreatedAt     pgtype.Timestamptz
 	PublishedAt   pgtype.Timestamptz
+	Topic         string
 }

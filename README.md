@@ -46,13 +46,13 @@ sequenceDiagram
     participant Payments
     participant Notifications
 
-    Client->>Gateway: POST /orders (REST)
-    Gateway->>Gateway: persist projection row (status=created)
+    Client->>Gateway: POST /v1/orders (REST)
     Gateway->>Kafka: orders.commands (CreateOrderCommand)
+    Gateway->>Gateway: persist projection row (status=pending)
     Kafka->>Orders: consume CreateOrderCommand (inbox dedup)
     Orders->>Orders: INSERT order, enqueue outbox
     Orders->>Kafka: orders.events (OrderCreated) via outbox relay
-    Kafka->>Gateway: orders.events → update projection (status=created)
+    Kafka->>Gateway: orders.events → update projection (pending → created)
     Kafka->>Payments: orders.events (inbox dedup)
     Payments->>Payments: process payment, enqueue outbox
     Payments->>Kafka: payments.events (PaymentProcessed) via outbox relay
@@ -92,13 +92,13 @@ just down
 
 ```bash
 # Create an order (auth disabled by default)
-curl -s -XPOST localhost:8080/orders \
+curl -s -XPOST localhost:8080/v1/orders \
   -H 'Content-Type: application/json' \
   -d '{"customer_id":"c1","amount_cents":1500,"currency":"USD"}' | jq .
 
-# Watch the status transition created → paid
+# Watch the status transition pending → created → paid
 ORDER_ID=<id from step 2>
-curl -s localhost:8080/orders/$ORDER_ID | jq .status
+curl -s localhost:8080/v1/orders/$ORDER_ID | jq .status
 
 # Observe
 open http://localhost:16686   # Jaeger traces
@@ -132,7 +132,7 @@ Keycloak is published on **host port 8180** (maps to container port 8080) to avo
 ```bash
 # Fetch a demo token and call the API (gateway listens on host port 8080)
 TOKEN=$(just token)
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/orders/<id>
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/v1/orders/<id>
 ```
 
 ---

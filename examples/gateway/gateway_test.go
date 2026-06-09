@@ -13,12 +13,14 @@ import (
 
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
+	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/storage/pg/pgtest"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"google.golang.org/protobuf/proto"
 
 	gateway "go-boilerplate/examples/gateway"
@@ -66,14 +68,14 @@ func TestGateway_PostOrderPublishesCommand(t *testing.T) {
 
 	baseURL := startApp(t, broker, dsn)
 
-	// POST /orders
+	// POST /v1/orders
 	body := map[string]interface{}{
 		"customer_id":  "cust-1",
 		"amount_cents": int64(1500),
 		"currency":     "USD",
 	}
 	bodyBytes, _ := json.Marshal(body)
-	resp, err := http.Post(baseURL+"/orders", "application/json", bytes.NewReader(bodyBytes))
+	resp, err := http.Post(baseURL+"/v1/orders", "application/json", bytes.NewReader(bodyBytes))
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -109,7 +111,7 @@ func TestGateway_ProjectionAndGetOrder(t *testing.T) {
 	orderID := uuid.New().String()
 
 	// Produce an OrderCreated event to orders.events.
-	produceEvent(t, broker, "orders.events", "OrderCreated", orderID, func() proto.Message {
+	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
 		return &ordersv1.OrderCreated{
 			OrderId:     orderID,
 			CustomerId:  "cust-proj",
@@ -118,12 +120,12 @@ func TestGateway_ProjectionAndGetOrder(t *testing.T) {
 		}
 	})
 
-	// Poll GET /orders/{id} until status == "created".
+	// Poll GET /v1/orders/{id} until status == "created".
 	pollOrderStatus(t, baseURL, orderID, "created", 30*time.Second)
 
 	// Produce a PaymentProcessed event to payments.events.
 	paymentID := uuid.New().String()
-	produceEvent(t, broker, "payments.events", "PaymentProcessed", orderID, func() proto.Message {
+	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", orderID, func() proto.Message {
 		return &ordersv1.PaymentProcessed{
 			OrderId:   orderID,
 			PaymentId: paymentID,
@@ -131,11 +133,11 @@ func TestGateway_ProjectionAndGetOrder(t *testing.T) {
 		}
 	})
 
-	// Poll GET /orders/{id} until status == "paid".
+	// Poll GET /v1/orders/{id} until status == "paid".
 	pollOrderStatus(t, baseURL, orderID, "paid", 30*time.Second)
 }
 
-// TestGateway_GetUnknownOrder404 verifies that GET /orders/<unknown> returns 404.
+// TestGateway_GetUnknownOrder404 verifies that GET /v1/orders/<unknown> returns 404.
 func TestGateway_GetUnknownOrder404(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -147,7 +149,7 @@ func TestGateway_GetUnknownOrder404(t *testing.T) {
 	baseURL := startApp(t, broker, dsn)
 
 	unknownID := uuid.New().String()
-	resp, err := http.Get(fmt.Sprintf("%s/orders/%s", baseURL, unknownID))
+	resp, err := http.Get(fmt.Sprintf("%s/v1/orders/%s", baseURL, unknownID))
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -231,13 +233,13 @@ func produceEvent(t *testing.T, broker, topic, eventType, orderID string, buildM
 	}))
 }
 
-// pollOrderStatus polls GET /orders/{id} until the status matches, or fails.
+// pollOrderStatus polls GET /v1/orders/{id} until the status matches, or fails.
 func pollOrderStatus(t *testing.T, baseURL, orderID, expectedStatus string, timeout time.Duration) {
 	t.Helper()
 
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(fmt.Sprintf("%s/orders/%s", baseURL, orderID))
+		resp, err := http.Get(fmt.Sprintf("%s/v1/orders/%s", baseURL, orderID))
 		if err != nil {
 			time.Sleep(200 * time.Millisecond)
 			continue
@@ -261,7 +263,7 @@ func pollOrderStatus(t *testing.T, baseURL, orderID, expectedStatus string, time
 
 // stubVerifier is a minimal auth.Verifier for tests.
 // It accepts only the literal token "good" and rejects everything else.
-// The returned Principal carries the "user" role so that RBAC on POST /orders
+// The returned Principal carries the "user" role so that RBAC on POST /v1/orders
 // allows the request through.
 type stubVerifier struct{}
 
@@ -309,8 +311,8 @@ func startAppAuthEnabled(t *testing.T, broker, dsn string) string {
 }
 
 // TestGateway_AuthEnabledRequiresToken verifies that when auth is enabled:
-//   - POST /orders without Authorization → 401
-//   - POST /orders with a valid token → 202
+//   - POST /v1/orders without Authorization → 401
+//   - POST /v1/orders with a valid token → 202
 func TestGateway_AuthEnabledRequiresToken(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
@@ -328,13 +330,13 @@ func TestGateway_AuthEnabledRequiresToken(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	// Without Authorization header → 401.
-	resp, err := http.Post(baseURL+"/orders", "application/json", bytes.NewReader(bodyBytes))
+	resp, err := http.Post(baseURL+"/v1/orders", "application/json", bytes.NewReader(bodyBytes))
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode, "expected 401 without auth token")
 
 	// With valid token → 202.
-	req, err := http.NewRequest(http.MethodPost, baseURL+"/orders", bytes.NewReader(bodyBytes))
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/orders", bytes.NewReader(bodyBytes))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer good")
@@ -381,7 +383,7 @@ func TestGateway_ProjectionPaidBeforeCreatedStillPaid(t *testing.T) {
 
 	// Step 1: produce PaymentProcessed FIRST (no OrderCreated yet).
 	paymentID := uuid.New().String()
-	produceEvent(t, broker, "payments.events", "PaymentProcessed", orderID, func() proto.Message {
+	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", orderID, func() proto.Message {
 		return &ordersv1.PaymentProcessed{
 			OrderId:   orderID,
 			PaymentId: paymentID,
@@ -393,7 +395,7 @@ func TestGateway_ProjectionPaidBeforeCreatedStillPaid(t *testing.T) {
 	pollOrderStatus(t, baseURL, orderID, "paid", 30*time.Second)
 
 	// Step 2: produce OrderCreated LATE — must NOT downgrade status to "created".
-	produceEvent(t, broker, "orders.events", "OrderCreated", orderID, func() proto.Message {
+	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
 		return &ordersv1.OrderCreated{
 			OrderId:     orderID,
 			CustomerId:  "cust-reorder",
@@ -408,7 +410,7 @@ func TestGateway_ProjectionPaidBeforeCreatedStillPaid(t *testing.T) {
 	deadline := time.Now().Add(30 * time.Second)
 	var finalStatus, finalCurrency string
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(fmt.Sprintf("%s/orders/%s", baseURL, orderID))
+		resp, err := http.Get(fmt.Sprintf("%s/v1/orders/%s", baseURL, orderID))
 		if err != nil {
 			time.Sleep(300 * time.Millisecond)
 			continue
@@ -518,7 +520,7 @@ func TestGateway_GetOrderCachedSecondCallSkipsDB(t *testing.T) {
 		orderID := uuid.New().String()
 
 		// Seed the projection by producing an OrderCreated event.
-		produceEvent(t, broker, "orders.events", "OrderCreated", orderID, func() proto.Message {
+		produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
 			return &ordersv1.OrderCreated{
 				OrderId:     orderID,
 				CustomerId:  "cust-cache",
@@ -531,7 +533,7 @@ func TestGateway_GetOrderCachedSecondCallSkipsDB(t *testing.T) {
 		pollOrderStatus(t, baseURL, orderID, "created", 30*time.Second)
 
 		// First GET: populates the cache.
-		resp1, err := http.Get(fmt.Sprintf("%s/orders/%s", baseURL, orderID))
+		resp1, err := http.Get(fmt.Sprintf("%s/v1/orders/%s", baseURL, orderID))
 		require.NoError(t, err)
 		defer resp1.Body.Close()
 		require.Equal(t, http.StatusOK, resp1.StatusCode, "first GET should return 200")
@@ -544,7 +546,7 @@ func TestGateway_GetOrderCachedSecondCallSkipsDB(t *testing.T) {
 		require.Equal(t, "GBP", view1.Currency)
 
 		// Second GET: should be served from cache — same result.
-		resp2, err := http.Get(fmt.Sprintf("%s/orders/%s", baseURL, orderID))
+		resp2, err := http.Get(fmt.Sprintf("%s/v1/orders/%s", baseURL, orderID))
 		require.NoError(t, err)
 		defer resp2.Body.Close()
 		require.Equal(t, http.StatusOK, resp2.StatusCode, "second GET should return 200 (from cache)")
@@ -645,7 +647,7 @@ func TestGateway_PerIPRateLimit(t *testing.T) {
 
 	// First two requests should succeed (within burst).
 	for i := range 2 {
-		resp, err := client.Get(baseURL + "/orders/" + uuid.New().String())
+		resp, err := client.Get(baseURL + "/v1/orders/" + uuid.New().String())
 		require.NoError(t, err)
 		resp.Body.Close()
 		// 404 is fine — the order doesn't exist; we just need < 429.
@@ -654,14 +656,14 @@ func TestGateway_PerIPRateLimit(t *testing.T) {
 	}
 
 	// Third request must be rate-limited.
-	resp, err := client.Get(baseURL + "/orders/" + uuid.New().String())
+	resp, err := client.Get(baseURL + "/v1/orders/" + uuid.New().String())
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusTooManyRequests, resp.StatusCode, "third request must be rate-limited (429)")
 	require.Equal(t, "1", resp.Header.Get("Retry-After"), "429 must carry Retry-After: 1")
 }
 
-// TestGateway_AuthzForbidsWithoutRole proves that the RBAC policy on POST /orders:
+// TestGateway_AuthzForbidsWithoutRole proves that the RBAC policy on POST /v1/orders:
 //   - Returns 403 when the principal holds no permitted role.
 //   - Returns 202 when the principal holds the "user" role.
 func TestGateway_AuthzForbidsWithoutRole(t *testing.T) {
@@ -700,7 +702,7 @@ func TestGateway_AuthzForbidsWithoutRole(t *testing.T) {
 	bodyBytes, _ := json.Marshal(body)
 
 	// With valid token but NO role → 403.
-	req, err := http.NewRequest(http.MethodPost, baseURL+"/orders", bytes.NewReader(bodyBytes))
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/orders", bytes.NewReader(bodyBytes))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer good")
@@ -726,7 +728,7 @@ func TestGateway_AuthzForbidsWithoutRole(t *testing.T) {
 	baseURL2 := "http://" + a2.Addr()
 
 	// With "user" role → 202.
-	req2, err := http.NewRequest(http.MethodPost, baseURL2+"/orders", bytes.NewReader(bodyBytes))
+	req2, err := http.NewRequest(http.MethodPost, baseURL2+"/v1/orders", bytes.NewReader(bodyBytes))
 	require.NoError(t, err)
 	req2.Header.Set("Content-Type", "application/json")
 	req2.Header.Set("Authorization", "Bearer good")
@@ -735,4 +737,275 @@ func TestGateway_AuthzForbidsWithoutRole(t *testing.T) {
 	require.NoError(t, err)
 	defer resp2.Body.Close()
 	require.Equal(t, http.StatusAccepted, resp2.StatusCode, "expected 202 when principal has 'user' role")
+}
+
+// postOrderWithKey posts an order with an optional Idempotency-Key header and
+// returns the order_id from the 202 response.
+func postOrderWithKey(t *testing.T, baseURL, key string) string {
+	t.Helper()
+	body := []byte(`{"customer_id":"c1","amount_cents":1500,"currency":"USD"}`)
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/orders", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		req.Header.Set("Idempotency-Key", key)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+	var out struct {
+		OrderID string `json:"order_id"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	require.NotEmpty(t, out.OrderID)
+	return out.OrderID
+}
+
+// TestGateway_IdempotencyKey verifies that retried POSTs with the same
+// Idempotency-Key map to the SAME deterministic order id (so the command
+// message-id is identical and downstream inbox dedup collapses the retry),
+// while different keys (or no key) yield fresh ids.
+func TestGateway_IdempotencyKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+	baseURL := startApp(t, broker, dsn)
+
+	id1 := postOrderWithKey(t, baseURL, "retry-key-1")
+	id2 := postOrderWithKey(t, baseURL, "retry-key-1")
+	assert.Equal(t, id1, id2, "same Idempotency-Key must yield the same order id")
+
+	id3 := postOrderWithKey(t, baseURL, "retry-key-2")
+	assert.NotEqual(t, id1, id3, "different Idempotency-Key must yield a different order id")
+
+	id4 := postOrderWithKey(t, baseURL, "")
+	id5 := postOrderWithKey(t, baseURL, "")
+	assert.NotEqual(t, id4, id5, "no Idempotency-Key must yield fresh ids")
+
+	// Downstream dedup hinges on message-id == order id for BOTH deliveries.
+	cl, err := kgo.NewClient(
+		kgo.SeedBrokers(broker),
+		kgo.ConsumeTopics("orders.commands"),
+		kgo.ConsumerGroup("idem-test-"+uuid.New().String()),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+	)
+	require.NoError(t, err)
+	defer cl.Close()
+
+	seen := map[string]int{} // message-id → count
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) && seen[id1] < 2 {
+		fctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		fetches := cl.PollFetches(fctx)
+		cancel()
+		fetches.EachRecord(func(rec *kgo.Record) {
+			for _, h := range rec.Headers {
+				if h.Key == "message-id" {
+					seen[string(h.Value)]++
+				}
+			}
+		})
+	}
+	assert.Equal(t, 2, seen[id1], "both retried POSTs must produce commands with the same message-id (order id)")
+}
+
+// TestGateway_PostReturnsLocationAndPendingRow verifies API honesty: POST
+// /v1/orders responds 202 with a Location header, and an IMMEDIATE GET on
+// that location returns 200 with status "pending" (not 404) because the
+// gateway pre-inserts the read-model row at POST time.
+func TestGateway_PostReturnsLocationAndPendingRow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+	baseURL := startApp(t, broker, dsn)
+
+	body := []byte(`{"customer_id":"c1","amount_cents":1500,"currency":"USD"}`)
+	resp, err := http.Post(baseURL+"/v1/orders", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+
+	var out struct {
+		OrderID string `json:"order_id"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	require.NotEmpty(t, out.OrderID)
+
+	location := resp.Header.Get("Location")
+	require.Equal(t, "/v1/orders/"+out.OrderID, location, "202 must carry the order resource Location")
+
+	// Immediate GET → 200 pending (no projection consumer has run yet for
+	// this order; only the POST-time pending insert can explain a 200).
+	getResp, err := http.Get(baseURL + location)
+	require.NoError(t, err)
+	defer getResp.Body.Close()
+	require.Equal(t, http.StatusOK, getResp.StatusCode, "GET immediately after POST must be 200, not 404")
+
+	var view struct {
+		Status      string `json:"status"`
+		AmountCents int64  `json:"amount_cents"`
+		Currency    string `json:"currency"`
+	}
+	require.NoError(t, json.NewDecoder(getResp.Body).Decode(&view))
+	assert.Equal(t, "pending", view.Status)
+	assert.EqualValues(t, 1500, view.AmountCents)
+	assert.Equal(t, "USD", view.Currency)
+
+	// 404 now returns problem+json with the documented shape.
+	nf, err := http.Get(baseURL + "/v1/orders/" + uuid.New().String())
+	require.NoError(t, err)
+	defer nf.Body.Close()
+	require.Equal(t, http.StatusNotFound, nf.StatusCode)
+	assert.Contains(t, nf.Header.Get("Content-Type"), "application/problem+json")
+}
+
+// TestGateway_PendingUpgradesAndReorderSafety verifies the projection status
+// lattice with the new pending state: pending → created → paid in order, and
+// paid is never downgraded by late OrderCreated or a POST-time pending insert.
+func TestGateway_PendingUpgradesAndReorderSafety(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+	baseURL := startApp(t, broker, dsn)
+
+	// Create an order (pending row).
+	orderID := postOrderWithKey(t, baseURL, "")
+
+	// OrderCreated arrives → pending upgrades to created.
+	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
+		return &ordersv1.OrderCreated{OrderId: orderID, CustomerId: "c1", AmountCents: 1500, Currency: "USD"}
+	})
+	pollOrderStatus(t, baseURL, orderID, "created", 15*time.Second)
+
+	// PaymentProcessed → paid.
+	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", orderID, func() proto.Message {
+		return &ordersv1.PaymentProcessed{OrderId: orderID, PaymentId: uuid.New().String(), Status: "processed"}
+	})
+	pollOrderStatus(t, baseURL, orderID, "paid", 15*time.Second)
+
+	// A late duplicate OrderCreated must NOT downgrade paid.
+	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
+		return &ordersv1.OrderCreated{OrderId: orderID, CustomerId: "c1", AmountCents: 1500, Currency: "USD"}
+	})
+	time.Sleep(2 * time.Second)
+	pollOrderStatus(t, baseURL, orderID, "paid", 5*time.Second)
+}
+
+// TestGateway_IdempotentRetrySinglePendingRow extends the Idempotency-Key
+// guarantee to the read model: two POSTs with the same key produce ONE
+// orders_read row.
+func TestGateway_IdempotentRetrySinglePendingRow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+	baseURL := startApp(t, broker, dsn)
+
+	id1 := postOrderWithKey(t, baseURL, "single-row-key")
+	id2 := postOrderWithKey(t, baseURL, "single-row-key")
+	require.Equal(t, id1, id2)
+
+	ctx := context.Background()
+	pool, err := pg.New(ctx, pg.Config{DSN: os.Getenv("PG_DSN")})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pool.Close(ctx) })
+
+	var count int
+	require.NoError(t, pool.Reader().QueryRow(ctx,
+		`select count(*) from orders_read where order_id = $1`, id1).Scan(&count))
+	assert.Equal(t, 1, count, "retried POST with the same Idempotency-Key must yield one read-model row")
+}
+
+// TestGateway_ListOrdersKeysetPagination verifies GET /v1/orders cursor
+// pagination: newest first, stable page boundaries, exhaustion, bad cursor →
+// 400 problem+json, limit capping.
+func TestGateway_ListOrdersKeysetPagination(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+	baseURL := startApp(t, broker, dsn)
+
+	// Create 5 orders.
+	ids := make([]string, 5)
+	for i := range ids {
+		ids[i] = postOrderWithKey(t, baseURL, "")
+	}
+
+	type page struct {
+		Items []struct {
+			OrderID string `json:"order_id"`
+			Status  string `json:"status"`
+		} `json:"items"`
+		NextCursor string `json:"next_cursor"`
+	}
+	fetch := func(query string) (page, int) {
+		resp, err := http.Get(baseURL + "/v1/orders" + query)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		var p page
+		if resp.StatusCode == http.StatusOK {
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&p))
+		}
+		return p, resp.StatusCode
+	}
+
+	// Page through with limit=2: 2 + 2 + 1, no overlaps, all 5 seen.
+	seen := map[string]bool{}
+	var cursor string
+	total := 0
+	for range 4 {
+		q := "?limit=2"
+		if cursor != "" {
+			q += "&cursor=" + cursor
+		}
+		p, code := fetch(q)
+		require.Equal(t, http.StatusOK, code)
+		for _, it := range p.Items {
+			require.False(t, seen[it.OrderID], "pagination must not repeat order %s", it.OrderID)
+			seen[it.OrderID] = true
+			total++
+		}
+		if p.NextCursor == "" {
+			break
+		}
+		cursor = p.NextCursor
+	}
+	require.Equal(t, 5, total, "pagination must enumerate all orders exactly once")
+	for _, id := range ids {
+		assert.True(t, seen[id], "order %s missing from listing", id)
+	}
+
+	// Default limit returns all 5 on one page, newest first.
+	p, code := fetch("")
+	require.Equal(t, http.StatusOK, code)
+	require.Len(t, p.Items, 5)
+	assert.Equal(t, ids[4], p.Items[0].OrderID, "listing must be newest first")
+	assert.Empty(t, p.NextCursor, "short page must not return a cursor")
+
+	// Malformed cursor → 400 problem+json.
+	resp, err := http.Get(baseURL + "/v1/orders?cursor=%21%21not-a-cursor")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "application/problem+json")
+
+	// limit above the documented maximum (100) is capped server-side; the
+	// request still succeeds (no kernel validation middleware is mounted).
+	_, code = fetch("?limit=101")
+	assert.Equal(t, http.StatusOK, code)
 }
