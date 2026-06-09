@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.uber.org/goleak"
 )
 
 // setupIntegration creates the admin client, producer, escalator and ensures
@@ -453,3 +455,101 @@ func TestRetryConsumer_MalformedRecordToDLT(t *testing.T) {
 
 // Ensure the atomic import is used.
 var _ = atomic.Int32{}
+
+// ---------------------------------------------------------------------------
+// Test 5: Close with a pending hold — no blocked goroutines
+// ---------------------------------------------------------------------------
+
+// TestRetryConsumer_CloseWithPendingHold proves that closing a retry consumer
+// while a hold-timer is pending (Tiers=[30s] — very long, never fires) does
+// not leak any goroutines and returns promptly.
+//
+// This is the integration companion to the unit test
+// TestClose_StopsPendingTimers_NoBlockedGoroutines — it exercises the full
+// path through NewConsumer + a real Kafka broker.
+func TestRetryConsumer_CloseWithPendingHold(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
+	// Ignore long-lived infrastructure goroutines that are not under test:
+	//   - testcontainers Reaper keeps a connection-monitoring goroutine for the
+	//     lifetime of the test binary.
+	//   - kgo Client goroutines from setupIntegration admin clients (closed via
+	//     t.Cleanup but may still be draining when VerifyNone runs).
+	defer goleak.VerifyNone(
+		t,
+		goleak.IgnoreTopFunction("github.com/testcontainers/testcontainers-go.(*Reaper).connect.func1"),
+		goleak.IgnoreTopFunction("github.com/twmb/franz-go/pkg/kgo.(*Client).updateMetadataLoop"),
+		goleak.IgnoreTopFunction("github.com/twmb/franz-go/pkg/kgo.(*Client).reapConnectionsLoop"),
+	)
+
+	broker, _ := kafkatest.NewRedpanda(t)
+
+	// Long tier (30s) so the hold timer never fires during the test.
+	pol := retry.Policy{Tiers: []time.Duration{30 * time.Second}, FastAttempts: 1}
+
+	suffix := uuid.NewString()[:8]
+	base := "cls.base-" + suffix
+	groupRetry := "cls-retry-" + suffix
+
+	adminCl, prod, esc := setupIntegration(t, broker, base, pol)
+	_ = adminCl
+
+	// Handler always returns an error so the escalator writes to the tier topic
+	// and the retry consumer's processPartition holds the record (not yet due).
+	handler := func(_ context.Context, _ kafka.Record) error {
+		return errors.New("permanent failure — hold pending")
+	}
+
+	retryCfg := kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "cls-retry-" + suffix,
+		GroupID:  groupRetry,
+	}
+	retryConsumer, err := retry.NewConsumer(retryCfg, groupRetry, []string{base}, handler, esc, pol)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	// Produce a record with retry headers pointing 30s into the future so
+	// the retry consumer holds it immediately on first poll.
+	tierTopic := retry.TierTopic(base, pol.Tiers[0])
+	dueAt := time.Now().Add(30 * time.Second)
+	rec := kafka.Record{
+		Topic: tierTopic,
+		Key:   []byte("hold-me"),
+		Value: []byte("v"),
+		Headers: map[string]string{
+			retry.HeaderAttempt:   "1",
+			retry.HeaderOrigTopic: base,
+			retry.HeaderDueAt:     strconv.FormatInt(dueAt.UnixMilli(), 10),
+		},
+	}
+	require.NoError(t, prod.Produce(ctx, rec))
+
+	// Start retry consumer; give it time to fetch and hold the record.
+	runDone := make(chan error, 1)
+	go func() { runDone <- retryConsumer.Run(ctx) }()
+
+	// Wait long enough for the consumer to poll and hold the record.
+	time.Sleep(3 * time.Second)
+
+	// Close must return promptly — timer must be stopped, no goroutine blocked.
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- retryConsumer.Close(context.Background()) }()
+
+	select {
+	case err := <-closeDone:
+		require.NoError(t, err, "Close must not return an error")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close blocked for >5s — timer goroutine or Run loop leaked")
+	}
+
+	// Run loop should also exit quickly after client is closed.
+	select {
+	case <-runDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return within 3s after Close")
+	}
+}

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"go-boilerplate/platform/messaging/kafka"
@@ -18,10 +20,18 @@ type topicPartition struct {
 	partition int32
 }
 
+// wakeEvent carries a topicPartition and the generation tag of the heldBatch
+// that scheduled the wake, so drainWakes can discard stale events.
+type wakeEvent struct {
+	tp  topicPartition
+	seq uint64
+}
+
 // heldBatch stores records that are not yet due for redelivery.
 type heldBatch struct {
 	records []*kgo.Record
 	dueAt   time.Time
+	seq     uint64 // monotonically-increasing generation tag (Fix 4)
 }
 
 // Consumer consumes every retry tier of the given base topics and redrives
@@ -47,13 +57,26 @@ type Consumer struct {
 	log     *slog.Logger
 	onError func(error)
 
-	// wake receives topicPartition values when a held batch becomes due.
-	// Buffered so AfterFunc goroutines never block.
-	wake chan topicPartition
+	// wake receives wakeEvent values when a held batch becomes due.
+	// Buffered so AfterFunc goroutines never block (fall through to done-escape).
+	wake chan wakeEvent
 
 	// held stores not-yet-due record batches keyed by topicPartition.
-	// Only accessed from the single Run goroutine.
-	held map[topicPartition]*heldBatch
+	// Only accessed from the single Run goroutine (except onRevoked which
+	// is called by kgo callbacks during poll — BlockRebalanceOnPoll
+	// guarantees these callbacks run while we are inside PollFetches,
+	// i.e. Run is not processing held; mu guards the shared access).
+	mu     sync.Mutex
+	held   map[topicPartition]*heldBatch
+	timers map[topicPartition]*time.Timer
+
+	// done is closed exactly once by Close, signalling all timer callbacks
+	// to abandon any pending send on wake.
+	done      chan struct{}
+	closeOnce sync.Once
+
+	// nextSeq is the per-Consumer source of heldBatch generation tags.
+	nextSeq atomic.Uint64
 }
 
 // Option configures a Consumer.
@@ -109,6 +132,21 @@ func NewConsumer(
 		}
 	}
 
+	c := &Consumer{
+		handler: handler,
+		esc:     esc,
+		policy:  policy,
+		log:     slog.Default(),
+		onError: func(error) {},
+		wake:    make(chan wakeEvent, 256),
+		held:    make(map[topicPartition]*heldBatch),
+		timers:  make(map[topicPartition]*time.Timer),
+		done:    make(chan struct{}),
+	}
+	for _, o := range opts {
+		o(c)
+	}
+
 	cl, err := kafka.NewClient(
 		cfg,
 		kgo.ConsumerGroup(groupID),
@@ -120,25 +158,38 @@ func NewConsumer(
 		// Read only committed records to respect EOS producers; no behaviour
 		// change on non-transactional retry-tier topics.
 		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
+		// Fix 2: clean up held state for revoked/lost partitions so stale timers
+		// cannot resume partitions we no longer own.
+		kgo.OnPartitionsRevoked(c.onRevoked),
+		kgo.OnPartitionsLost(c.onRevoked),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("retry: NewConsumer: %w", err)
 	}
 
-	c := &Consumer{
-		client:  cl,
-		handler: handler,
-		esc:     esc,
-		policy:  policy,
-		log:     slog.Default(),
-		onError: func(error) {},
-		wake:    make(chan topicPartition, 256),
-		held:    make(map[topicPartition]*heldBatch),
-	}
-	for _, o := range opts {
-		o(c)
-	}
+	c.client = cl
 	return c, nil
+}
+
+// onRevoked is called by kgo when partitions are revoked or lost. It removes
+// held batches and stops timers for the affected partitions so stale wakes
+// cannot resume a partition we no longer own after re-assignment.
+//
+// Concurrency: kgo calls this from inside PollFetches (BlockRebalanceOnPoll).
+// The Run loop does NOT hold mu while polling, so there is no deadlock.
+func (c *Consumer) onRevoked(_ context.Context, _ *kgo.Client, m map[string][]int32) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for topic, partitions := range m {
+		for _, p := range partitions {
+			tp := topicPartition{topic: topic, partition: p}
+			delete(c.held, tp)
+			if t, ok := c.timers[tp]; ok {
+				t.Stop()
+				delete(c.timers, tp)
+			}
+		}
+	}
 }
 
 // Run enters the poll-and-redrive loop. It returns when ctx is cancelled or
@@ -214,13 +265,17 @@ func (c *Consumer) Run(ctx context.Context) error {
 func (c *Consumer) drainWakes(ctx context.Context, toCommit []*kgo.Record) []*kgo.Record {
 	for {
 		select {
-		case tp := <-c.wake:
-			batch, ok := c.held[tp]
-			if !ok {
-				// Already cleared (e.g. rebalance took the partition).
+		case ev := <-c.wake:
+			c.mu.Lock()
+			batch, ok := c.held[ev.tp]
+			// Fix 4: ignore stale wake events — the batch was replaced or removed.
+			if !ok || batch.seq != ev.seq {
+				c.mu.Unlock()
 				continue
 			}
-			delete(c.held, tp)
+			delete(c.held, ev.tp)
+			delete(c.timers, ev.tp)
+			c.mu.Unlock()
 
 			// Process all held records in order.
 			for _, rec := range batch.records {
@@ -228,7 +283,7 @@ func (c *Consumer) drainWakes(ctx context.Context, toCommit []*kgo.Record) []*kg
 			}
 
 			// Resume fetching this partition.
-			c.client.ResumeFetchPartitions(map[string][]int32{tp.topic: {tp.partition}})
+			c.client.ResumeFetchPartitions(map[string][]int32{ev.tp.topic: {ev.tp.partition}})
 		default:
 			return toCommit
 		}
@@ -267,10 +322,14 @@ func (c *Consumer) processPartition(
 				Headers: headersFromKGO(rec.Headers),
 			}
 			dltRec.Headers["retry-last-error"] = "malformed: missing retry headers"
+			// Fix 3: only commit when DLT produce succeeded; on failure let the
+			// record redeliver so escalation can be retried on the next poll.
 			if err := c.esc.producer.Produce(ctx, dltRec); err != nil {
 				c.onError(fmt.Errorf("retry consumer: escalate malformed to DLT: %w", err))
+				// Do NOT append to toCommit — record will redeliver.
+			} else {
+				toCommit = append(toCommit, rec)
 			}
-			toCommit = append(toCommit, rec)
 			continue
 		}
 
@@ -280,23 +339,28 @@ func (c *Consumer) processPartition(
 			remaining := make([]*kgo.Record, len(p.Records)-i)
 			copy(remaining, p.Records[i:])
 
-			c.held[tp] = &heldBatch{records: remaining, dueAt: due}
-			c.client.PauseFetchPartitions(map[string][]int32{tp.topic: {tp.partition}})
+			seq := c.nextSeq.Add(1)
 
+			c.mu.Lock()
+			// Stop any existing timer for this partition before replacing.
+			if t, exists := c.timers[tp]; exists {
+				t.Stop()
+			}
+			c.held[tp] = &heldBatch{records: remaining, dueAt: due, seq: seq}
 			delay := time.Until(due)
-			time.AfterFunc(delay, func() {
+			ev := wakeEvent{tp: tp, seq: seq}
+			done := c.done
+			t := time.AfterFunc(delay, func() {
+				// Fix 1: always escape via done so no goroutine blocks after Close.
 				select {
-				case c.wake <- tp:
-				default:
-					// Channel full (very unlikely with buffer=256); the record
-					// will be re-examined on the next drain iteration after a
-					// short pause — the timer just fires again at the new due.
-					// To ensure eventual progress, re-schedule after a small delay.
-					time.AfterFunc(100*time.Millisecond, func() {
-						c.wake <- tp
-					})
+				case c.wake <- ev:
+				case <-done:
 				}
 			})
+			c.timers[tp] = t
+			c.mu.Unlock()
+
+			c.client.PauseFetchPartitions(map[string][]int32{tp.topic: {tp.partition}})
 			return toCommit
 		}
 
@@ -329,9 +393,23 @@ func (c *Consumer) handleRecord(ctx context.Context, rec *kgo.Record, toCommit [
 	return append(toCommit, rec)
 }
 
-// Close closes the underlying kgo.Client cleanly.
+// Close closes the underlying kgo.Client cleanly, stops all pending timers,
+// and signals all timer callbacks via done so they do not block after exit.
 func (c *Consumer) Close(_ context.Context) error {
-	c.client.Close()
+	c.closeOnce.Do(func() {
+		// Signal all pending timer callbacks to abandon their wake send.
+		close(c.done)
+
+		// Stop and clear all tracked timers.
+		c.mu.Lock()
+		for tp, t := range c.timers {
+			t.Stop()
+			delete(c.timers, tp)
+		}
+		c.mu.Unlock()
+
+		c.client.Close()
+	})
 	return nil
 }
 
