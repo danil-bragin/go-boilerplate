@@ -14,6 +14,32 @@ tasks:
     cmds:
       - go test -race ./...
 
+  test:unit:
+    desc: "Fast lane: unit + functional tests only (-short, no Docker)"
+    cmds:
+      - go test -short ./...
+
+  test:integration:
+    desc: "Full lane: all tests including integration (requires Docker)"
+    cmds:
+      - go test ./...
+
+  test:e2e:
+    desc: Run end-to-end tests only (requires full stack via docker compose)
+    cmds:
+      - go test ./examples/e2e/...
+
+  test:cover:
+    desc: "Fast lane with coverage: outputs summary line to stdout"
+    cmds:
+      - go test -short -coverprofile=coverage.out ./...
+      - go tool cover -func=coverage.out | tail -1
+
+  gen:mocks:
+    desc: Regenerate moq mocks for platform interfaces
+    cmds:
+      - go generate ./platform/testkit/mocks/...
+
   lint:
     desc: Run golangci-lint
     cmds:
