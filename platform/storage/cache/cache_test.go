@@ -11,12 +11,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
+	"go.uber.org/goleak"
 	"golang.org/x/sync/errgroup"
 )
 
-// newCache starts a Redis testcontainer and returns a configured *Cache.
-// The container and cache are both cleaned up via t.Cleanup.
-func newCache(t *testing.T) *cache.Cache {
+// newRedisContainer starts a Redis testcontainer and returns its address in
+// "host:port" form. The container is cleaned up via t.Cleanup.
+func newRedisContainer(t *testing.T) string {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redis container)")
@@ -33,8 +34,13 @@ func newCache(t *testing.T) *cache.Cache {
 	require.NoError(t, err)
 	// ConnectionString returns "redis://host:port" — strip the scheme.
 	// rueidis wants "host:port".
-	addr = stripRedisScheme(addr)
+	return stripRedisScheme(addr)
+}
 
+// newCacheAt builds a *Cache against the given Redis address, cleaned up via
+// t.Cleanup.
+func newCacheAt(t *testing.T, addr string) *cache.Cache {
+	t.Helper()
 	cfg := cache.Config{
 		RedisAddrs: []string{addr},
 		L1Capacity: 1000,
@@ -47,6 +53,13 @@ func newCache(t *testing.T) *cache.Cache {
 		_ = c.Close(context.Background())
 	})
 	return c
+}
+
+// newCache starts a Redis testcontainer and returns a configured *Cache.
+// The container and cache are both cleaned up via t.Cleanup.
+func newCache(t *testing.T) *cache.Cache {
+	t.Helper()
+	return newCacheAt(t, newRedisContainer(t))
 }
 
 // stripRedisScheme removes "redis://" prefix if present.
@@ -213,4 +226,108 @@ func TestCache_ReturnedBytesAreCopy_NoAliasing(t *testing.T) {
 	v3, ok3 := c.Get(ctx, "k2")
 	require.True(t, ok3)
 	assert.Equal(t, []byte("world"), v3, "mutating the Set input slice corrupted the cache (aliasing bug)")
+}
+
+// TestCache_DeleteEvictsLocally verifies that Delete removes the key from both
+// tiers on the deleting instance itself.
+func TestCache_DeleteEvictsLocally(t *testing.T) {
+	c := newCache(t)
+	ctx := context.Background()
+
+	c.Set(ctx, "k", []byte("v"), time.Minute)
+	_, ok := c.Get(ctx, "k")
+	require.True(t, ok)
+
+	require.NoError(t, c.Delete(ctx, "k"))
+
+	_, ok = c.Get(ctx, "k")
+	assert.False(t, ok, "key must be gone after Delete")
+}
+
+// TestCache_CrossInstanceInvalidation_Delete verifies that a Delete on
+// instance A evicts the warm L1 entry on instance B via the Redis pub/sub
+// invalidation broadcast.
+func TestCache_CrossInstanceInvalidation_Delete(t *testing.T) {
+	addr := newRedisContainer(t)
+	a := newCacheAt(t, addr)
+	b := newCacheAt(t, addr)
+	ctx := context.Background()
+
+	a.Set(ctx, "k", []byte("v1"), time.Minute)
+
+	// Warm B's L1 from L2.
+	v, ok := b.Get(ctx, "k")
+	require.True(t, ok)
+	require.Equal(t, []byte("v1"), v)
+
+	require.NoError(t, a.Delete(ctx, "k"))
+
+	// B's L1 must be evicted within 500ms; subsequent Get is a miss
+	// (L2 was DELed and L1 dropped via broadcast).
+	assert.Eventually(t, func() bool {
+		_, ok := b.Get(ctx, "k")
+		return !ok
+	}, 500*time.Millisecond, 10*time.Millisecond, "B still serves stale L1 after A.Delete")
+}
+
+// TestCache_CrossInstanceInvalidation_SetBroadcast verifies that a Set on
+// instance A invalidates the stale L1 entry on instance B, so B observes the
+// new value within 500ms.
+func TestCache_CrossInstanceInvalidation_SetBroadcast(t *testing.T) {
+	addr := newRedisContainer(t)
+	a := newCacheAt(t, addr)
+	b := newCacheAt(t, addr)
+	ctx := context.Background()
+
+	a.Set(ctx, "k", []byte("v1"), time.Minute)
+
+	// Warm B's L1 with v1.
+	v, ok := b.Get(ctx, "k")
+	require.True(t, ok)
+	require.Equal(t, []byte("v1"), v)
+
+	a.Set(ctx, "k", []byte("v2"), time.Minute)
+
+	assert.Eventually(t, func() bool {
+		v, ok := b.Get(ctx, "k")
+		return ok && string(v) == "v2"
+	}, 500*time.Millisecond, 10*time.Millisecond, "B still serves stale v1 after A.Set(v2)")
+}
+
+// TestCache_SetBroadcastKeepsOwnL1 verifies that the setting instance does not
+// drop its own freshly written L1 entry when its own broadcast loops back.
+func TestCache_SetBroadcastKeepsOwnL1(t *testing.T) {
+	c := newCache(t)
+	ctx := context.Background()
+
+	c.Set(ctx, "k", []byte("v"), time.Minute)
+
+	// Give the loopback pub/sub message time to arrive; the entry must survive.
+	time.Sleep(200 * time.Millisecond)
+	v, ok := c.Get(ctx, "k")
+	require.True(t, ok)
+	assert.Equal(t, []byte("v"), v)
+}
+
+// TestCache_Close_NoSubscriberLeak verifies the pub/sub subscriber goroutine
+// exits on Close (goleak).
+func TestCache_Close_NoSubscriberLeak(t *testing.T) {
+	addr := newRedisContainer(t)
+
+	// Snapshot goroutines AFTER the container infra is up so testcontainers'
+	// own background goroutines are excluded from the leak check.
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	cfg := cache.Config{
+		RedisAddrs: []string{addr},
+		L1Capacity: 10,
+		DefaultTTL: time.Minute,
+	}
+	c, err := cache.New(cfg)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	c.Set(ctx, "k", []byte("v"), time.Minute)
+	require.NoError(t, c.Delete(ctx, "k"))
+	require.NoError(t, c.Close(ctx))
 }

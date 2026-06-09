@@ -21,6 +21,9 @@ var _ cqrs.Cache = &CacheMock{}
 //
 //		// make and configure a mocked cqrs.Cache
 //		mockedCache := &CacheMock{
+//			DeleteFunc: func(ctx context.Context, key string) error {
+//				panic("mock out the Delete method")
+//			},
 //			GetFunc: func(ctx context.Context, key string) ([]byte, bool) {
 //				panic("mock out the Get method")
 //			},
@@ -34,6 +37,9 @@ var _ cqrs.Cache = &CacheMock{}
 //
 //	}
 type CacheMock struct {
+	// DeleteFunc mocks the Delete method.
+	DeleteFunc func(ctx context.Context, key string) error
+
 	// GetFunc mocks the Get method.
 	GetFunc func(ctx context.Context, key string) ([]byte, bool)
 
@@ -42,6 +48,13 @@ type CacheMock struct {
 
 	// calls tracks calls to the methods.
 	calls struct {
+		// Delete holds details about calls to the Delete method.
+		Delete []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// Key is the key argument value.
+			Key string
+		}
 		// Get holds details about calls to the Get method.
 		Get []struct {
 			// Ctx is the ctx argument value.
@@ -61,8 +74,45 @@ type CacheMock struct {
 			TTL time.Duration
 		}
 	}
-	lockGet sync.RWMutex
-	lockSet sync.RWMutex
+	lockDelete sync.RWMutex
+	lockGet    sync.RWMutex
+	lockSet    sync.RWMutex
+}
+
+// Delete calls DeleteFunc.
+func (mock *CacheMock) Delete(ctx context.Context, key string) error {
+	if mock.DeleteFunc == nil {
+		panic("CacheMock.DeleteFunc: method is nil but Cache.Delete was just called")
+	}
+	callInfo := struct {
+		Ctx context.Context
+		Key string
+	}{
+		Ctx: ctx,
+		Key: key,
+	}
+	mock.lockDelete.Lock()
+	mock.calls.Delete = append(mock.calls.Delete, callInfo)
+	mock.lockDelete.Unlock()
+	return mock.DeleteFunc(ctx, key)
+}
+
+// DeleteCalls gets all the calls that were made to Delete.
+// Check the length with:
+//
+//	len(mockedCache.DeleteCalls())
+func (mock *CacheMock) DeleteCalls() []struct {
+	Ctx context.Context
+	Key string
+} {
+	var calls []struct {
+		Ctx context.Context
+		Key string
+	}
+	mock.lockDelete.RLock()
+	calls = mock.calls.Delete
+	mock.lockDelete.RUnlock()
+	return calls
 }
 
 // Get calls GetFunc.

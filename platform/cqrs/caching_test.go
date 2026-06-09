@@ -35,6 +35,13 @@ func (c *fakeCache) Set(_ context.Context, key string, value []byte, _ time.Dura
 	c.store[key] = value
 }
 
+func (c *fakeCache) Delete(_ context.Context, key string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.store, key)
+	return nil
+}
+
 type (
 	cacheQuery  struct{ ID string }
 	cacheResult struct{ Value string }

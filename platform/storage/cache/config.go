@@ -13,4 +13,8 @@ type Config struct {
 	DefaultTTL time.Duration `env:"CACHE_DEFAULT_TTL" envDefault:"5m"`
 	// TTLJitter is the fractional jitter applied to every TTL, e.g. 0.1 = ±10%.
 	TTLJitter float64 `env:"CACHE_TTL_JITTER" envDefault:"0.1"`
+	// InvalidationPrefix names the pub/sub invalidation channel
+	// ("cache:inv:<prefix>"). Instances sharing a prefix form one L1
+	// coherence domain; give each service its own prefix.
+	InvalidationPrefix string `env:"CACHE_INV_PREFIX" envDefault:"default"`
 }

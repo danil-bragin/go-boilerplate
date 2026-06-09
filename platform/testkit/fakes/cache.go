@@ -43,3 +43,11 @@ func (c *Cache) Set(_ context.Context, key string, value []byte, _ time.Duration
 	c.data[key] = cp
 	c.mu.Unlock()
 }
+
+// Delete removes key. It never fails.
+func (c *Cache) Delete(_ context.Context, key string) error {
+	c.mu.Lock()
+	delete(c.data, key)
+	c.mu.Unlock()
+	return nil
+}

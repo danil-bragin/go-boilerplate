@@ -8,9 +8,13 @@ import (
 
 // Cache is the minimal cache-aside contract the Caching behavior needs.
 // Get returns (value, true) on hit. Set stores value with a ttl.
+// Delete removes the key from every tier; distributed implementations must
+// also broadcast the eviction to other instances (write paths call Delete to
+// bust stale read-model entries).
 type Cache interface {
 	Get(ctx context.Context, key string) ([]byte, bool)
 	Set(ctx context.Context, key string, value []byte, ttl time.Duration)
+	Delete(ctx context.Context, key string) error
 }
 
 // Codec encodes/decodes the result R for caching.

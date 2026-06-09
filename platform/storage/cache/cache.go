@@ -6,6 +6,7 @@ package cache
 import (
 	"context"
 	"math/rand/v2"
+	"sync"
 	"time"
 
 	"go-boilerplate/platform/cqrs"
@@ -23,9 +24,11 @@ var _ cqrs.Cache = (*Cache)(nil)
 //
 // Coherence notes:
 //
-//   - L1 is per-process with no cross-instance invalidation. A write on another
-//     instance leaves this instance's L1 stale until the entry's TTL expires.
-//     This is eventual consistency; keep TTLs modest to bound staleness.
+//   - Cross-instance L1 coherence is maintained via a Redis pub/sub broadcast:
+//     every Set and Delete publishes the key on "cache:inv:<prefix>" and other
+//     instances drop the key from their L1 (L2 stays authoritative). Delivery
+//     is best-effort — a dropped broadcast (Redis hiccup, resubscribe window)
+//     degrades to TTL-bounded staleness, so keep TTLs modest as the floor.
 //
 //   - An L2 (Redis) error on read is treated as a cache miss (availability over
 //     strictness). Such errors are currently unlogged.
@@ -35,6 +38,11 @@ type Cache struct {
 	l2  rueidis.Client
 	sf  singleflight.Group
 	cfg Config
+
+	// Pub/sub invalidation broadcast state (see invalidation.go).
+	instanceID string
+	subCancel  context.CancelFunc
+	subWG      sync.WaitGroup
 }
 
 // New constructs a Cache from cfg.
@@ -61,7 +69,9 @@ func New(cfg Config) (*Cache, error) {
 		return nil, err
 	}
 
-	return &Cache{l1: l1, l2: l2, cfg: cfg}, nil
+	c := &Cache{l1: l1, l2: l2, cfg: cfg}
+	c.startInvalidationSubscriber()
+	return c, nil
 }
 
 // JitteredTTL returns ttl adjusted by a random ±TTLJitter fraction.
@@ -129,12 +139,29 @@ func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Durati
 	_ = c.l2.Do(ctx, c.l2.B().Set().Key(key).Value(rueidis.BinaryString(val)).Ex(jttl).Build()).Error()
 	// TODO(obs): log L2 error.
 
+	// Broadcast so other instances drop their (now stale) L1 entry and
+	// re-read the new value from L2. The receiver skips this instance by id.
+	c.publishInvalidation(ctx, key)
+
 	// Write a copy to L1 so that a caller mutating val after Set
 	// does not corrupt the shared in-process entry.
 	l1copy := make([]byte, len(val))
 	copy(l1copy, val)
 	c.l1.Set(key, l1copy)
 	c.l1.SetExpiresAfter(key, jttl)
+}
+
+// Delete removes key from L1 and L2 and broadcasts the eviction so every
+// other instance drops its L1 entry too. The L2 DEL error is returned (the
+// caller may want to know the authoritative tier still holds the key); the
+// broadcast itself is best-effort.
+func (c *Cache) Delete(ctx context.Context, key string) error {
+	c.l1.Invalidate(key)
+
+	err := c.l2.Do(ctx, c.l2.B().Del().Key(key).Build()).Error()
+
+	c.publishInvalidation(ctx, key)
+	return err
 }
 
 // GetOrLoad returns the cached value for key, loading it with loader on a
@@ -168,8 +195,10 @@ func (c *Cache) HealthCheck(ctx context.Context) error {
 	return c.l2.Do(ctx, c.l2.B().Ping().Build()).Error()
 }
 
-// Close releases the rueidis connection pool.
+// Close stops the invalidation subscriber and releases the rueidis
+// connection pool.
 func (c *Cache) Close(_ context.Context) error {
+	c.stopInvalidationSubscriber()
 	c.l2.Close()
 	return nil
 }
