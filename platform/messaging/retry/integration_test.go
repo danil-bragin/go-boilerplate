@@ -553,3 +553,107 @@ func TestRetryConsumer_CloseWithPendingHold(t *testing.T) {
 		t.Fatal("Run did not return within 3s after Close")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Test 6: escalation failure must not lose the record
+// ---------------------------------------------------------------------------
+
+// flakyProducer fails the first failN Produce calls, then delegates.
+type flakyProducer struct {
+	mu    sync.Mutex
+	fails int
+	failN int
+	real  *kafka.Producer
+}
+
+func (f *flakyProducer) Produce(ctx context.Context, rec kafka.Record) error {
+	f.mu.Lock()
+	if f.fails < f.failN {
+		f.fails++
+		f.mu.Unlock()
+		return errors.New("flaky: injected produce failure")
+	}
+	f.mu.Unlock()
+	return f.real.Produce(ctx, rec)
+}
+
+// TestRetryConsumer_EscalateFailureNoLoss proves that a record whose
+// escalation produce fails is retried — not silently skipped while later
+// records commit past it (which would lose it permanently).
+//
+//   - r1 ("bad"): handler always fails → escalate → DLT produce fails twice
+//     (injected), succeeds on the 3rd attempt.
+//   - r2 ("good"): handler succeeds.
+//
+// Broken semantics: r1's failed escalation skips the record, r2 commits past
+// it, r1 is never re-fetched → DLT never receives it.
+func TestRetryConsumer_EscalateFailureNoLoss(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
+	// Registered FIRST so it runs LAST (t.Cleanup is LIFO) — i.e. after the
+	// pollKGO and setupIntegration cleanups have closed their kgo clients.
+	// Same infrastructure-goroutine ignores as TestRetryConsumer_CloseWithPendingHold.
+	t.Cleanup(func() {
+		goleak.VerifyNone(
+			t,
+			goleak.IgnoreTopFunction("github.com/testcontainers/testcontainers-go.(*Reaper).connect.func1"),
+			goleak.IgnoreTopFunction("github.com/twmb/franz-go/pkg/kgo.(*Client).updateMetadataLoop"),
+			goleak.IgnoreTopFunction("github.com/twmb/franz-go/pkg/kgo.(*Client).reapConnectionsLoop"),
+		)
+	})
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	base := "esc-fail-" + uuid.NewString()[:8]
+	pol := retry.Policy{Tiers: []time.Duration{time.Second}, FastAttempts: 1}
+
+	_, prod, _ := setupIntegration(t, broker, base, pol)
+
+	flaky := &flakyProducer{failN: 2, real: prod}
+	esc := retry.NewEscalator(flaky, pol)
+
+	tierTopic := retry.TierTopic(base, time.Second)
+	ctx := context.Background()
+
+	// Two already-due records on the single tier partition: bad first, good second.
+	for _, v := range []string{"bad", "good"} {
+		rec := kafka.Record{Topic: tierTopic, Key: []byte(v), Value: []byte(v)}
+		retry.SetRetryHeaders(&rec, 1, base, time.Now().Add(-time.Second), errors.New("seed"))
+		require.NoError(t, prod.Produce(ctx, rec))
+	}
+
+	var goodProcessed atomic.Bool
+	handler := func(_ context.Context, r kafka.Record) error {
+		if string(r.Value) == "bad" {
+			return errors.New("handler: permanent failure")
+		}
+		goodProcessed.Store(true)
+		return nil
+	}
+
+	cons, err := retry.NewConsumer(kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "esc-fail-consumer",
+	}, "esc-fail-group", []string{base}, handler, esc, pol)
+	require.NoError(t, err)
+
+	runCtx, cancel := context.WithCancel(ctx)
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		_ = cons.Run(runCtx)
+	}()
+
+	// The bad record must reach the DLT despite two injected escalation
+	// failures — proves escalation is retried, not lost.
+	dltRecs := pollKGO(t, broker, retry.DLTTopic(base), 1, 60*time.Second)
+	require.Len(t, dltRecs, 1, "bad record lost: escalation failure skipped it and committed past")
+	assert.Equal(t, "bad", string(dltRecs[0].Value))
+
+	require.Eventually(t, goodProcessed.Load, 30*time.Second, 100*time.Millisecond,
+		"good record must still be processed")
+
+	cancel()
+	<-runDone
+	require.NoError(t, cons.Close(ctx))
+}

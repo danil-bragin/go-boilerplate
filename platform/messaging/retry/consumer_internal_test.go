@@ -217,12 +217,21 @@ func (m *mockProducer) Produce(_ context.Context, rec kafka.Record) error {
 	return nil
 }
 
-// TestProcessPartition_MalformedNoDLTProduceNoCommit verifies that a malformed
-// record (no retry headers) is NOT appended to toCommit when the DLT produce
-// fails, so the record is not committed and will redeliver.
-func TestProcessPartition_MalformedNoDLTProduceNoCommit(t *testing.T) {
+// TestProcessPartition_MalformedDLTProduceFailureHolds verifies that a
+// malformed record (no retry headers) whose DLT produce fails is NOT
+// committed and IS held for a delayed retry. Merely skipping the commit
+// would lose the record: kgo advances its consume position regardless of
+// commits, so an unheld record is never refetched and any later commit
+// advances past it.
+func TestProcessPartition_MalformedDLTProduceFailureHolds(t *testing.T) {
 	mp := &mockProducer{failProduce: true}
 	c := newBareConsumer()
+	// Real kgo client with an unreachable seed: PauseFetchPartitions (called
+	// by holdRecords) is pure local bookkeeping, nothing is dialed.
+	cl, err := kgo.NewClient(kgo.SeedBrokers("127.0.0.1:1"))
+	require.NoError(t, err)
+	t.Cleanup(cl.Close)
+	c.client = cl
 	c.esc = &Escalator{producer: mp}
 	var onErrorCalled atomic.Bool
 	c.onError = func(error) { onErrorCalled.Store(true) }
@@ -245,9 +254,20 @@ func TestProcessPartition_MalformedNoDLTProduceNoCommit(t *testing.T) {
 
 	toCommit := c.processPartition(context.Background(), p, nil)
 
-	// Produce failed → record must NOT be in toCommit.
+	// Produce failed → record must NOT be in toCommit…
 	assert.Empty(t, toCommit, "toCommit must be empty when DLT produce failed")
 	assert.True(t, onErrorCalled.Load(), "onError must be called on DLT produce failure")
+
+	// …and MUST be held for a delayed escalation retry.
+	tp := topicPartition{topic: "base.retry.5s", partition: 0}
+	c.mu.Lock()
+	batch, held := c.held[tp]
+	_, timerSet := c.timers[tp]
+	c.mu.Unlock()
+	require.True(t, held, "failed record must be held, not skipped (skip = permanent loss)")
+	require.Len(t, batch.records, 1)
+	assert.Equal(t, rec, batch.records[0])
+	assert.True(t, timerSet, "a wake timer must be scheduled for the held batch")
 }
 
 // TestProcessPartition_MalformedDLTSuccessCommits verifies that when the DLT

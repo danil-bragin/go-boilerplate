@@ -34,6 +34,16 @@ type heldBatch struct {
 	seq     uint64 // monotonically-increasing generation tag (Fix 4)
 }
 
+// escalateRetryDelay is how long a partition is held after a FAILED
+// escalation (handler failed AND the escalation/DLT produce also failed,
+// e.g. broker unavailable). The held records — starting with the one whose
+// escalation failed — are retried in order after this delay. Without the
+// hold the record would be skipped permanently: kgo advances its consume
+// position on PollFetches regardless of commits, so "do not commit" alone
+// does NOT cause redelivery, and committing any later record would advance
+// past the failed one (silent loss).
+const escalateRetryDelay = time.Second
+
 // Consumer consumes every retry tier of the given base topics and redrives
 // records to the original handler once their retry-due-at time arrives.
 //
@@ -277,9 +287,21 @@ func (c *Consumer) drainWakes(ctx context.Context, toCommit []*kgo.Record) []*kg
 			delete(c.timers, ev.tp)
 			c.mu.Unlock()
 
-			// Process all held records in order.
-			for _, rec := range batch.records {
-				toCommit = c.handleRecord(ctx, rec, toCommit)
+			// Process all held records in order. On a failed escalation,
+			// re-hold the failed record and everything after it (the
+			// partition stays paused) so nothing is skipped or lost.
+			reheld := false
+			for j, rec := range batch.records {
+				var failed bool
+				toCommit, failed = c.handleRecord(ctx, rec, toCommit)
+				if failed {
+					c.holdRecords(ev.tp, batch.records[j:], time.Now().Add(escalateRetryDelay))
+					reheld = true
+					break
+				}
+			}
+			if reheld {
+				continue
 			}
 
 			// Resume fetching this partition.
@@ -322,14 +344,19 @@ func (c *Consumer) processPartition(
 				Headers: headersFromKGO(rec.Headers),
 			}
 			dltRec.Headers["retry-last-error"] = "malformed: missing retry headers"
-			// Fix 3: only commit when DLT produce succeeded; on failure let the
-			// record redeliver so escalation can be retried on the next poll.
+			// Fix 3: only commit when DLT produce succeeded. On failure, HOLD
+			// this record and the rest of the batch and retry after a delay —
+			// merely skipping the commit would NOT redeliver it (kgo advances
+			// its consume position regardless of commits) and committing any
+			// later record would lose it permanently.
 			if err := c.esc.producer.Produce(ctx, dltRec); err != nil {
 				c.onError(fmt.Errorf("retry consumer: escalate malformed to DLT: %w", err))
-				// Do NOT append to toCommit — record will redeliver.
-			} else {
-				toCommit = append(toCommit, rec)
+				remaining := make([]*kgo.Record, len(p.Records)-i)
+				copy(remaining, p.Records[i:])
+				c.holdRecords(tp, remaining, time.Now().Add(escalateRetryDelay))
+				return toCommit
 			}
+			toCommit = append(toCommit, rec)
 			continue
 		}
 
@@ -338,43 +365,62 @@ func (c *Consumer) processPartition(
 			// this partition, pause the partition, and schedule a wake-up timer.
 			remaining := make([]*kgo.Record, len(p.Records)-i)
 			copy(remaining, p.Records[i:])
-
-			seq := c.nextSeq.Add(1)
-
-			c.mu.Lock()
-			// Stop any existing timer for this partition before replacing.
-			if t, exists := c.timers[tp]; exists {
-				t.Stop()
-			}
-			c.held[tp] = &heldBatch{records: remaining, dueAt: due, seq: seq}
-			delay := time.Until(due)
-			ev := wakeEvent{tp: tp, seq: seq}
-			done := c.done
-			t := time.AfterFunc(delay, func() {
-				// Fix 1: always escape via done so no goroutine blocks after Close.
-				select {
-				case c.wake <- ev:
-				case <-done:
-				}
-			})
-			c.timers[tp] = t
-			c.mu.Unlock()
-
-			c.client.PauseFetchPartitions(map[string][]int32{tp.topic: {tp.partition}})
+			c.holdRecords(tp, remaining, due)
 			return toCommit
 		}
 
-		// Record is due: process now.
-		toCommit = c.handleRecord(ctx, rec, toCommit)
+		// Record is due: process now. On a failed escalation, hold this
+		// record and the rest of the batch for a delayed retry — see
+		// escalateRetryDelay for why skipping the commit is not enough.
+		var failed bool
+		toCommit, failed = c.handleRecord(ctx, rec, toCommit)
+		if failed {
+			remaining := make([]*kgo.Record, len(p.Records)-i)
+			copy(remaining, p.Records[i:])
+			c.holdRecords(tp, remaining, time.Now().Add(escalateRetryDelay))
+			return toCommit
+		}
 		_ = orig
 	}
 
 	return toCommit
 }
 
+// holdRecords stores records (in order) for tp until due, pauses the
+// partition so no further records are fetched for it, and schedules a wake
+// timer. Any previously-held batch/timer for tp is replaced (Fix 4: the seq
+// tag makes the old timer's wake event stale).
+func (c *Consumer) holdRecords(tp topicPartition, records []*kgo.Record, due time.Time) {
+	seq := c.nextSeq.Add(1)
+
+	c.mu.Lock()
+	// Stop any existing timer for this partition before replacing.
+	if t, exists := c.timers[tp]; exists {
+		t.Stop()
+	}
+	c.held[tp] = &heldBatch{records: records, dueAt: due, seq: seq}
+	ev := wakeEvent{tp: tp, seq: seq}
+	done := c.done
+	t := time.AfterFunc(time.Until(due), func() {
+		// Fix 1: always escape via done so no goroutine blocks after Close.
+		select {
+		case c.wake <- ev:
+		case <-done:
+		}
+	})
+	c.timers[tp] = t
+	c.mu.Unlock()
+
+	c.client.PauseFetchPartitions(map[string][]int32{tp.topic: {tp.partition}})
+}
+
 // handleRecord calls the handler and escalates on failure.
-// The kgo.Record is always appended to toCommit (success or escalation).
-func (c *Consumer) handleRecord(ctx context.Context, rec *kgo.Record, toCommit []*kgo.Record) []*kgo.Record {
+// The record is appended to toCommit when handled or successfully escalated.
+// failed=true means the escalation itself failed: the caller MUST stop
+// processing the partition and hold the record (plus the rest of the batch)
+// for a delayed retry — it is NOT safe to continue, because committing any
+// later record would advance past this one and lose it.
+func (c *Consumer) handleRecord(ctx context.Context, rec *kgo.Record, toCommit []*kgo.Record) (_ []*kgo.Record, failed bool) {
 	r := recordFromKGO(rec)
 	_, orig, _, ok := ParseRetryHeaders(r)
 	if !ok {
@@ -384,13 +430,11 @@ func (c *Consumer) handleRecord(ctx context.Context, rec *kgo.Record, toCommit [
 	if err := c.handler(ctx, r); err != nil {
 		if _, escErr := c.esc.Escalate(ctx, orig, r, err); escErr != nil {
 			c.onError(fmt.Errorf("retry consumer: escalate: %w", escErr))
-			// Do NOT commit — let the record be redelivered so we can retry
-			// escalation on the next poll.
-			return toCommit
+			return toCommit, true
 		}
 	}
 
-	return append(toCommit, rec)
+	return append(toCommit, rec), false
 }
 
 // Close closes the underlying kgo.Client cleanly, stops all pending timers,

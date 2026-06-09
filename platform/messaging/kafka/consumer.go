@@ -10,9 +10,10 @@ import (
 
 // HandlerFunc processes a single Kafka record. The consumer commits the record's
 // offset only after the handler returns nil. If the handler returns a non-nil
-// error the offset is NOT committed, so the record will be redelivered on the
-// next poll (at-least-once delivery). The caller is responsible for any
-// retry/dead-letter logic (see platform/kafka/dlq.go in Task 7).
+// error the offset is NOT committed and the consumer explicitly seeks the
+// partition back to the failed record (see Run), so it is redelivered with
+// exponential backoff (at-least-once delivery). The caller is responsible for
+// any retry/dead-letter logic (see dlq.go).
 type HandlerFunc func(ctx context.Context, r Record) error
 
 // Consumer wraps a *kgo.Client configured for cooperative-sticky group
