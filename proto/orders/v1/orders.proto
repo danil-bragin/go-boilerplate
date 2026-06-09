@@ -43,6 +43,18 @@ message PaymentProcessed {
   string status = 3;
 }
 
+// OrderPaymentTimedOut is the domain event emitted by the orders service when
+// an order has stayed unpaid past the configured payment deadline
+// (ORDERS_PAYMENT_DEADLINE). Emitted at most once per order by the unpaid
+// watcher; consumers treat it as a terminal payment outcome unless a payment
+// outcome (paid/failed) was already recorded.
+message OrderPaymentTimedOut {
+  // order_id is the identifier of the order whose payment window expired.
+  string order_id = 1;
+  // deadline is the instant the payment window expired (created_at + deadline).
+  google.protobuf.Timestamp deadline = 2;
+}
+
 // PaymentFailed is the domain event emitted when the payments service declines
 // (or fails to process) a payment for an order. It is the failure branch of
 // the choreography: consumers must treat it as a terminal payment outcome for

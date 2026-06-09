@@ -143,6 +143,9 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if err := svc.RegisterSchema(ctx, cfg.OrdersEventsTopic, projection.OrderCreatedEventType, &ordersv1.OrderCreated{}); err != nil {
 		return nil, err
 	}
+	if err := svc.RegisterSchema(ctx, cfg.OrdersEventsTopic, projection.OrderPaymentTimedOutEventType, &ordersv1.OrderPaymentTimedOut{}); err != nil {
+		return nil, err
+	}
 	if err := svc.RegisterSchema(ctx, cfg.PaymentsEventsTopic, projection.PaymentProcessedEventType, &ordersv1.PaymentProcessed{}); err != nil {
 		return nil, err
 	}

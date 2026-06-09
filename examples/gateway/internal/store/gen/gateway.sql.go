@@ -163,6 +163,23 @@ func (q *Queries) MarkPaymentFailed(ctx context.Context, orderID uuid.UUID) (int
 	return result.RowsAffected(), nil
 }
 
+const markPaymentTimeout = `-- name: MarkPaymentTimeout :execrows
+insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)
+values ($1, '', 0, '', 'payment_timeout', now())
+on conflict (order_id) do update set
+  status     = 'payment_timeout',
+  updated_at = now()
+where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout')
+`
+
+func (q *Queries) MarkPaymentTimeout(ctx context.Context, orderID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markPaymentTimeout, orderID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const upsertOrderCreated = `-- name: UpsertOrderCreated :exec
 insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)
 values ($1, $2, $3, $4, 'created', now())
@@ -171,7 +188,11 @@ on conflict (order_id) do update set
   amount_cents = excluded.amount_cents,
   currency     = excluded.currency,
   updated_at   = now(),
-  status       = case when orders_read.status = 'paid' then 'paid' else 'created' end
+  status       = case
+                   when orders_read.status in ('paid', 'payment_failed', 'payment_timeout')
+                   then orders_read.status
+                   else 'created'
+                 end
 `
 
 type UpsertOrderCreatedParams struct {
@@ -181,6 +202,9 @@ type UpsertOrderCreatedParams struct {
 	Currency    string
 }
 
+// A late/redelivered OrderCreated fills in the order details but must never
+// downgrade a terminal status (paid/payment_failed/payment_timeout) back to
+// 'created' — see the terminal-precedence note below.
 func (q *Queries) UpsertOrderCreated(ctx context.Context, arg UpsertOrderCreatedParams) error {
 	_, err := q.db.Exec(ctx, upsertOrderCreated,
 		arg.OrderID,

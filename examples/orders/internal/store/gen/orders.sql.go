@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const getOrder = `-- name: GetOrder :one
@@ -17,9 +18,18 @@ from orders
 where id = $1
 `
 
-func (q *Queries) GetOrder(ctx context.Context, id uuid.UUID) (Order, error) {
+type GetOrderRow struct {
+	ID          uuid.UUID
+	CustomerID  string
+	AmountCents int64
+	Currency    string
+	Status      string
+	CreatedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) GetOrder(ctx context.Context, id uuid.UUID) (GetOrderRow, error) {
 	row := q.db.QueryRow(ctx, getOrder, id)
-	var i Order
+	var i GetOrderRow
 	err := row.Scan(
 		&i.ID,
 		&i.CustomerID,
@@ -53,4 +63,87 @@ func (q *Queries) InsertOrder(ctx context.Context, arg InsertOrderParams) error 
 		arg.Status,
 	)
 	return err
+}
+
+const listUnpaidExpired = `-- name: ListUnpaidExpired :many
+select id, created_at
+from orders
+where status = 'created'
+  and payment_timeout_emitted = false
+  and created_at < now() - make_interval(secs => $1::float8)
+order by created_at
+limit $2::int
+`
+
+type ListUnpaidExpiredParams struct {
+	DeadlineSeconds float64
+	BatchLimit      int32
+}
+
+type ListUnpaidExpiredRow struct {
+	ID        uuid.UUID
+	CreatedAt pgtype.Timestamptz
+}
+
+// Orders past the payment deadline that have not had a timeout emitted yet.
+// The cutoff is computed against the DB clock (now()) so multiple instances
+// agree on expiry regardless of app-host clock skew.
+func (q *Queries) ListUnpaidExpired(ctx context.Context, arg ListUnpaidExpiredParams) ([]ListUnpaidExpiredRow, error) {
+	rows, err := q.db.Query(ctx, listUnpaidExpired, arg.DeadlineSeconds, arg.BatchLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListUnpaidExpiredRow
+	for rows.Next() {
+		var i ListUnpaidExpiredRow
+		if err := rows.Scan(&i.ID, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markOrderPaymentOutcome = `-- name: MarkOrderPaymentOutcome :execrows
+update orders
+set status = $2::text
+where id = $1 and status = 'created'
+`
+
+type MarkOrderPaymentOutcomeParams struct {
+	ID     uuid.UUID
+	Status string
+}
+
+// Records the terminal payment outcome ('paid' or 'payment_failed') on the
+// order row. Only transitions from 'created' — a second (conflicting or
+// duplicate) outcome is ignored, keeping the transition reorder-safe under
+// at-least-once delivery.
+func (q *Queries) MarkOrderPaymentOutcome(ctx context.Context, arg MarkOrderPaymentOutcomeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markOrderPaymentOutcome, arg.ID, arg.Status)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markPaymentTimeoutEmitted = `-- name: MarkPaymentTimeoutEmitted :execrows
+update orders
+set payment_timeout_emitted = true
+where id = $1 and payment_timeout_emitted = false and status = 'created'
+`
+
+// Compare-and-set guard for the watcher: 0 rows means another poll (or
+// instance) already claimed this order, or a payment landed meanwhile —
+// the caller must then NOT enqueue the timeout event.
+func (q *Queries) MarkPaymentTimeoutEmitted(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markPaymentTimeoutEmitted, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

@@ -1092,3 +1092,46 @@ func getStatus(t *testing.T, baseURL, orderID string) string {
 	}
 	return view.Status
 }
+
+// TestGateway_ProjectionPaymentTimeout verifies the read model handles
+// OrderPaymentTimedOut: created → payment_timeout, and a paid order is never
+// downgraded by a late timeout (first terminal wins).
+func TestGateway_ProjectionPaymentTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+	baseURL := startApp(t, broker, dsn)
+
+	// Unpaid order: created → payment_timeout.
+	orderID := uuid.New().String()
+	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
+		return &ordersv1.OrderCreated{OrderId: orderID, CustomerId: "c-late", AmountCents: 700, Currency: "USD"}
+	})
+	pollOrderStatus(t, baseURL, orderID, "created", 30*time.Second)
+
+	produceEvent(t, broker, "orders.events", "orders.OrderPaymentTimedOut.v1", orderID, func() proto.Message {
+		return &ordersv1.OrderPaymentTimedOut{OrderId: orderID}
+	})
+	pollOrderStatus(t, baseURL, orderID, "payment_timeout", 30*time.Second)
+
+	// Paid order: a late OrderPaymentTimedOut must be ignored.
+	paidID := uuid.New().String()
+	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", paidID, func() proto.Message {
+		return &ordersv1.OrderCreated{OrderId: paidID, CustomerId: "c-paid", AmountCents: 100, Currency: "USD"}
+	})
+	pollOrderStatus(t, baseURL, paidID, "created", 30*time.Second)
+	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", paidID, func() proto.Message {
+		return &ordersv1.PaymentProcessed{OrderId: paidID, PaymentId: uuid.New().String(), Status: "success"}
+	})
+	pollOrderStatus(t, baseURL, paidID, "paid", 30*time.Second)
+
+	produceEvent(t, broker, "orders.events", "orders.OrderPaymentTimedOut.v1", paidID, func() proto.Message {
+		return &ordersv1.OrderPaymentTimedOut{OrderId: paidID}
+	})
+	time.Sleep(3 * time.Second)
+	require.Equal(t, "paid", getStatus(t, baseURL, paidID),
+		"a terminal paid must not be overwritten by a later payment_timeout")
+}

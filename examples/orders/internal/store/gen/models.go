@@ -25,12 +25,13 @@ type Inbox struct {
 }
 
 type Order struct {
-	ID          uuid.UUID
-	CustomerID  string
-	AmountCents int64
-	Currency    string
-	Status      string
-	CreatedAt   pgtype.Timestamptz
+	ID                    uuid.UUID
+	CustomerID            string
+	AmountCents           int64
+	Currency              string
+	Status                string
+	CreatedAt             pgtype.Timestamptz
+	PaymentTimeoutEmitted bool
 }
 
 type Outbox struct {
