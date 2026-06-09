@@ -1,0 +1,17 @@
+# Git hooks for go-boilerplate. Install once: `just hooks` (lefthook install).
+pre-commit:
+  parallel: false
+  commands:
+    fmt:
+      glob: "*.go"
+      run: go run mvdan.cc/gofumpt@latest -w {staged_files} && go run golang.org/x/tools/cmd/goimports@latest -w -local go-boilerplate {staged_files}
+      stage_fixed: true
+    lint:
+      glob: "*.go"
+      run: golangci-lint run ./...
+    build:
+      run: go build ./...
+pre-push:
+  commands:
+    test:
+      run: go test -short ./...

@@ -1,5 +1,7 @@
 # go-boilerplate
 
+> **Contributing / local setup:** See [CONTRIBUTING.md](CONTRIBUTING.md). Run `just hooks` once after cloning to install pre-commit (fmt + lint + build) and pre-push (test -short) git hooks via lefthook.
+
 A **production-grade, opinionated Go microservice boilerplate** for highload / enterprise teams. The repo is split into two zones: `platform/` is the reusable starter kit — config, structured logging, OTel observability, CQRS typed-decorator pipeline, Kafka outbox/inbox, two-tier cache, blob storage, resilience, auth/authz, audit, feature flags, and graceful lifecycle management — all with zero business logic. `examples/` contains four deletable demonstration services (gateway, orders, payments, notifications) that show how to wire the platform together; remove `examples/`, `proto/`, and `gen/` to get a clean blank canvas. The local stack runs via `task up` / `task up:full` (`docker compose` with profiles): Postgres, Redpanda (Kafka + Schema Registry), Redis, MinIO, Keycloak (core), plus OTel Collector, Jaeger, Prometheus, Grafana, Pyroscope (observability profile), and the four app services (apps profile).
 
 ---
