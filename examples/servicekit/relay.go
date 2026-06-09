@@ -10,8 +10,17 @@ import (
 
 // AddOutboxRelay wires an outbox relay + cleaner. Uses the passed publisher
 // (typically outboxkafka.New(producer)). Must be called before Start.
+//
+// When cfg.SingleActive is true (the default, OUTBOX_SINGLE_ACTIVE env) the
+// relay runs in advisory-lock leader mode: only one instance of the service
+// publishes at a time, preserving per-aggregate event order across replicas.
+// Set OUTBOX_SINGLE_ACTIVE=false only when consumers are reorder-safe.
 func (s *Service) AddOutboxRelay(publisher outbox.Publisher, cfg outbox.RelayConfig) {
-	relay := outbox.NewRelay(s.pool, publisher, cfg)
+	var opts []outbox.RelayOption
+	if cfg.SingleActive {
+		opts = append(opts, outbox.WithSingleActive(s.pool.Writer()))
+	}
+	relay := outbox.NewRelay(s.pool, publisher, cfg, opts...)
 	relay.SetOnError(func(err error) {
 		s.logger.Error("outbox relay error", "error", err)
 	})

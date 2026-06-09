@@ -80,6 +80,15 @@ func (f *fakeBatchPublisher) count() int {
 	return len(f.received)
 }
 
+// messages returns a copy of the received slice (thread-safe).
+func (f *fakeBatchPublisher) messages() []outbox.Message {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]outbox.Message, len(f.received))
+	copy(out, f.received)
+	return out
+}
+
 func TestRelay_PublishesUnpublishedAndMarksThem(t *testing.T) {
 	pool := newPoolWithSchema(t)
 	ctx := context.Background()
