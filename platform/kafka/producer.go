@@ -100,13 +100,16 @@ func (p *Producer) ProduceBatch(ctx context.Context, records []Record) error {
 
 	// Flush blocks until all enqueued records are sent and their promise
 	// callbacks have fired, or until ctx is cancelled.
-	if err := p.cl.Flush(ctx); err != nil {
-		return fmt.Errorf("kafka: produce batch flush: %w", err)
-	}
+	flushErr := p.cl.Flush(ctx)
 
-	// Wait for all promise callbacks to complete before reading errs.
+	// Always wait for all promise callbacks to complete before reading errs,
+	// even when Flush returned an error. Without this, in-flight callbacks can
+	// mutate the error slice after return, causing a data race.
 	wg.Wait()
 
+	if flushErr != nil {
+		return errors.Join(fmt.Errorf("kafka: produce batch flush: %w", flushErr), errors.Join(errs...))
+	}
 	return errors.Join(errs...)
 }
 

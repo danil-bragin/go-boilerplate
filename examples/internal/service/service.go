@@ -20,8 +20,10 @@ import (
 
 	"github.com/twmb/franz-go/pkg/kgo"
 
+	"go-boilerplate/platform/audit"
 	"go-boilerplate/platform/health"
 	"go-boilerplate/platform/httpserver"
+	"go-boilerplate/platform/inbox"
 	"go-boilerplate/platform/kafka"
 	"go-boilerplate/platform/log"
 	"go-boilerplate/platform/outbox"
@@ -39,6 +41,23 @@ type Config struct {
 	PG        pg.Config
 	Kafka     kafka.Config
 	AdminAddr string `env:"ADMIN_HTTP_ADDR" envDefault:":9090"`
+
+	// Inbox retention: processed inbox rows older than InboxRetention are
+	// deleted every InboxCleanupInterval. Set InboxCleanupInterval to 0 to
+	// disable inbox cleanup (e.g., when the service does not use the inbox
+	// table — in practice all example services use it, so the default is safe).
+	InboxRetention       time.Duration `env:"INBOX_RETENTION" envDefault:"168h"`
+	InboxCleanupInterval time.Duration `env:"INBOX_CLEANUP_INTERVAL" envDefault:"1h"`
+
+	// Audit log retention: audit_log rows older than AuditRetention are deleted
+	// every AuditCleanupInterval by services that call AddAuditCleanup. Set
+	// AuditCleanupInterval to 0 to disable audit cleanup for a given service.
+	//
+	// COMPLIANCE NOTE: audit logs often need long retention or archival to cold
+	// storage before deletion. The default retention (90 days) is intentionally
+	// generous. Review your compliance obligations before lowering it.
+	AuditRetention       time.Duration `env:"AUDIT_RETENTION" envDefault:"2160h"`
+	AuditCleanupInterval time.Duration `env:"AUDIT_CLEANUP_INTERVAL" envDefault:"6h"`
 }
 
 // goroutineFunc is a background goroutine registered via AddConsumer or AddOutboxRelay.
@@ -216,6 +235,33 @@ func (s *Service) AddConsumer(ctx context.Context, groupID string, topics []stri
 	return nil
 }
 
+// AddAuditCleanup registers a goroutine that deletes old audit_log rows under
+// the service lifecycle. Call this after building the *audit.PgStore for a
+// service that writes audit entries (e.g., orders, payments).
+//
+// The cleanup loop runs every interval and removes rows older than retention.
+// Set interval to 0 to skip launching (useful when auditing is disabled).
+//
+// COMPLIANCE NOTE: audit_log rows record sensitive business actions. The
+// default retention (90 days) is intentionally generous. Review your compliance
+// obligations before lowering it — consider archiving rows to cold storage
+// before deletion.
+//
+// Must be called before Start.
+func (s *Service) AddAuditCleanup(store *audit.PgStore, interval, retention time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	store.SetOnError(func(err error) {
+		s.logger.Error("audit cleaner error", "error", err)
+	})
+	s.goroutines = append(s.goroutines, func(ctx context.Context) {
+		if err := store.RunCleanup(ctx, interval, retention); err != nil && ctx.Err() == nil {
+			s.logger.Error("audit cleaner stopped unexpectedly", "error", err)
+		}
+	})
+}
+
 // AddOutboxRelay wires an outbox relay + cleaner. Uses the passed publisher
 // (typically outboxkafka.New(producer)). Must be called before Start.
 func (s *Service) AddOutboxRelay(publisher outbox.Publisher, cfg outbox.RelayConfig) {
@@ -279,6 +325,25 @@ func (s *Service) Start() error {
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	s.runCtx = runCtx
 	s.cancelRun = cancelRun
+
+	// Launch inbox cleanup if configured (interval > 0). All services that use
+	// the harness migrate the inbox table, so this is safe to launch
+	// unconditionally. Future services with no inbox table will simply log a
+	// harmless DELETE error; set InboxCleanupInterval=0 to suppress it.
+	if s.cfg.InboxCleanupInterval > 0 {
+		retention := s.cfg.InboxRetention
+		if retention == 0 {
+			retention = 168 * time.Hour // 7d fallback
+		}
+		interval := s.cfg.InboxCleanupInterval
+		go func() {
+			if err := inbox.RunCleanupWithOnError(runCtx, s.pool, interval, retention, func(err error) {
+				s.logger.Error("inbox cleaner error", "error", err)
+			}); err != nil && runCtx.Err() == nil {
+				s.logger.Error("inbox cleaner stopped unexpectedly", "error", err)
+			}
+		}()
+	}
 
 	for _, g := range s.goroutines {
 		fn := g // capture

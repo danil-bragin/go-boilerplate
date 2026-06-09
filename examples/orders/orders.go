@@ -91,6 +91,9 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		return nil, err
 	}
 
+	// Launch audit_log cleanup; defaults to 90-day retention / 6-hour interval.
+	svc.AddAuditCleanup(auditStore, cfg.AuditCleanupInterval, cfg.AuditRetention)
+
 	return a, nil
 }
 
