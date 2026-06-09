@@ -19,8 +19,8 @@ import (
 
 	"go-boilerplate/platform/health"
 	"go-boilerplate/platform/httpserver"
-	"go-boilerplate/platform/kafka"
 	"go-boilerplate/platform/log"
+	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/run"
 	"go-boilerplate/platform/telemetry"

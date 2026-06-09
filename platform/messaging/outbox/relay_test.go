@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"go-boilerplate/platform/outbox"
+	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/pg"
 
 	"github.com/google/uuid"

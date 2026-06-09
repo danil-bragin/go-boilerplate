@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"go-boilerplate/platform/cqrs"
-	"go-boilerplate/platform/outbox"
+	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/testkit/fixtures"
 )
 

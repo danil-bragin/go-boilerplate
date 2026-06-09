@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"go-boilerplate/platform/kafka"
-	"go-boilerplate/platform/kafka/kafkatest"
-	"go-boilerplate/platform/outbox"
-	"go-boilerplate/platform/outboxkafka"
+	"go-boilerplate/platform/messaging/kafka"
+	"go-boilerplate/platform/messaging/kafka/kafkatest"
+	"go-boilerplate/platform/messaging/outbox"
+	"go-boilerplate/platform/messaging/outboxkafka"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/pg/pgtest"
 

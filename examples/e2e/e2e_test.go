@@ -23,7 +23,7 @@ import (
 	"go-boilerplate/examples/notifications"
 	"go-boilerplate/examples/orders"
 	"go-boilerplate/examples/payments"
-	"go-boilerplate/platform/kafka/kafkatest"
+	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/pg/pgtest"
 
 	"github.com/google/uuid"

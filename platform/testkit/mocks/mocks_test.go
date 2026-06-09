@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"go-boilerplate/platform/outbox"
+	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/testkit/mocks"
 
 	"github.com/google/uuid"

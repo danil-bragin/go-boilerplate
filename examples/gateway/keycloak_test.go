@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"go-boilerplate/platform/kafka/kafkatest"
+	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/pg/pgtest"
 
 	"github.com/google/uuid"

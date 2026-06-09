@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"time"
 
-	"go-boilerplate/platform/outbox/gen"
+	"go-boilerplate/platform/messaging/outbox/gen"
 	"go-boilerplate/platform/pg"
 
 	"github.com/jackc/pgx/v5/pgtype"

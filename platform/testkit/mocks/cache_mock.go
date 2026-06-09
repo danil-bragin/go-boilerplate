@@ -5,9 +5,10 @@ package mocks
 
 import (
 	"context"
-	"go-boilerplate/platform/cqrs"
 	"sync"
 	"time"
+
+	"go-boilerplate/platform/cqrs"
 )
 
 // Ensure, that CacheMock does implement cqrs.Cache.

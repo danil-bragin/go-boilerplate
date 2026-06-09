@@ -24,7 +24,7 @@ import (
 	"go-boilerplate/examples/payments/internal/transport"
 	"go-boilerplate/platform/audit"
 	"go-boilerplate/platform/config"
-	"go-boilerplate/platform/outbox"
+	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/run"
 )
 

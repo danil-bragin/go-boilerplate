@@ -25,7 +25,7 @@ import (
 	"errors"
 	"testing"
 
-	"go-boilerplate/platform/outbox"
+	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/testkit/fixtures"
 	"go-boilerplate/platform/testkit/mocks"
 

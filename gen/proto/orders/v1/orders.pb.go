@@ -7,11 +7,12 @@
 package ordersv1
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -271,12 +272,14 @@ func file_orders_v1_orders_proto_rawDescGZIP() []byte {
 	return file_orders_v1_orders_proto_rawDescData
 }
 
-var file_orders_v1_orders_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
-var file_orders_v1_orders_proto_goTypes = []any{
-	(*CreateOrderCommand)(nil), // 0: orders.v1.CreateOrderCommand
-	(*OrderCreated)(nil),       // 1: orders.v1.OrderCreated
-	(*PaymentProcessed)(nil),   // 2: orders.v1.PaymentProcessed
-}
+var (
+	file_orders_v1_orders_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+	file_orders_v1_orders_proto_goTypes  = []any{
+		(*CreateOrderCommand)(nil), // 0: orders.v1.CreateOrderCommand
+		(*OrderCreated)(nil),       // 1: orders.v1.OrderCreated
+		(*PaymentProcessed)(nil),   // 2: orders.v1.PaymentProcessed
+	}
+)
 var file_orders_v1_orders_proto_depIdxs = []int32{
 	0, // [0:0] is the sub-list for method output_type
 	0, // [0:0] is the sub-list for method input_type

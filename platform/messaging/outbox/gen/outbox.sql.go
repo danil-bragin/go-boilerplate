@@ -87,7 +87,8 @@ type InsertOutboxParams struct {
 }
 
 func (q *Queries) InsertOutbox(ctx context.Context, arg InsertOutboxParams) error {
-	_, err := q.db.Exec(ctx, insertOutbox,
+	_, err := q.db.Exec(
+		ctx, insertOutbox,
 		arg.ID,
 		arg.AggregateType,
 		arg.AggregateID,

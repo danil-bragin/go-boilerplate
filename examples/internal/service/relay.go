@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"go-boilerplate/platform/outbox"
-	"go-boilerplate/platform/outboxkafka"
+	"go-boilerplate/platform/messaging/outbox"
+	"go-boilerplate/platform/messaging/outboxkafka"
 )
 
 // AddOutboxRelay wires an outbox relay + cleaner. Uses the passed publisher

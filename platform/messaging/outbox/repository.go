@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"go-boilerplate/platform/outbox/gen"
+	"go-boilerplate/platform/messaging/outbox/gen"
 	"go-boilerplate/platform/pg"
 )
 

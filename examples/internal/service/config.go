@@ -3,8 +3,8 @@ package service
 import (
 	"time"
 
-	"go-boilerplate/platform/kafka"
 	"go-boilerplate/platform/log"
+	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/telemetry"
 )

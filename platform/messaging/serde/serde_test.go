@@ -3,8 +3,8 @@ package serde_test
 import (
 	"testing"
 
-	"go-boilerplate/platform/kafka/kafkatest"
-	"go-boilerplate/platform/serde"
+	"go-boilerplate/platform/messaging/kafka/kafkatest"
+	"go-boilerplate/platform/messaging/serde"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

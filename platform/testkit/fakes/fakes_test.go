@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"go-boilerplate/platform/auth"
-	"go-boilerplate/platform/outbox"
+	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/testkit/fakes"
 
 	"github.com/google/uuid"

@@ -5,8 +5,9 @@ package mocks
 
 import (
 	"context"
-	"go-boilerplate/platform/audit"
 	"sync"
+
+	"go-boilerplate/platform/audit"
 )
 
 // Ensure, that StoreMock does implement audit.Store.

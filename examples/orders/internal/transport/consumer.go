@@ -7,8 +7,8 @@ import (
 	"fmt"
 
 	"go-boilerplate/examples/orders/internal/app"
-	"go-boilerplate/platform/inbox"
-	"go-boilerplate/platform/kafka"
+	"go-boilerplate/platform/messaging/inbox"
+	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/pg"
 
 	"google.golang.org/protobuf/proto"

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"go-boilerplate/platform/inbox"
+	"go-boilerplate/platform/messaging/inbox"
 
 	"github.com/stretchr/testify/require"
 )

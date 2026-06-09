@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"go-boilerplate/platform/inbox"
+	"go-boilerplate/platform/messaging/inbox"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/pg/pgtest"
 

@@ -5,7 +5,7 @@ import (
 	"embed"
 	"testing"
 
-	"go-boilerplate/platform/outbox"
+	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/pg/pgtest"
 

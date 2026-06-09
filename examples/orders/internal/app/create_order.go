@@ -8,7 +8,7 @@ import (
 	"go-boilerplate/examples/orders/internal/store/gen"
 	"go-boilerplate/platform/audit"
 	"go-boilerplate/platform/cqrs"
-	"go-boilerplate/platform/outbox"
+	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/pg"
 
 	"github.com/google/uuid"

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"go-boilerplate/platform/outbox"
+	"go-boilerplate/platform/messaging/outbox"
 )
 
 // PublishEvent is the tiny function-under-test used by unit_example_test.go.

@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"log/slog"
 
-	"go-boilerplate/platform/inbox"
-	"go-boilerplate/platform/kafka"
+	"go-boilerplate/platform/messaging/inbox"
+	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/pg"
 
 	"github.com/google/uuid"

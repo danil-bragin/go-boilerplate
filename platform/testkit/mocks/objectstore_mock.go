@@ -5,10 +5,11 @@ package mocks
 
 import (
 	"context"
-	"go-boilerplate/platform/blob"
 	"io"
 	"sync"
 	"time"
+
+	"go-boilerplate/platform/blob"
 )
 
 // Ensure, that ObjectStoreMock does implement blob.ObjectStore.

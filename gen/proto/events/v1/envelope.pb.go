@@ -7,12 +7,13 @@
 package eventsv1
 
 import (
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -155,12 +156,14 @@ func file_events_v1_envelope_proto_rawDescGZIP() []byte {
 	return file_events_v1_envelope_proto_rawDescData
 }
 
-var file_events_v1_envelope_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
-var file_events_v1_envelope_proto_goTypes = []any{
-	(*EventEnvelope)(nil),         // 0: events.v1.EventEnvelope
-	nil,                           // 1: events.v1.EventEnvelope.HeadersEntry
-	(*timestamppb.Timestamp)(nil), // 2: google.protobuf.Timestamp
-}
+var (
+	file_events_v1_envelope_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+	file_events_v1_envelope_proto_goTypes  = []any{
+		(*EventEnvelope)(nil),         // 0: events.v1.EventEnvelope
+		nil,                           // 1: events.v1.EventEnvelope.HeadersEntry
+		(*timestamppb.Timestamp)(nil), // 2: google.protobuf.Timestamp
+	}
+)
 var file_events_v1_envelope_proto_depIdxs = []int32{
 	2, // 0: events.v1.EventEnvelope.occurred_at:type_name -> google.protobuf.Timestamp
 	1, // 1: events.v1.EventEnvelope.headers:type_name -> events.v1.EventEnvelope.HeadersEntry

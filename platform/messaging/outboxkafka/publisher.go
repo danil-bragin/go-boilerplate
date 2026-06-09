@@ -14,8 +14,8 @@ import (
 	"context"
 	"encoding/json"
 
-	"go-boilerplate/platform/kafka"
-	"go-boilerplate/platform/outbox"
+	"go-boilerplate/platform/messaging/kafka"
+	"go-boilerplate/platform/messaging/outbox"
 )
 
 // KafkaPublisher implements outbox.Publisher.

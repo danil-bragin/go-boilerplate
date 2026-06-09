@@ -5,8 +5,9 @@ package mocks
 
 import (
 	"context"
-	"go-boilerplate/platform/outbox"
 	"sync"
+
+	"go-boilerplate/platform/messaging/outbox"
 )
 
 // Ensure, that PublisherMock does implement outbox.Publisher.

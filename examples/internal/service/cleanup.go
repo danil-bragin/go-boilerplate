@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"go-boilerplate/platform/audit"
-	"go-boilerplate/platform/inbox"
+	"go-boilerplate/platform/messaging/inbox"
 )
 
 // AddAuditCleanup registers a goroutine that deletes old audit_log rows under

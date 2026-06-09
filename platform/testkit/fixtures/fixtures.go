@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"go-boilerplate/platform/auth"
-	"go-boilerplate/platform/kafka"
-	"go-boilerplate/platform/outbox"
+	"go-boilerplate/platform/messaging/kafka"
+	"go-boilerplate/platform/messaging/outbox"
 
 	"github.com/google/uuid"
 )

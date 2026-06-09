@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"go-boilerplate/platform/kafka"
+	"go-boilerplate/platform/messaging/kafka"
 )
 
 // EnsureTopics creates topics if they do not already exist (idempotent).

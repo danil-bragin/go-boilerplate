@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"go-boilerplate/examples/internal/service"
-	"go-boilerplate/platform/kafka/kafkatest"
+	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/pg/pgtest"
 
 	"github.com/stretchr/testify/assert"

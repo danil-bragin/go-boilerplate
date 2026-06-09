@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"go-boilerplate/platform/kafka"
-	"go-boilerplate/platform/kafka/kafkatest"
+	"go-boilerplate/platform/messaging/kafka"
+	"go-boilerplate/platform/messaging/kafka/kafkatest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

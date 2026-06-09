@@ -14,7 +14,7 @@ import (
 	"go-boilerplate/platform/authz"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/httpx"
-	"go-boilerplate/platform/kafka"
+	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/resilience"
 

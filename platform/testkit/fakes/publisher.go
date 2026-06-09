@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"go-boilerplate/platform/outbox"
+	"go-boilerplate/platform/messaging/outbox"
 )
 
 // Publisher is an in-memory fake implementing both outbox.Publisher and
