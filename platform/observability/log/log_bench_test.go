@@ -4,7 +4,7 @@ import (
 	"io"
 	"testing"
 
-	"go-boilerplate/platform/log"
+	"go-boilerplate/platform/observability/log"
 )
 
 func BenchmarkLogInfo(b *testing.B) {

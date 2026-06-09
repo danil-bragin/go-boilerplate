@@ -17,13 +17,13 @@ import (
 	"log/slog"
 	"os"
 
-	"go-boilerplate/platform/health"
 	"go-boilerplate/platform/httpserver"
-	"go-boilerplate/platform/log"
 	"go-boilerplate/platform/messaging/kafka"
+	"go-boilerplate/platform/observability/health"
+	"go-boilerplate/platform/observability/log"
+	"go-boilerplate/platform/observability/telemetry"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/run"
-	"go-boilerplate/platform/telemetry"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )

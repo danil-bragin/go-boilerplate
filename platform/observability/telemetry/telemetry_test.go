@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"go-boilerplate/platform/telemetry"
+	"go-boilerplate/platform/observability/telemetry"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"

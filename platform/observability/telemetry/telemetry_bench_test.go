@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"go-boilerplate/platform/telemetry"
+	"go-boilerplate/platform/observability/telemetry"
 
 	"go.opentelemetry.io/otel"
 )

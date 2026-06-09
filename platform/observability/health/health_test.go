@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"go-boilerplate/platform/health"
+	"go-boilerplate/platform/observability/health"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"

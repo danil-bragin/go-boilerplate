@@ -10,7 +10,7 @@ import (
 	"go-boilerplate/platform/cache"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/featureflags"
-	"go-boilerplate/platform/health"
+	"go-boilerplate/platform/observability/health"
 
 	"github.com/open-feature/go-sdk/openfeature/memprovider"
 )

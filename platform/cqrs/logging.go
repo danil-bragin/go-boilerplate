@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"go-boilerplate/platform/log"
+	"go-boilerplate/platform/observability/log"
 )
 
 // Logging returns a Behavior that logs handler invocations using the logger

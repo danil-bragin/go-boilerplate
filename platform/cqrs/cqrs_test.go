@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"go-boilerplate/platform/cqrs"
-	"go-boilerplate/platform/log"
+	"go-boilerplate/platform/observability/log"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"

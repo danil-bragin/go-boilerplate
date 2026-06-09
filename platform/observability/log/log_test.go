@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"go-boilerplate/platform/log"
+	"go-boilerplate/platform/observability/log"
 
 	"github.com/stretchr/testify/require"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"

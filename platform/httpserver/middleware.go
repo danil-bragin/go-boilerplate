@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"go-boilerplate/platform/httpx"
-	"go-boilerplate/platform/log"
+	"go-boilerplate/platform/observability/log"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
