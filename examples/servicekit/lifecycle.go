@@ -2,6 +2,7 @@ package servicekit
 
 import (
 	"context"
+	"fmt"
 )
 
 // Start starts the admin HTTP server and all registered consumer/relay/cleaner
@@ -35,14 +36,30 @@ func (s *Service) Start() error {
 
 	for _, g := range s.goroutines {
 		fn := g // capture
-		go fn(runCtx)
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			fn(runCtx)
+		}()
 	}
 
 	// Register cancelRun LAST → fires FIRST in LIFO closer, stopping goroutines
-	// before the pg pool and kafka client are released.
-	s.closer.Add("consumers-cancel", func(context.Context) error {
+	// before the pg pool and kafka client are released. WAITS for the
+	// goroutines to actually exit: a consumer's final detached offset commit
+	// must complete before the next closer entry closes the kgo client.
+	s.closer.Add("consumers-cancel", func(ctx context.Context) error {
 		cancelRun()
-		return nil
+		done := make(chan struct{})
+		go func() {
+			s.wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return fmt.Errorf("servicekit: consumers did not stop before teardown budget: %w", ctx.Err())
+		}
 	})
 
 	s.logger.Info("service started", "admin_addr", s.adminServer.Addr())

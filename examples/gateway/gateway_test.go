@@ -163,7 +163,7 @@ func consumeCreateOrderCommand(t *testing.T, broker, orderID string, timeout tim
 		ClientID: "test-cmd-consumer-" + orderID,
 		GroupID:  "test-cmd-consumer-" + orderID,
 	}
-	consumer, err := kafka.NewConsumer(cfg, "orders.commands")
+	consumer, err := kafka.NewConsumer(cfg, []string{"orders.commands"})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = consumer.Close(context.Background()) })
 

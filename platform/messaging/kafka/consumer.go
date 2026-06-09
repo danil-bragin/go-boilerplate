@@ -19,7 +19,29 @@ type HandlerFunc func(ctx context.Context, r Record) error
 // Consumer wraps a *kgo.Client configured for cooperative-sticky group
 // consumption with manual offset commit and per-partition parallel processing.
 type Consumer struct {
-	cl *kgo.Client
+	cl      *kgo.Client
+	onError func(ctx context.Context, stage string, err error)
+}
+
+// ConsumerOption configures a Consumer.
+type ConsumerOption func(*Consumer)
+
+// Stage names passed to the WithOnError callback.
+const (
+	// StageFetch: a non-fatal fetch error (errored partitions are skipped
+	// for the poll; kgo retries internally).
+	StageFetch = "fetch"
+	// StageCommit: a CommitRecords call failed. Persistent commit failures
+	// (e.g. a fenced member after a rebalance) widen the duplicate-delivery
+	// window — alert on these.
+	StageCommit = "commit"
+)
+
+// WithOnError sets a callback invoked for non-fatal operational errors
+// (fetch errors, commit failures). stage is one of the Stage* constants.
+// Defaults to a no-op. The callback must be safe for concurrent use.
+func WithOnError(fn func(ctx context.Context, stage string, err error)) ConsumerOption {
+	return func(c *Consumer) { c.onError = fn }
 }
 
 // NewConsumer builds a Consumer that joins the given consumer group and
@@ -35,7 +57,7 @@ type Consumer struct {
 //   - kgo.BlockRebalanceOnPoll() — prevents a rebalance from occurring between
 //     PollFetches and AllowRebalance, so concurrent partition processing cannot
 //     accidentally commit offsets for partitions that have been revoked.
-func NewConsumer(cfg Config, topics ...string) (*Consumer, error) {
+func NewConsumer(cfg Config, topics []string, opts ...ConsumerOption) (*Consumer, error) {
 	if cfg.GroupID == "" {
 		return nil, errors.New("kafka: NewConsumer: cfg.GroupID must not be empty")
 	}
@@ -66,7 +88,14 @@ func NewConsumer(cfg Config, topics ...string) (*Consumer, error) {
 		return nil, fmt.Errorf("kafka: NewConsumer: %w", err)
 	}
 
-	return &Consumer{cl: cl}, nil
+	c := &Consumer{
+		cl:      cl,
+		onError: func(context.Context, string, error) {},
+	}
+	for _, o := range opts {
+		o(c)
+	}
+	return c, nil
 }
 
 // Close closes the underlying kgo.Client, leaving the consumer group cleanly.

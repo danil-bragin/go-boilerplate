@@ -154,7 +154,7 @@ func TestRetryConsumer_RedeliversAfterDelay(t *testing.T) {
 	}
 
 	mainCfg := kafka.Config{Brokers: []string{broker}, ClientID: "rt-main-" + suffix, GroupID: groupMain}
-	mainConsumer, err := kafka.NewConsumer(mainCfg, base)
+	mainConsumer, err := kafka.NewConsumer(mainCfg, []string{base})
 	require.NoError(t, err)
 
 	retryCfg := kafka.Config{Brokers: []string{broker}, ClientID: "rt-retry-" + suffix, GroupID: groupRetry}
@@ -276,7 +276,7 @@ func TestRetryConsumer_DoesNotBlockOtherTraffic(t *testing.T) {
 	}
 
 	mainCfg := kafka.Config{Brokers: []string{broker}, ClientID: "nb-main-" + suffix, GroupID: groupMain}
-	mainConsumer, err := kafka.NewConsumer(mainCfg, base)
+	mainConsumer, err := kafka.NewConsumer(mainCfg, []string{base})
 	require.NoError(t, err)
 
 	retryCfg := kafka.Config{Brokers: []string{broker}, ClientID: "nb-retry-" + suffix, GroupID: groupRetry}
@@ -363,7 +363,7 @@ func TestRetryConsumer_PoisonToDLT(t *testing.T) {
 	}
 
 	mainCfg := kafka.Config{Brokers: []string{broker}, ClientID: "dlt-main-" + suffix, GroupID: groupMain}
-	mainConsumer, err := kafka.NewConsumer(mainCfg, base)
+	mainConsumer, err := kafka.NewConsumer(mainCfg, []string{base})
 	require.NoError(t, err)
 
 	retryCfg := kafka.Config{Brokers: []string{broker}, ClientID: "dlt-retry-" + suffix, GroupID: groupRetry}

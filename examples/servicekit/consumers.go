@@ -38,7 +38,7 @@ func (s *Service) AddConsumer(ctx context.Context, groupID string, topics []stri
 	// Build consumer.
 	consumerCfg := s.cfg.Kafka
 	consumerCfg.GroupID = groupID
-	consumer, err := kafka.NewConsumer(consumerCfg, topics...)
+	consumer, err := kafka.NewConsumer(consumerCfg, topics, s.consumerOnError(groupID))
 	if err != nil {
 		return err
 	}
@@ -114,7 +114,7 @@ func (s *Service) AddConsumerWithRetry(ctx context.Context, groupID string, topi
 	// 4. Build and register the main consumer.
 	consumerCfg := s.cfg.Kafka
 	consumerCfg.GroupID = groupID
-	consumer, err := kafka.NewConsumer(consumerCfg, topics...)
+	consumer, err := kafka.NewConsumer(consumerCfg, topics, s.consumerOnError(groupID))
 	if err != nil {
 		return err
 	}
@@ -147,4 +147,14 @@ func (s *Service) AddConsumerWithRetry(ctx context.Context, groupID string, topi
 	})
 
 	return nil
+}
+
+// consumerOnError returns the standard operational-error callback for kafka
+// consumers: log with stage + group so persistent fetch/commit failures
+// (which widen the duplicate-delivery window) are visible and alertable.
+func (s *Service) consumerOnError(groupID string) kafka.ConsumerOption {
+	return kafka.WithOnError(func(ctx context.Context, stage string, err error) {
+		s.logger.ErrorContext(ctx, "kafka consumer error",
+			"group", groupID, "stage", stage, "error", err)
+	})
 }

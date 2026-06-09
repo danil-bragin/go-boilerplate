@@ -143,8 +143,10 @@ func (c *Consumer) Run(ctx context.Context, h HandlerFunc) error {
 				c.cl.AllowRebalance()
 				return nil
 			default:
-				// Non-fatal: swallow; errored partitions are skipped by the iterator.
-				_ = fe.Err
+				// Non-fatal for the poll loop (errored partitions are skipped
+				// by the iterator; kgo retries internally), but surfaced so
+				// persistent fetch problems are visible.
+				c.onError(ctx, StageFetch, fe.Err)
 			}
 		}
 
@@ -202,7 +204,7 @@ func (c *Consumer) Run(ctx context.Context, h HandlerFunc) error {
 
 		// Commit all successfully-processed partitions in one RPC.
 		if len(lastGood) > 0 {
-			_ = c.cl.CommitRecords(ctx, lastGood...)
+			c.commit(ctx, lastGood)
 		}
 
 		// Clear backoff state for partitions that made progress without a new
@@ -249,6 +251,23 @@ func (c *Consumer) Run(ctx context.Context, h HandlerFunc) error {
 
 		// Allow the next rebalance now that we have committed and sought.
 		c.cl.AllowRebalance()
+	}
+}
+
+// commit commits the given records, surviving caller cancellation: during
+// shutdown (ctx already cancelled) the commit runs on a fresh detached
+// 5-second context so the final batch of successfully-processed offsets is
+// not dropped — dropping it would redeliver the whole last poll on every
+// deploy. Commit errors are surfaced via the WithOnError callback.
+func (c *Consumer) commit(ctx context.Context, recs []*kgo.Record) {
+	commitCtx := ctx
+	if ctx.Err() != nil {
+		var cancel context.CancelFunc
+		commitCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+	}
+	if err := c.cl.CommitRecords(commitCtx, recs...); err != nil {
+		c.onError(ctx, StageCommit, err)
 	}
 }
 

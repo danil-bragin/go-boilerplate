@@ -54,7 +54,7 @@ func TestRedeliveryOnHandlerFailure(t *testing.T) {
 
 	c, err := kafka.NewConsumer(kafka.Config{
 		Brokers: []string{broker}, ClientID: "c-transient", GroupID: "g-transient",
-	}, topic)
+	}, []string{topic})
 	require.NoError(t, err)
 	defer c.Close(ctx)
 
@@ -124,7 +124,7 @@ func TestNoCommitPastFailure(t *testing.T) {
 
 	c1, err := kafka.NewConsumer(kafka.Config{
 		Brokers: []string{broker}, ClientID: "c-perm-1", GroupID: "g-perm",
-	}, topic)
+	}, []string{topic})
 	require.NoError(t, err)
 
 	var (
@@ -166,7 +166,7 @@ func TestNoCommitPastFailure(t *testing.T) {
 	// Second consumer, same group: must receive r2 first (commit stopped at r1).
 	c2, err := kafka.NewConsumer(kafka.Config{
 		Brokers: []string{broker}, ClientID: "c-perm-2", GroupID: "g-perm",
-	}, topic)
+	}, []string{topic})
 	require.NoError(t, err)
 	defer c2.Close(ctx)
 
@@ -220,7 +220,7 @@ func TestFailureIsolatedPerPartition(t *testing.T) {
 
 	c, err := kafka.NewConsumer(kafka.Config{
 		Brokers: []string{broker}, ClientID: "c-iso", GroupID: "g-iso",
-	}, topic)
+	}, []string{topic})
 	require.NoError(t, err)
 	defer c.Close(ctx)
 

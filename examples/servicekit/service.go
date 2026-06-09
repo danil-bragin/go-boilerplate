@@ -16,6 +16,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"sync"
 
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/observability/health"
@@ -44,6 +45,11 @@ type Service struct {
 	goroutines  []goroutineFunc
 	runCtx      context.Context //nolint:containedctx
 	cancelRun   context.CancelFunc
+	// wg tracks every goroutine launched in Start. Teardown waits for them
+	// to exit AFTER cancelling runCtx and BEFORE closing the kafka client /
+	// pg pool, so in-flight final commits and cleanup writes are not cut off
+	// by a closed client.
+	wg sync.WaitGroup
 }
 
 // New wires all shared components: logger, telemetry, pg pool+migrations,

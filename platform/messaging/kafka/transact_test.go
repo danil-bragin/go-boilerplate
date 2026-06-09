@@ -81,7 +81,7 @@ func TestTransact_ExactlyOnceHappyPath(t *testing.T) {
 		ClientID: "txn-happy-reader",
 		GroupID:  "txn-happy-reader-group",
 	}
-	reader, err := kafka.NewConsumer(outCfg, outTopic)
+	reader, err := kafka.NewConsumer(outCfg, []string{outTopic})
 	require.NoError(t, err)
 
 	var (
@@ -265,7 +265,7 @@ func TestTransact_AbortInvisibleAndRedelivered(t *testing.T) {
 		ClientID: "txn-abort-reader",
 		GroupID:  "txn-abort-reader-group",
 	}
-	reader, err := kafka.NewConsumer(outCfg, outTopic)
+	reader, err := kafka.NewConsumer(outCfg, []string{outTopic})
 	require.NoError(t, err)
 
 	var (

@@ -92,7 +92,7 @@ func TestKafkaPublisher_DrainsOutboxToKafka(t *testing.T) {
 		Brokers:  []string{broker},
 		ClientID: "t-consumer",
 		GroupID:  "t-grp",
-	}, "order")
+	}, []string{"order"})
 	require.NoError(t, err)
 	defer func() { _ = consumer.Close(context.Background()) }()
 
@@ -206,7 +206,7 @@ func TestKafkaPublisher_PublishBatch(t *testing.T) {
 		Brokers:  []string{broker},
 		ClientID: "t-batch-consumer",
 		GroupID:  "t-batch-grp",
-	}, "order")
+	}, []string{"order"})
 	require.NoError(t, err)
 	defer func() { _ = consumer.Close(context.Background()) }()
 

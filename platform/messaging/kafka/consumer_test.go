@@ -61,7 +61,7 @@ func TestConsumer_GroupConsumesCommitted(t *testing.T) {
 		Brokers:  []string{broker},
 		ClientID: "test-consumer-1",
 		GroupID:  groupID,
-	}, topic)
+	}, []string{topic})
 	require.NoError(t, err)
 
 	var (
@@ -118,7 +118,7 @@ func TestConsumer_GroupConsumesCommitted(t *testing.T) {
 		Brokers:  []string{broker},
 		ClientID: "test-consumer-2",
 		GroupID:  groupID,
-	}, topic)
+	}, []string{topic})
 	require.NoError(t, err)
 
 	var (
@@ -204,7 +204,7 @@ func TestConsumer_HandlerErrorRedeliversRecord(t *testing.T) {
 		Brokers:  []string{broker},
 		ClientID: "redeliver-consumer-1",
 		GroupID:  groupID,
-	}, topic)
+	}, []string{topic})
 	require.NoError(t, err)
 
 	c1Ctx, cancelC1 := context.WithTimeout(ctx, 30*time.Second)
@@ -240,7 +240,7 @@ func TestConsumer_HandlerErrorRedeliversRecord(t *testing.T) {
 		Brokers:  []string{broker},
 		ClientID: "redeliver-consumer-2",
 		GroupID:  groupID,
-	}, topic)
+	}, []string{topic})
 	require.NoError(t, err)
 
 	c2Ctx, cancelC2 := context.WithTimeout(context.Background(), 30*time.Second)
@@ -355,7 +355,7 @@ func TestConsumer_PerPartitionParallelOrdering(t *testing.T) {
 		Brokers:  []string{broker},
 		ClientID: "parallel-ordering-consumer",
 		GroupID:  groupID,
-	}, topic)
+	}, []string{topic})
 	require.NoError(t, err)
 
 	runCtx, cancelRun := context.WithTimeout(ctx, 60*time.Second)
@@ -507,7 +507,7 @@ func TestConsumer_OnePartitionFailureDoesNotBlockOthers(t *testing.T) {
 		Brokers:  []string{broker},
 		ClientID: "isolation-consumer-1",
 		GroupID:  groupID,
-	}, topic)
+	}, []string{topic})
 	require.NoError(t, err)
 
 	c1Ctx, cancelC1 := context.WithTimeout(ctx, 60*time.Second)
@@ -556,7 +556,7 @@ func TestConsumer_OnePartitionFailureDoesNotBlockOthers(t *testing.T) {
 		Brokers:  []string{broker},
 		ClientID: "isolation-consumer-2",
 		GroupID:  groupID,
-	}, topic)
+	}, []string{topic})
 	require.NoError(t, err)
 
 	c2Ctx, cancelC2 := context.WithTimeout(context.Background(), 15*time.Second)
