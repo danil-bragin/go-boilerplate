@@ -80,6 +80,8 @@ type Relay struct {
 	// Single-active (leader) mode state — see WithSingleActive.
 	leaderPool *pgxpool.Pool
 	leaderConn *pgxpool.Conn
+
+	metrics relayMetrics
 }
 
 // RelayOption configures optional Relay behaviour.
@@ -113,7 +115,7 @@ func NewRelay(pool *pg.Pool, pub Publisher, cfg RelayConfig, opts ...RelayOption
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = time.Second
 	}
-	r := &Relay{pool: pool, pub: pub, cfg: cfg}
+	r := &Relay{pool: pool, pub: pub, cfg: cfg, metrics: newRelayMetrics()}
 	for _, o := range opts {
 		o(r)
 	}
@@ -176,11 +178,13 @@ func (r *Relay) ProcessBatch(ctx context.Context) (int, error) {
 	// Fall back to per-record Publish for plain Publisher implementations.
 	if bp, ok := r.pub.(BatchPublisher); ok {
 		if err := bp.PublishBatch(ctx, msgs); err != nil {
+			r.metrics.addPublishError(ctx)
 			return 0, fmt.Errorf("outbox: batch publish: %w", err)
 		}
 	} else {
 		for _, msg := range msgs {
 			if err := r.pub.Publish(ctx, msg); err != nil {
+				r.metrics.addPublishError(ctx)
 				return 0, fmt.Errorf("outbox: publish %s: %w", msg.ID, err)
 			}
 		}
@@ -196,7 +200,25 @@ func (r *Relay) ProcessBatch(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("outbox: mark published batch: %w", err)
 	}
 
+	r.metrics.addPublished(ctx, int64(len(msgs)))
 	return len(msgs), nil
+}
+
+// pendingReportInterval is how often Run samples the unpublished-row count
+// for the outbox.pending gauge. The count query hits the partial index on
+// unpublished rows, so it stays cheap even on large outbox tables.
+const pendingReportInterval = 15 * time.Second
+
+// reportPending samples SELECT count(*) of unpublished rows and records the
+// outbox.pending gauge. Errors are ignored — the gauge simply keeps its last
+// value; the relay's own error path covers DB outage visibility.
+func (r *Relay) reportPending(ctx context.Context) {
+	var n int64
+	if err := r.pool.Reader().QueryRow(ctx,
+		`select count(*) from outbox where published_at is null`).Scan(&n); err != nil {
+		return
+	}
+	r.metrics.recordPending(ctx, n)
 }
 
 const (
@@ -286,6 +308,25 @@ func (r *Relay) Run(ctx context.Context) error {
 			r.dropLeadership(releaseCtx, true)
 		}()
 	}
+
+	// Backlog gauge: sample the unpublished-row count now and every
+	// pendingReportInterval until ctx is cancelled.
+	pendingDone := make(chan struct{})
+	go func() {
+		defer close(pendingDone)
+		r.reportPending(ctx)
+		pt := time.NewTicker(pendingReportInterval)
+		defer pt.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-pt.C:
+				r.reportPending(ctx)
+			}
+		}
+	}()
+	defer func() { <-pendingDone }()
 
 	var consecutiveFailures int
 

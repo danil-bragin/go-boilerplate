@@ -60,6 +60,8 @@ func WithRetry(h HandlerFunc, opts RetryOpts) HandlerFunc {
 		opts.DLTTopic = func(t string) string { return t + ".DLT" }
 	}
 
+	metrics := newDLTMetrics()
+
 	return func(ctx context.Context, rec Record) error {
 		var lastErr error
 
@@ -111,6 +113,7 @@ func WithRetry(h HandlerFunc, opts RetryOpts) HandlerFunc {
 		}
 
 		// Successful DLT write — return nil so the consumer commits the offset.
+		metrics.addProduced(ctx, dltRec.Topic)
 		return nil
 	}
 }
