@@ -2,6 +2,7 @@ package httpserver_test
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"go-boilerplate/platform/httpserver"
 	"go-boilerplate/platform/log"
@@ -204,4 +208,42 @@ func TestTimeout_Returns503OnSlowHandler(t *testing.T) {
 	h.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}
+
+// ---------------------------------------------------------------------------
+// OTel middleware
+// ---------------------------------------------------------------------------
+
+// TestOTelMiddleware_CreatesServerSpan verifies that the OTel middleware starts
+// a server span per request. It uses an in-memory exporter so the test
+// exercises the full SDK pipeline without a real collector.
+func TestOTelMiddleware_CreatesServerSpan(t *testing.T) {
+	// Install an in-memory SDK tracer provider as the global provider so
+	// otelhttp picks it up.
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(exp),
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	// Swap in the SDK provider and restore the previous one after the test.
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	h := httpserver.OTel(inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	spans := exp.GetSpans()
+	require.NotEmpty(t, spans, "OTel middleware must export at least one span per request")
 }

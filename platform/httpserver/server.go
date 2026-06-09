@@ -74,6 +74,7 @@ func New(cfg Config) *Server {
 
 	mux := chi.NewRouter()
 	mux.Use(RequestID)
+	mux.Use(OTel)
 	mux.Use(AccessLog)
 	mux.Use(Recover)
 	mux.Use(MaxBytes(cfg.MaxBodyBytes))

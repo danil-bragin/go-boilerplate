@@ -12,6 +12,8 @@ import (
 	"runtime/debug"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"go-boilerplate/platform/httpx"
 	"go-boilerplate/platform/log"
 )
@@ -135,6 +137,19 @@ func Timeout(d time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.TimeoutHandler(next, d, "request timeout")
 	}
+}
+
+// OTel wraps next with an OpenTelemetry server span for every request.
+// It is chi-compatible and can be used as a middleware or applied to individual
+// routes. The operation name "http.server" is used for the root span; individual
+// route patterns are set as the span name by otelhttp when chi route data is
+// available.
+//
+// Wire it into the server's middleware chain so that downstream handlers (and
+// the AccessLog, which calls log.From(ctx)) benefit from trace correlation in
+// logs via the traceHandler injected in platform/log.New.
+func OTel(next http.Handler) http.Handler {
+	return otelhttp.NewHandler(next, "http.server")
 }
 
 // newID returns a random 32-character lowercase hex string. On crypto/rand

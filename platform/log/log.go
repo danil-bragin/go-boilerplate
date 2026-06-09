@@ -1,12 +1,21 @@
 // Package log provides structured logging built on log/slog with a
 // zap backend (via zapslog) for high-throughput services.
+//
+// Trace correlation: when callers use the context-aware log methods
+// (InfoContext, WarnContext, ErrorContext, DebugContext) and the context carries
+// an active OTel span, the logger automatically appends trace_id and span_id
+// attributes to every log record. This requires the OTel SDK to be installed
+// (e.g. via platform/telemetry.Setup); when no span is present the fields are
+// simply omitted.
 package log
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"strings"
 
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/exp/zapslog"
 	"go.uber.org/zap/zapcore"
@@ -56,8 +65,37 @@ func New(cfg Config, w io.Writer) (*slog.Logger, func() error) {
 	}
 
 	core := zapcore.NewCore(encoder, zapcore.AddSync(w), level)
-	handler := zapslog.NewHandler(core, zapslog.WithCaller(false))
-	return slog.New(handler), core.Sync
+	zapHandler := zapslog.NewHandler(core, zapslog.WithCaller(false))
+	return slog.New(&traceHandler{Handler: zapHandler}), core.Sync
+}
+
+// traceHandler wraps a slog.Handler and injects trace_id and span_id
+// attributes into every log record when the context carries a valid OTel span.
+// It only adds the fields when callers use context-aware log methods
+// (InfoContext, WarnContext, etc.) because those are the only paths that supply
+// a non-background context to Handle.
+type traceHandler struct {
+	slog.Handler
+}
+
+func (h *traceHandler) Handle(ctx context.Context, r slog.Record) error {
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		r.AddAttrs(
+			slog.String("trace_id", sc.TraceID().String()),
+			slog.String("span_id", sc.SpanID().String()),
+		)
+	}
+	return h.Handler.Handle(ctx, r)
+}
+
+// WithAttrs returns a new traceHandler whose inner handler has the given attrs.
+func (h *traceHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &traceHandler{Handler: h.Handler.WithAttrs(attrs)}
+}
+
+// WithGroup returns a new traceHandler whose inner handler is grouped.
+func (h *traceHandler) WithGroup(name string) slog.Handler {
+	return &traceHandler{Handler: h.Handler.WithGroup(name)}
 }
 
 func zapLevel(l slog.Level) zapcore.Level {

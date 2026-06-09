@@ -2,10 +2,14 @@ package telemetry_test
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
+	noopmetric "go.opentelemetry.io/otel/metric/noop"
 	noop "go.opentelemetry.io/otel/trace/noop"
 
 	"go-boilerplate/platform/telemetry"
@@ -103,4 +107,39 @@ func TestShutdown_EnabledFlushesWithCancelledContext(t *testing.T) {
 	// Must still return nil: no spans pending → flush is instant, and the
 	// shutdown function uses context.Background() internally, not the cancelled ctx.
 	require.NoError(t, shutdown(ctx))
+}
+
+// TestSetup_InstallsMeterProvider verifies that after Setup the global
+// MeterProvider is NOT the noop one (a real SDK provider is installed),
+// and that a counter recorded against it appears in the Prometheus text output
+// when MetricsPrometheus is true (the default).
+func TestSetup_InstallsMeterProvider(t *testing.T) {
+	shutdown, handler, err := telemetry.SetupWithMetrics(context.Background(), telemetry.Config{
+		ServiceName:       "meter-test",
+		Enabled:           false, // no OTLP; only the Prometheus reader
+		MetricsPrometheus: true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, shutdown)
+	require.NotNil(t, handler, "MetricsPrometheus=true must return a non-nil http.Handler")
+	t.Cleanup(func() { _ = shutdown(context.Background()) })
+
+	// The installed provider must NOT be the noop one.
+	require.NotEqual(t, noopmetric.NewMeterProvider(), otel.GetMeterProvider(),
+		"expected a real SDK MeterProvider, got the noop")
+
+	// Record a counter increment through the global API.
+	counter, err := otel.Meter("test-scope").Int64Counter("test_requests_total")
+	require.NoError(t, err)
+	counter.Add(context.Background(), 7)
+
+	// Scrape the Prometheus handler and assert the metric appears.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	body, _ := io.ReadAll(rec.Body)
+	require.Contains(t, string(body), "test_requests_total",
+		"Prometheus output must contain the recorded counter")
 }
