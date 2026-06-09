@@ -9,11 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
-	"google.golang.org/protobuf/proto"
-
 	"go-boilerplate/examples/gateway/internal/app"
-	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/authz"
 	"go-boilerplate/platform/cqrs"
@@ -21,6 +17,11 @@ import (
 	"go-boilerplate/platform/kafka"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/resilience"
+
+	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
+
+	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
 // rbacPolicy is the RBAC policy for write operations.

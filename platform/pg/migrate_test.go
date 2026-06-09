@@ -7,10 +7,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/pg/pgtest"
+
+	"github.com/stretchr/testify/require"
 )
 
 //go:embed testdata/migrations/*.sql
@@ -31,7 +31,8 @@ func TestMigrate_AppliesEmbeddedMigrations(t *testing.T) {
 	t.Cleanup(func() { _ = pool.Close(ctx) })
 
 	var exists bool
-	err = pool.Writer().QueryRow(ctx,
+	err = pool.Writer().QueryRow(
+		ctx,
 		`select exists (select 1 from information_schema.tables where table_name='widget')`,
 	).Scan(&exists)
 	require.NoError(t, err)
@@ -88,7 +89,8 @@ func TestMigrate_ConcurrentReplicasNoError(t *testing.T) {
 	t.Cleanup(func() { _ = pool.Close(ctx) })
 
 	var exists bool
-	err = pool.Writer().QueryRow(ctx,
+	err = pool.Writer().QueryRow(
+		ctx,
 		`select exists (select 1 from information_schema.tables where table_name='widget')`,
 	).Scan(&exists)
 	require.NoError(t, err)
@@ -101,7 +103,8 @@ func TestMigrate_ConcurrentReplicasNoError(t *testing.T) {
 	defer db.Close()
 
 	var count int
-	err = db.QueryRowContext(ctx,
+	err = db.QueryRowContext(
+		ctx,
 		`select count(*) from goose_db_version where version_id = 1 and is_applied = true`,
 	).Scan(&count)
 	require.NoError(t, err)

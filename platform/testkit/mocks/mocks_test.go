@@ -4,12 +4,12 @@ import (
 	"context"
 	"testing"
 
+	"go-boilerplate/platform/outbox"
+	"go-boilerplate/platform/testkit/mocks"
+
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"go-boilerplate/platform/outbox"
-	"go-boilerplate/platform/testkit/mocks"
 )
 
 func TestPublisherMock(t *testing.T) {

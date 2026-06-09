@@ -5,13 +5,14 @@ import (
 	"context"
 	"fmt"
 
-	"google.golang.org/protobuf/proto"
-
 	"go-boilerplate/examples/payments/internal/app"
-	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 	"go-boilerplate/platform/inbox"
 	"go-boilerplate/platform/kafka"
 	"go-boilerplate/platform/pg"
+
+	"google.golang.org/protobuf/proto"
+
+	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
 // NewEventHandler returns a kafka.HandlerFunc that decodes an OrderCreated event

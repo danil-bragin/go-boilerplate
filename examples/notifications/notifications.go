@@ -88,7 +88,8 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	notifier := nOpts.notifier
 	if notifier == nil {
 		notifier = func(orderID, paymentID, status string) {
-			svc.Logger().Info("notification sent",
+			svc.Logger().Info(
+				"notification sent",
 				"order_id", orderID,
 				"payment_id", paymentID,
 				"status", status,

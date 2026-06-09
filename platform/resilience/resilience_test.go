@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/resilience"
+
 	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"go-boilerplate/platform/resilience"
 )
 
 // TestRetry_RetriesThenSucceeds verifies that the retry policy retries a

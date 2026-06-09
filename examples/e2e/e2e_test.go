@@ -20,16 +20,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
-	gateway "go-boilerplate/examples/gateway"
 	"go-boilerplate/examples/notifications"
 	"go-boilerplate/examples/orders"
 	"go-boilerplate/examples/payments"
 	"go-boilerplate/platform/kafka/kafkatest"
 	"go-boilerplate/platform/pg/pgtest"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	gateway "go-boilerplate/examples/gateway"
 )
 
 // captureNotifier records all notification invocations in a thread-safe slice.
@@ -119,7 +120,8 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	os.Setenv("OTEL_ENABLED", "false")
 	os.Setenv("LOG_LEVEL", "error")
 
-	notifApp, err := notifications.NewApp(ctx,
+	notifApp, err := notifications.NewApp(
+		ctx,
 		notifications.WithNotifier(notifCapture.add),
 		notifications.WithLogWriter(discardWriter()),
 	)
@@ -140,7 +142,8 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	os.Setenv("OTEL_ENABLED", "false")
 	os.Setenv("LOG_LEVEL", "error")
 
-	paymentsApp, err := payments.NewApp(ctx,
+	paymentsApp, err := payments.NewApp(
+		ctx,
 		payments.WithLogWriter(discardWriter()),
 	)
 	require.NoError(t, err, "payments.NewApp failed")
@@ -160,7 +163,8 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	os.Setenv("OTEL_ENABLED", "false")
 	os.Setenv("LOG_LEVEL", "error")
 
-	ordersApp, err := orders.NewApp(ctx,
+	ordersApp, err := orders.NewApp(
+		ctx,
 		orders.WithLogWriter(discardWriter()),
 	)
 	require.NoError(t, err, "orders.NewApp failed")
@@ -184,7 +188,8 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	os.Setenv("OTEL_ENABLED", "false")
 	os.Setenv("LOG_LEVEL", "error")
 
-	gatewayApp, err := gateway.NewApp(ctx,
+	gatewayApp, err := gateway.NewApp(
+		ctx,
 		gateway.WithLogWriter(discardWriter()),
 	)
 	require.NoError(t, err, "gateway.NewApp failed")

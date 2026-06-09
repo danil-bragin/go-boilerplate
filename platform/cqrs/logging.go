@@ -23,7 +23,8 @@ func Logging[C, R any](name string) Behavior[C, R] {
 			defer func() {
 				if r := recover(); r != nil {
 					dur := float64(time.Since(start).Milliseconds())
-					logger.Error("handler panicked",
+					logger.Error(
+						"handler panicked",
 						"handler", name,
 						"duration_ms", dur,
 						"panic", r,
@@ -35,14 +36,16 @@ func Logging[C, R any](name string) Behavior[C, R] {
 			dur := float64(time.Since(start).Milliseconds())
 
 			if err != nil {
-				logger.Error("handler failed",
+				logger.Error(
+					"handler failed",
 					"handler", name,
 					"status", "error",
 					"duration_ms", dur,
 					"error", err,
 				)
 			} else {
-				logger.Info("handler succeeded",
+				logger.Info(
+					"handler succeeded",
 					"handler", name,
 					"status", "ok",
 					"duration_ms", dur,

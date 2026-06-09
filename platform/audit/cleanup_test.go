@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/audit"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestAuditCleanup_DeletesOldRowsOnly verifies that Cleanup on PgStore removes

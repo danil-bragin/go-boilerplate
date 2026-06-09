@@ -7,12 +7,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"go-boilerplate/platform/telemetry"
+
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	noopmetric "go.opentelemetry.io/otel/metric/noop"
 	noop "go.opentelemetry.io/otel/trace/noop"
-
-	"go-boilerplate/platform/telemetry"
 )
 
 func TestSetup_ConfiguresGlobalProvidersAndShutsDown(t *testing.T) {

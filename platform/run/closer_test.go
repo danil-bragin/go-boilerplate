@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/run"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestCloser_RunsInReverseOrder(t *testing.T) {

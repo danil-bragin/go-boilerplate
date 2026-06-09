@@ -27,12 +27,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
-
 	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/blob"
 	"go-boilerplate/platform/httpx"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 )
 
 const (

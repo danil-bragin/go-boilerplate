@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/blob"
+
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	tcminio "github.com/testcontainers/testcontainers-go/modules/minio"
-
-	"go-boilerplate/platform/blob"
 )
 
 // newStore starts a MinIO testcontainer and returns a MinioStore wired to it.

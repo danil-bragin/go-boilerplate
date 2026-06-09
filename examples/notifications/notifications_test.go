@@ -7,16 +7,17 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/examples/notifications"
+	"go-boilerplate/platform/kafka"
+	"go-boilerplate/platform/kafka/kafkatest"
+	"go-boilerplate/platform/pg/pgtest"
+
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
-	"go-boilerplate/examples/notifications"
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
-	"go-boilerplate/platform/kafka"
-	"go-boilerplate/platform/kafka/kafkatest"
-	"go-boilerplate/platform/pg/pgtest"
 )
 
 // captureNotifier is a thread-safe notifier that records all invocations.
@@ -62,7 +63,8 @@ func buildApp(
 	ctx := context.Background()
 	logBuf := &bytes.Buffer{}
 
-	app, err := notifications.NewApp(ctx,
+	app, err := notifications.NewApp(
+		ctx,
 		notifications.WithNotifier(notifier.Notify),
 		notifications.WithLogWriter(logBuf),
 	)

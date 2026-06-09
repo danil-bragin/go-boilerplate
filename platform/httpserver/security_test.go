@@ -5,9 +5,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/httpserver"
+
+	"github.com/stretchr/testify/require"
 )
 
 // ---------------------------------------------------------------------------

@@ -23,7 +23,8 @@ import (
 // different Postgres driver versions.
 func Cleanup(ctx context.Context, pool *pg.Pool, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().UTC().Add(-olderThan)
-	tag, err := pool.Writer().Exec(ctx,
+	tag, err := pool.Writer().Exec(
+		ctx,
 		`delete from inbox where processed_at < $1`,
 		cutoff,
 	)

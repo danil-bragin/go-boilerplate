@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/pg/pgtest"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestPool_ConnectsPingsAndHealthChecks(t *testing.T) {

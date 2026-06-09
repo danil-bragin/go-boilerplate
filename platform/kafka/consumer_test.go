@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/kafka"
+	"go-boilerplate/platform/kafka/kafkatest"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/twmb/franz-go/pkg/kgo"
-
-	"go-boilerplate/platform/kafka"
-	"go-boilerplate/platform/kafka/kafkatest"
 )
 
 func TestConsumer_GroupConsumesCommitted(t *testing.T) {

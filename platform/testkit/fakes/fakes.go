@@ -165,8 +165,10 @@ type Publisher struct {
 	FailNext bool
 }
 
-var _ outbox.Publisher = (*Publisher)(nil)
-var _ outbox.BatchPublisher = (*Publisher)(nil)
+var (
+	_ outbox.Publisher      = (*Publisher)(nil)
+	_ outbox.BatchPublisher = (*Publisher)(nil)
+)
 
 // NewPublisher returns an initialised *Publisher ready for use.
 func NewPublisher() *Publisher {

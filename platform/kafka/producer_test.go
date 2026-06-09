@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/kafka"
+	"go-boilerplate/platform/kafka/kafkatest"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/twmb/franz-go/pkg/kgo"
-
-	"go-boilerplate/platform/kafka"
-	"go-boilerplate/platform/kafka/kafkatest"
 )
 
 // TestProducer_ProduceBatch verifies that ProduceBatch enqueues all records

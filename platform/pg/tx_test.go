@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/pg/pgtest"
+
+	"github.com/stretchr/testify/require"
 )
 
 func setupCounter(t *testing.T) *pg.Pool {

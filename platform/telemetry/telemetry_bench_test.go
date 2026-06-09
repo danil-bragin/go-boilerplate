@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"go.opentelemetry.io/otel"
-
 	"go-boilerplate/platform/telemetry"
+
+	"go.opentelemetry.io/otel"
 )
 
 func BenchmarkSpanDisabled(b *testing.B) {

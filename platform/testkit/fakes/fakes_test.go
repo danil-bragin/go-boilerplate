@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/outbox"
 	"go-boilerplate/platform/testkit/fakes"
+
+	"github.com/google/uuid"
 )
 
 var ctx = context.Background()

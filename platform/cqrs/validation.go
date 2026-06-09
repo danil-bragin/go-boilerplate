@@ -47,7 +47,7 @@ func Validation[C, R any]() Behavior[C, R] {
 				return next(ctx, cmd)
 			}
 			kind := t.Kind()
-			if kind == reflect.Ptr {
+			if kind == reflect.Pointer {
 				kind = t.Elem().Kind()
 			}
 			if kind != reflect.Struct {

@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/cache"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 	"golang.org/x/sync/errgroup"
-
-	"go-boilerplate/platform/cache"
 )
 
 // newCache starts a Redis testcontainer and returns a configured *Cache.

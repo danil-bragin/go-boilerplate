@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/httpserver"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestServer_ServesAndShutsDown(t *testing.T) {

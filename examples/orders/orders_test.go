@@ -6,15 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/proto"
-
 	"go-boilerplate/examples/orders/internal/app"
 	"go-boilerplate/examples/orders/internal/migrations"
 	"go-boilerplate/examples/orders/internal/transport"
-	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 	"go-boilerplate/platform/audit"
 	"go-boilerplate/platform/kafka"
 	"go-boilerplate/platform/kafka/kafkatest"
@@ -22,6 +16,13 @@ import (
 	"go-boilerplate/platform/outboxkafka"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/pg/pgtest"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+
+	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
 // newTestPool creates a migrated Postgres pool for testing.

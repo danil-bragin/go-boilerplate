@@ -3,14 +3,15 @@ package serde_test
 import (
 	"testing"
 
+	"go-boilerplate/platform/kafka/kafkatest"
+	"go-boilerplate/platform/serde"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	eventsv1 "go-boilerplate/gen/proto/events/v1"
-	"go-boilerplate/platform/kafka/kafkatest"
-	"go-boilerplate/platform/serde"
 )
 
 func TestProtobufSerde_RoundTrip(t *testing.T) {

@@ -10,13 +10,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/examples/gateway/internal/attachments"
 	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/testkit/fakes"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // flagOn is a flagBool func that always returns true (feature enabled).

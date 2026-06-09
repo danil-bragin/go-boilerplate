@@ -75,7 +75,8 @@ func (s *PgStore) Record(ctx context.Context, e Entry) error {
 	if err != nil {
 		return fmt.Errorf("audit: marshal metadata: %w", err)
 	}
-	_, err = pg.FromContext(ctx, s.pool).Exec(ctx,
+	_, err = pg.FromContext(ctx, s.pool).Exec(
+		ctx,
 		`insert into audit_log (actor, action, subject, metadata) values ($1, $2, $3, $4)`,
 		e.Actor, e.Action, e.Subject, metaJSON,
 	)

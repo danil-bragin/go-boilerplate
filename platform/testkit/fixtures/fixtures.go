@@ -6,11 +6,11 @@ package fixtures
 import (
 	"time"
 
-	"github.com/google/uuid"
-
 	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/kafka"
 	"go-boilerplate/platform/outbox"
+
+	"github.com/google/uuid"
 )
 
 // fixedTime is the default CreatedAt used by OutboxMessage.

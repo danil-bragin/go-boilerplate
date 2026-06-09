@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/outbox"
 	"go-boilerplate/platform/pg"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
 )
 
 type fakePublisher struct {

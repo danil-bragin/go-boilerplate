@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/httpserver"
+	"go-boilerplate/platform/log"
+
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-
-	"go-boilerplate/platform/httpserver"
-	"go-boilerplate/platform/log"
 )
 
 // ---------------------------------------------------------------------------

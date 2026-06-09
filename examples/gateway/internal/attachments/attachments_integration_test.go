@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/examples/gateway/internal/attachments"
+	"go-boilerplate/platform/auth"
+	"go-boilerplate/platform/blob"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	tcminio "github.com/testcontainers/testcontainers-go/modules/minio"
-
-	"go-boilerplate/examples/gateway/internal/attachments"
-	"go-boilerplate/platform/auth"
-	"go-boilerplate/platform/blob"
 )
 
 // newMinioStore starts a MinIO testcontainer and returns a real blob.MinioStore

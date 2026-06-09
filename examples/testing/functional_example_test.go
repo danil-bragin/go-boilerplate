@@ -39,22 +39,21 @@ import (
 	"net/http"
 	"testing"
 
+	"go-boilerplate/platform/testkit/fakes"
+	"go-boilerplate/platform/testkit/mockhttp"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	// The flow under test.
 	testingex "go-boilerplate/examples/testing"
-
 	// fakes: hand-written stateful in-memory doubles.
 	// Use fakes when the test cares about the state the double accumulates
 	// (e.g. "was this message stored?") rather than exact call interactions.
-	"go-boilerplate/platform/testkit/fakes"
-
 	// mockhttp: in-process httptest-based mock servers.
 	// mockhttp.Server wraps an http.Handler and records every request.
 	// mockhttp.JSON is a one-liner factory for static JSON responses.
 	// mockhttp.JWKS provides a live RS256 JWKS endpoint + JWT minter.
-	"go-boilerplate/platform/testkit/mockhttp"
 )
 
 // TestFetchAndNotify_Success exercises the full FetchAndNotify slice:

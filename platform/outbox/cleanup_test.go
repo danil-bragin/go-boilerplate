@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/outbox"
 	"go-boilerplate/platform/pg"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
 )
 
 // insertPublishedAt inserts an outbox row with an explicit published_at (for
@@ -18,14 +18,16 @@ func insertPublishedAt(t *testing.T, pool *pg.Pool, id uuid.UUID, publishedAt *t
 	t.Helper()
 	ctx := context.Background()
 	if publishedAt == nil {
-		_, err := pool.Writer().Exec(ctx,
+		_, err := pool.Writer().Exec(
+			ctx,
 			`insert into outbox (id, aggregate_type, aggregate_id, event_type, payload, headers)
 			 values ($1, 'order', 'x', 'Test', '{}', '{}')`,
 			id,
 		)
 		require.NoError(t, err)
 	} else {
-		_, err := pool.Writer().Exec(ctx,
+		_, err := pool.Writer().Exec(
+			ctx,
 			`insert into outbox (id, aggregate_type, aggregate_id, event_type, payload, headers, published_at)
 			 values ($1, 'order', 'x', 'Test', '{}', '{}', $2)`,
 			id, *publishedAt,

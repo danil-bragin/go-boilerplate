@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
-
 	"go-boilerplate/platform/outbox/gen"
 	"go-boilerplate/platform/pg"
+
+	"github.com/google/uuid"
 )
 
 // RelayConfig configures the polling relay.

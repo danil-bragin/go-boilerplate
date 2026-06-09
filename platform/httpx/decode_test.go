@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/httpx"
+
+	"github.com/stretchr/testify/require"
 )
 
 type createReq struct {

@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/auth"
+
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"go-boilerplate/platform/auth"
 )
 
 // ─── Test helpers ────────────────────────────────────────────────────────────
@@ -209,7 +209,8 @@ func TestJWKSVerifier_CustomRolesClaimPath(t *testing.T) {
 	v := newVerifier(t, srv.URL, testIssuer, testAudience,
 		auth.WithRolesClaimPath("custom_access.roles"))
 
-	signed := signToken(t, keys, testIssuer, testAudience, testSubject, testUsername,
+	signed := signToken(
+		t, keys, testIssuer, testAudience, testSubject, testUsername,
 		time.Now().Add(time.Hour),
 		map[string]any{
 			"custom_access": map[string]any{

@@ -25,7 +25,8 @@ import (
 // requirements may mandate archival instead of deletion — see package note.
 func (s *PgStore) Cleanup(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().UTC().Add(-olderThan)
-	tag, err := s.pool.Writer().Exec(ctx,
+	tag, err := s.pool.Writer().Exec(
+		ctx,
 		`delete from audit_log where created_at < $1`,
 		cutoff,
 	)

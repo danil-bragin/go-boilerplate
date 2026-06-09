@@ -11,6 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/kafka"
+	"go-boilerplate/platform/kafka/kafkatest"
+	"go-boilerplate/platform/pg/pgtest"
+
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,9 +25,6 @@ import (
 	gatewayapp "go-boilerplate/examples/gateway/internal/app"
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 	authpkg "go-boilerplate/platform/auth"
-	"go-boilerplate/platform/kafka"
-	"go-boilerplate/platform/kafka/kafkatest"
-	"go-boilerplate/platform/pg/pgtest"
 )
 
 // startApp starts the gateway app for testing, returning its base URL.

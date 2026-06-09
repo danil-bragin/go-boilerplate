@@ -7,6 +7,9 @@ import (
 	"errors"
 	"testing"
 
+	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/log"
+
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
@@ -14,9 +17,6 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-
-	"go-boilerplate/platform/cqrs"
-	"go-boilerplate/platform/log"
 )
 
 // TestDecorate_OrderAndComposition verifies that behaviors are applied

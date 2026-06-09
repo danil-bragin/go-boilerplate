@@ -8,11 +8,11 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"go-boilerplate/platform/cqrs"
+
 	"github.com/maypok86/otter/v2"
 	"github.com/redis/rueidis"
 	"golang.org/x/sync/singleflight"
-
-	"go-boilerplate/platform/cqrs"
 )
 
 // Compile-time assertion that *Cache satisfies cqrs.Cache.

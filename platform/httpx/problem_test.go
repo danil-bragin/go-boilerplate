@@ -6,9 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/httpx"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestWriteProblem_SetsStatusAndContentType(t *testing.T) {

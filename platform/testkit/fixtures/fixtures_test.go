@@ -4,10 +4,10 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/testkit/fixtures"
+
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
-
-	"go-boilerplate/platform/testkit/fixtures"
 )
 
 // ---------------------------------------------------------------------------

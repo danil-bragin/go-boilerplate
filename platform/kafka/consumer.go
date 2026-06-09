@@ -43,7 +43,8 @@ func NewConsumer(cfg Config, topics ...string) (*Consumer, error) {
 		return nil, errors.New("kafka: NewConsumer: at least one topic must be provided")
 	}
 
-	cl, err := NewClient(cfg,
+	cl, err := NewClient(
+		cfg,
 		kgo.ConsumerGroup(cfg.GroupID),
 		kgo.ConsumeTopics(topics...),
 		kgo.Balancers(kgo.CooperativeStickyBalancer()),

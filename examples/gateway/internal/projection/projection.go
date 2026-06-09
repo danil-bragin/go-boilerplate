@@ -8,14 +8,15 @@ import (
 	"fmt"
 	"log/slog"
 
+	"go-boilerplate/platform/inbox"
+	"go-boilerplate/platform/kafka"
+	"go-boilerplate/platform/pg"
+
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
 
 	storegen "go-boilerplate/examples/gateway/internal/store/gen"
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
-	"go-boilerplate/platform/inbox"
-	"go-boilerplate/platform/kafka"
-	"go-boilerplate/platform/pg"
 )
 
 const consumerGroup = "gateway-projection"

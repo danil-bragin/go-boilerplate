@@ -6,11 +6,11 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/inbox"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/pg/pgtest"
+
+	"github.com/stretchr/testify/require"
 )
 
 //go:embed migrations/*.sql

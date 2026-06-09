@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/config"
+
+	"github.com/stretchr/testify/require"
 )
 
 type sampleConfig struct {

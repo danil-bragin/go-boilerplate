@@ -53,11 +53,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/open-feature/go-sdk/openfeature/memprovider"
-
 	"go-boilerplate/examples/gateway/internal/api"
-	gatewayapp "go-boilerplate/examples/gateway/internal/app"
 	"go-boilerplate/examples/gateway/internal/attachments"
 	"go-boilerplate/examples/gateway/internal/migrations"
 	"go-boilerplate/examples/gateway/internal/projection"
@@ -71,6 +67,11 @@ import (
 	"go-boilerplate/platform/health"
 	"go-boilerplate/platform/httpserver"
 	"go-boilerplate/platform/run"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/open-feature/go-sdk/openfeature/memprovider"
+
+	gatewayapp "go-boilerplate/examples/gateway/internal/app"
 )
 
 // Config aggregates all configuration for the gateway service.
@@ -158,7 +159,8 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	}
 
 	// Ensure Kafka topics exist.
-	if err := svc.EnsureTopics(ctx, 1, 1,
+	if err := svc.EnsureTopics(
+		ctx, 1, 1,
 		cfg.CommandsTopic,
 		cfg.OrdersEventsTopic,
 		cfg.PaymentsEventsTopic,
@@ -173,7 +175,8 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if len(cfg.Cache.RedisAddrs) > 0 && cfg.Cache.RedisAddrs[0] != "" {
 		c, err := cache.New(cfg.Cache)
 		if err != nil {
-			svc.Logger().Warn("gateway: cache unavailable, starting without Redis caching",
+			svc.Logger().Warn(
+				"gateway: cache unavailable, starting without Redis caching",
 				"error", err,
 				"redis_addrs", cfg.Cache.RedisAddrs,
 			)
@@ -197,7 +200,8 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if cfg.S3.Endpoint != "" {
 		s, err := blob.New(ctx, cfg.S3)
 		if err != nil {
-			svc.Logger().Warn("gateway: blob/attachments disabled (S3 unavailable)",
+			svc.Logger().Warn(
+				"gateway: blob/attachments disabled (S3 unavailable)",
 				"error", err,
 				"endpoint", cfg.S3.Endpoint,
 			)
@@ -229,7 +233,8 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 
 	// Projection consumer subscribes to both events topics.
 	projHandler := projection.NewHandler(svc.Pool(), svc.Logger())
-	if err := svc.AddConsumer(ctx, "gateway-projection",
+	if err := svc.AddConsumer(
+		ctx, "gateway-projection",
 		[]string{cfg.OrdersEventsTopic, cfg.PaymentsEventsTopic},
 		projHandler,
 	); err != nil {
@@ -330,7 +335,8 @@ func (a *App) Start() {
 		return
 	}
 
-	a.svc.Logger().Info("gateway service started",
+	a.svc.Logger().Info(
+		"gateway service started",
 		"addr", a.server.Addr(),
 		"admin_addr", a.svc.AdminAddr(),
 	)

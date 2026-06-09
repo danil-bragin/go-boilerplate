@@ -12,10 +12,10 @@ import (
 	"runtime/debug"
 	"time"
 
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-
 	"go-boilerplate/platform/httpx"
 	"go-boilerplate/platform/log"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // requestIDKeyType is an unexported struct used as a context key to avoid
@@ -113,7 +113,8 @@ func AccessLog(next http.Handler) http.Handler {
 		next.ServeHTTP(cw, r)
 		elapsed := time.Since(start)
 		ctx := r.Context()
-		log.From(ctx).Info("http request",
+		log.From(ctx).Info(
+			"http request",
 			"method", r.Method,
 			"path", r.URL.Path,
 			"status", cw.Status(),

@@ -5,12 +5,13 @@ import (
 	"context"
 	"fmt"
 
-	"google.golang.org/protobuf/proto"
-
-	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 	"go-boilerplate/platform/inbox"
 	"go-boilerplate/platform/kafka"
 	"go-boilerplate/platform/pg"
+
+	"google.golang.org/protobuf/proto"
+
+	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
 // Notifier is a function called when a payment notification should be sent.

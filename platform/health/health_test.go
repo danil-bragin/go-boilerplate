@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/health"
+
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
-
-	"go-boilerplate/platform/health"
 )
 
 func TestReadyz_AllPassReturns200(t *testing.T) {

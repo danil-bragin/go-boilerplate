@@ -8,17 +8,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"github.com/twmb/franz-go/pkg/kgo"
-
 	"go-boilerplate/platform/kafka"
 	"go-boilerplate/platform/kafka/kafkatest"
 	"go-boilerplate/platform/outbox"
 	"go-boilerplate/platform/outboxkafka"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/pg/pgtest"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 //go:embed testdata/migrations/*.sql

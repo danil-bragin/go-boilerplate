@@ -18,7 +18,8 @@ func NewDSN(t *testing.T) string {
 	t.Helper()
 	ctx := context.Background()
 
-	container, err := postgres.Run(ctx, "postgres:16-alpine",
+	container, err := postgres.Run(
+		ctx, "postgres:16-alpine",
 		postgres.WithDatabase("app"),
 		postgres.WithUsername("app"),
 		postgres.WithPassword("app"),

@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"testing"
 
+	"go-boilerplate/platform/log"
+
 	"github.com/stretchr/testify/require"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-
-	"go-boilerplate/platform/log"
 )
 
 func TestNew_WritesStructuredJSON(t *testing.T) {

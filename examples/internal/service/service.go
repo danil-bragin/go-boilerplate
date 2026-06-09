@@ -18,8 +18,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/twmb/franz-go/pkg/kgo"
-
 	"go-boilerplate/platform/audit"
 	"go-boilerplate/platform/health"
 	"go-boilerplate/platform/httpserver"
@@ -31,6 +29,8 @@ import (
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/run"
 	"go-boilerplate/platform/telemetry"
+
+	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 // Config is the embeddable base config for all consumer services.

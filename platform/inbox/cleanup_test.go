@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/inbox"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestInboxCleanup_DeletesOldProcessedRowsOnly verifies that Cleanup removes

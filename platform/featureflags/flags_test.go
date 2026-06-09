@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
+	"go-boilerplate/platform/featureflags"
+
 	"github.com/open-feature/go-sdk/openfeature/memprovider"
 	"github.com/stretchr/testify/require"
-
-	"go-boilerplate/platform/featureflags"
 )
 
 // flagMap builds the InMemoryFlag map used by most tests.

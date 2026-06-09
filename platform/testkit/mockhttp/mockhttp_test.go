@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/testkit/mockhttp"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestJWKS_MintedTokenVerifies confirms that a token minted by JWKSServer.Sign

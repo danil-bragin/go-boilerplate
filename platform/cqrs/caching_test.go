@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/cqrs"
+
+	"github.com/stretchr/testify/require"
 )
 
 // fakeCache is an in-memory Cache implementation for tests.
@@ -35,8 +35,10 @@ func (c *fakeCache) Set(_ context.Context, key string, value []byte, _ time.Dura
 	c.store[key] = value
 }
 
-type cacheQuery struct{ ID string }
-type cacheResult struct{ Value string }
+type (
+	cacheQuery  struct{ ID string }
+	cacheResult struct{ Value string }
+)
 
 // TestCaching_ReturnsCachedOnHitAndSkipsHandler verifies the cache-aside
 // pattern: first call is a miss → handler runs; second call with the same key

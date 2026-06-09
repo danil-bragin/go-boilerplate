@@ -20,10 +20,12 @@ func Metrics[C, R any](name string) Behavior[C, R] {
 	return func(next HandlerFunc[C, R]) HandlerFunc[C, R] {
 		m := otel.Meter("cqrs")
 
-		counter, counterErr := m.Int64Counter("cqrs.handler.calls",
+		counter, counterErr := m.Int64Counter(
+			"cqrs.handler.calls",
 			metric.WithDescription("Number of handler invocations"),
 		)
-		histogram, histErr := m.Float64Histogram("cqrs.handler.duration_ms",
+		histogram, histErr := m.Float64Histogram(
+			"cqrs.handler.duration_ms",
 			metric.WithDescription("Handler duration in milliseconds"),
 			metric.WithUnit("ms"),
 		)

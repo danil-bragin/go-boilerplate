@@ -5,16 +5,16 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/google/uuid"
-	"google.golang.org/protobuf/proto"
-
-	ordersv1 "go-boilerplate/gen/proto/orders/v1"
+	"go-boilerplate/examples/orders/internal/store/gen"
 	"go-boilerplate/platform/audit"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/outbox"
 	"go-boilerplate/platform/pg"
 
-	"go-boilerplate/examples/orders/internal/store/gen"
+	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
+
+	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
 // CreateOrder is the command to create a new order.
@@ -90,7 +90,8 @@ func DecorateCreateOrderHandler(
 	handler cqrs.HandlerFunc[CreateOrder, CreateOrderResult],
 	auditStore audit.Store,
 ) cqrs.HandlerFunc[CreateOrder, CreateOrderResult] {
-	return cqrs.Decorate(handler,
+	return cqrs.Decorate(
+		handler,
 		cqrs.Logging[CreateOrder, CreateOrderResult]("CreateOrder"),
 		cqrs.Tracing[CreateOrder, CreateOrderResult]("CreateOrder"),
 		cqrs.Metrics[CreateOrder, CreateOrderResult]("CreateOrder"),

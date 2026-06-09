@@ -5,16 +5,16 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/google/uuid"
-	"google.golang.org/protobuf/proto"
-
-	ordersv1 "go-boilerplate/gen/proto/orders/v1"
+	"go-boilerplate/examples/payments/internal/store/gen"
 	"go-boilerplate/platform/audit"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/outbox"
 	"go-boilerplate/platform/pg"
 
-	"go-boilerplate/examples/payments/internal/store/gen"
+	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
+
+	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
 // ProcessPayment is the command to process a payment for an order.
@@ -84,7 +84,8 @@ func DecorateProcessPaymentHandler(
 	handler cqrs.HandlerFunc[ProcessPayment, ProcessPaymentResult],
 	auditStore audit.Store,
 ) cqrs.HandlerFunc[ProcessPayment, ProcessPaymentResult] {
-	return cqrs.Decorate(handler,
+	return cqrs.Decorate(
+		handler,
 		cqrs.Logging[ProcessPayment, ProcessPaymentResult]("ProcessPayment"),
 		cqrs.Tracing[ProcessPayment, ProcessPaymentResult]("ProcessPayment"),
 		cqrs.Metrics[ProcessPayment, ProcessPaymentResult]("ProcessPayment"),

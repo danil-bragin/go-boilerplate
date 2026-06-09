@@ -24,14 +24,15 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/kafka/kafkatest"
+	"go-boilerplate/platform/pg/pgtest"
+
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	testcontainers "github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	gateway "go-boilerplate/examples/gateway"
-	"go-boilerplate/platform/kafka/kafkatest"
-	"go-boilerplate/platform/pg/pgtest"
 )
 
 // TestGateway_KeycloakRealToken is a full Keycloak integration test.

@@ -5,11 +5,11 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/pg/pgtest"
+
+	"github.com/stretchr/testify/require"
 )
 
 // setupTxCounter creates a fresh Postgres pool with a counter(n int) table
@@ -38,8 +38,10 @@ func readTxCounter(t *testing.T, pool *pg.Pool) int {
 	return n
 }
 
-type txCmd struct{}
-type txResult struct{ N int }
+type (
+	txCmd    struct{}
+	txResult struct{ N int }
+)
 
 // TestTransaction_CommitsOnSuccess verifies that a command handler wrapped with
 // Transaction commits its writes and returns the result on success.

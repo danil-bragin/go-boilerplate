@@ -80,7 +80,8 @@ func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handl
 	if !cfg.Enabled {
 		otel.SetTracerProvider(noop.NewTracerProvider())
 	} else {
-		res, err := resource.New(ctx,
+		res, err := resource.New(
+			ctx,
 			resource.WithAttributes(semconv.ServiceName(cfg.ServiceName)),
 		)
 		if err != nil {
@@ -91,7 +92,8 @@ func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handl
 			}
 		}
 
-		traceExp, err := otlptracegrpc.New(ctx,
+		traceExp, err := otlptracegrpc.New(
+			ctx,
 			otlptracegrpc.WithEndpoint(cfg.OTLPEndpoint),
 			otlptracegrpc.WithInsecure(),
 		)
@@ -132,7 +134,8 @@ func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handl
 	}
 
 	if cfg.Enabled {
-		metricExp, err := otlpmetricgrpc.New(ctx,
+		metricExp, err := otlpmetricgrpc.New(
+			ctx,
 			otlpmetricgrpc.WithEndpoint(cfg.OTLPEndpoint),
 			otlpmetricgrpc.WithInsecure(),
 		)

@@ -12,7 +12,8 @@ import (
 )
 
 func TestApp_StartHealthAndStop(t *testing.T) {
-	defer goleak.VerifyNone(t,
+	defer goleak.VerifyNone(
+		t,
 		goleak.IgnoreTopFunction("go.opentelemetry.io/otel/sdk/trace.(*batchSpanProcessor).processQueue"),
 	)
 

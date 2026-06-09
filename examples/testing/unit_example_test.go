@@ -25,24 +25,22 @@ import (
 	"errors"
 	"testing"
 
+	"go-boilerplate/platform/outbox"
+	"go-boilerplate/platform/testkit/fixtures"
+	"go-boilerplate/platform/testkit/mocks"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	// The function under test lives in the same examples/testing package.
 	testingex "go-boilerplate/examples/testing"
-
 	// fixtures: canonical test-data builders with functional options.
 	// Always prefer fixtures over hand-crafted structs — they have sensible
 	// defaults so your test only declares what it cares about.
-	"go-boilerplate/platform/testkit/fixtures"
-
 	// mocks: moq-generated, strict call recording.
 	// Use these when you need to assert *how* a collaborator was called
 	// (argument values, call count, call order).
 	// See platform/testkit/mocks/gen.go for the go:generate directives.
-	"go-boilerplate/platform/testkit/mocks"
-
-	"go-boilerplate/platform/outbox"
 )
 
 // TestPublishEvent_Success verifies the happy-path: PublishEvent delegates to

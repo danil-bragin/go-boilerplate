@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/audit"
 	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/pg/pgtest"
+
+	"github.com/stretchr/testify/require"
 )
 
 //go:embed migrations/*.sql
@@ -104,7 +104,8 @@ func TestAudit_RecordsOnSuccessWithinTx(t *testing.T) {
 		return orderResult{}, err
 	})
 
-	decorated := cqrs.Decorate(handler,
+	decorated := cqrs.Decorate(
+		handler,
 		cqrs.Transaction[orderCmd, orderResult](pool),
 		audit.Audit[orderCmd, orderResult](store, "order:create", func(c orderCmd) string { return c.OrderID }),
 	)
@@ -141,7 +142,8 @@ func TestAudit_RollsBackWithCommandError(t *testing.T) {
 		return orderResult{}, errBoom
 	})
 
-	decorated := cqrs.Decorate(handler,
+	decorated := cqrs.Decorate(
+		handler,
 		cqrs.Transaction[orderCmd, orderResult](pool),
 		audit.Audit[orderCmd, orderResult](store, "order:create", func(c orderCmd) string { return c.OrderID }),
 	)
@@ -178,7 +180,8 @@ func TestAudit_StoreErrorFailsCommand(t *testing.T) {
 		return orderResult{}, err
 	})
 
-	decorated := cqrs.Decorate(handler,
+	decorated := cqrs.Decorate(
+		handler,
 		cqrs.Transaction[orderCmd, orderResult](pool),
 		audit.Audit[orderCmd, orderResult](store, "order:create", func(c orderCmd) string { return c.OrderID }),
 	)
@@ -206,7 +209,8 @@ func TestAudit_AnonymousWhenNoPrincipal(t *testing.T) {
 		return orderResult{}, nil
 	})
 
-	decorated := cqrs.Decorate(handler,
+	decorated := cqrs.Decorate(
+		handler,
 		cqrs.Transaction[orderCmd, orderResult](pool),
 		audit.Audit[orderCmd, orderResult](store, "order:create", func(c orderCmd) string { return c.OrderID }),
 	)

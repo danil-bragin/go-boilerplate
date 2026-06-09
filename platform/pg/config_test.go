@@ -3,10 +3,10 @@ package pg_test
 import (
 	"testing"
 
+	"go-boilerplate/platform/pg"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
-
-	"go-boilerplate/platform/pg"
 )
 
 func TestConfig_BuildPoolConfigAppliesSizingAndDefaults(t *testing.T) {

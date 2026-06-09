@@ -5,12 +5,12 @@ import (
 	"embed"
 	"testing"
 
-	"github.com/google/uuid"
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/platform/outbox"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/pg/pgtest"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
 )
 
 //go:embed migrations/*.sql
@@ -48,7 +48,8 @@ func TestEnqueue_WritesRowWithinTx(t *testing.T) {
 	require.NoError(t, err)
 
 	var count int
-	require.NoError(t, pool.Reader().QueryRow(ctx,
+	require.NoError(t, pool.Reader().QueryRow(
+		ctx,
 		`select count(*) from outbox where id=$1 and published_at is null`, id,
 	).Scan(&count))
 	require.Equal(t, 1, count)

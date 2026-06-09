@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"time"
 
+	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/pg"
+
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	storegen "go-boilerplate/examples/gateway/internal/store/gen"
-	"go-boilerplate/platform/cqrs"
-	"go-boilerplate/platform/pg"
 )
 
 // ErrOrderNotFound is returned when the requested order does not exist in the
@@ -74,7 +75,8 @@ func DecorateGetOrderHandler(raw cqrs.HandlerFunc[GetOrder, OrderView], cache cq
 		cqrs.Metrics[GetOrder, OrderView]("GetOrder"),
 	}
 	if cache != nil {
-		behaviors = append(behaviors,
+		behaviors = append(
+			behaviors,
 			cqrs.CachingJSON[GetOrder, OrderView](
 				cache,
 				func(q GetOrder) string { return "order:" + q.OrderID },

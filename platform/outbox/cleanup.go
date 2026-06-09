@@ -14,10 +14,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
-
 	"go-boilerplate/platform/outbox/gen"
 	"go-boilerplate/platform/pg"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // Cleaner performs age-based deletion of published outbox rows.

@@ -218,7 +218,8 @@ func (f CheckFunc) Check(ctx context.Context) error { return f(ctx) }
 // means they participate in chi's middleware stack normally.
 func Mount(r interface {
 	Get(pattern string, handlerFn http.HandlerFunc)
-}, h *Health) {
+}, h *Health,
+) {
 	r.Get("/livez", h.LivezHandler().ServeHTTP)
 	r.Get("/readyz", h.ReadyzHandler().ServeHTTP)
 }

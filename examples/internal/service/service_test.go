@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-
 	"go-boilerplate/examples/internal/service"
 	"go-boilerplate/platform/kafka/kafkatest"
 	"go-boilerplate/platform/pg/pgtest"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestService_AdminEndpoints starts a Service against real Redpanda + Postgres

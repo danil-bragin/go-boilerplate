@@ -21,5 +21,11 @@ linters:
 
 formatters:
   enable:
-    - gofmt
+    - gofumpt
     - goimports
+  settings:
+    gofumpt:
+      module-path: go-boilerplate
+    goimports:
+      local-prefixes:
+        - go-boilerplate

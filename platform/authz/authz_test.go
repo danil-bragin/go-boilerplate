@@ -46,8 +46,10 @@ func TestRBAC_DeniesUnknownAction(t *testing.T) {
 
 // ---- Require behavior tests ----
 
-type Cmd struct{ Value string }
-type Res struct{ Value string }
+type (
+	Cmd struct{ Value string }
+	Res struct{ Value string }
+)
 
 func TestRequire_PassesWithPrincipalAndRole(t *testing.T) {
 	rbac := authz.NewRBAC(map[string][]string{
