@@ -94,7 +94,9 @@ func (c *Cache) startInvalidationSubscriber() {
 // a failed broadcast degrades to TTL-bounded staleness, never a caller error.
 func (c *Cache) publishInvalidation(ctx context.Context, key string) {
 	payload := c.instanceID + " " + key
-	_ = c.l2.Do(ctx, c.l2.B().Publish().Channel(c.invChannel()).Message(payload).Build()).Error()
+	opCtx, opCancel := c.l2ctx(ctx)
+	defer opCancel()
+	_ = c.l2.Do(opCtx, c.l2.B().Publish().Channel(c.invChannel()).Message(payload).Build()).Error()
 }
 
 // stopInvalidationSubscriber cancels the subscriber goroutine and waits for
