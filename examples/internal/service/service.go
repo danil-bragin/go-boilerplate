@@ -55,7 +55,7 @@ type Service struct {
 	h           *health.Health
 	adminServer *httpserver.Server
 	goroutines  []goroutineFunc
-	runCtx      context.Context    //nolint:containedctx
+	runCtx      context.Context //nolint:containedctx
 	cancelRun   context.CancelFunc
 }
 
