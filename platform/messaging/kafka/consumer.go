@@ -56,6 +56,10 @@ func NewConsumer(cfg Config, topics ...string) (*Consumer, error) {
 		// precedence and this reset no longer applies — so it does NOT cause
 		// reprocessing on restart.
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+		// Read only committed records so that aborted transactions from
+		// TransactConsumer (EOS kafka→kafka pipelines) are never visible to
+		// regular consumers. Has no observable effect on non-transactional topics.
+		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: NewConsumer: %w", err)

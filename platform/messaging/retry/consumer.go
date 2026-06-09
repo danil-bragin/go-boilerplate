@@ -117,6 +117,9 @@ func NewConsumer(
 		kgo.DisableAutoCommit(),
 		kgo.BlockRebalanceOnPoll(),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+		// Read only committed records to respect EOS producers; no behaviour
+		// change on non-transactional retry-tier topics.
+		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("retry: NewConsumer: %w", err)
