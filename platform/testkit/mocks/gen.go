@@ -2,8 +2,8 @@
 // Regenerate with: go generate ./platform/testkit/mocks/...
 package mocks
 
-//go:generate go run github.com/matryer/moq@v0.5.3 -out publisher_mock.go -pkg mocks -rm ../../outbox Publisher
+//go:generate go run github.com/matryer/moq@v0.5.3 -out publisher_mock.go -pkg mocks -rm ../../messaging/outbox Publisher
 //go:generate go run github.com/matryer/moq@v0.5.3 -out cache_mock.go -pkg mocks -rm ../../cqrs Cache
-//go:generate go run github.com/matryer/moq@v0.5.3 -out verifier_mock.go -pkg mocks -rm ../../auth Verifier
-//go:generate go run github.com/matryer/moq@v0.5.3 -out objectstore_mock.go -pkg mocks -rm ../../blob ObjectStore
-//go:generate go run github.com/matryer/moq@v0.5.3 -out store_mock.go -pkg mocks -rm ../../audit Store
+//go:generate go run github.com/matryer/moq@v0.5.3 -out verifier_mock.go -pkg mocks -rm ../../security/auth Verifier
+//go:generate go run github.com/matryer/moq@v0.5.3 -out objectstore_mock.go -pkg mocks -rm ../../storage/blob ObjectStore
+//go:generate go run github.com/matryer/moq@v0.5.3 -out store_mock.go -pkg mocks -rm ../../security/audit Store

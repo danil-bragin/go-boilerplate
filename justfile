@@ -32,7 +32,7 @@ gen:
     sqlc generate -f examples/gateway/internal/store/sqlc.yaml
     sqlc generate -f examples/orders/internal/store/sqlc.yaml
     sqlc generate -f examples/payments/internal/store/sqlc.yaml
-    sqlc generate -f platform/outbox/sqlc.yaml
+    sqlc generate -f platform/messaging/outbox/sqlc.yaml
     go generate ./platform/testkit/mocks/...
 
 # Regenerate moq mocks for platform interfaces
