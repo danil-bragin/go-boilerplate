@@ -26,7 +26,7 @@ func (q *Queries) DeletePublishedBefore(ctx context.Context, publishedAt pgtype.
 }
 
 const fetchUnpublished = `-- name: FetchUnpublished :many
-select id, aggregate_type, aggregate_id, event_type, payload, headers, created_at
+select id, topic, aggregate_type, aggregate_id, event_type, payload, headers, created_at
 from outbox
 where published_at is null
 order by created_at
@@ -36,6 +36,7 @@ for update skip locked
 
 type FetchUnpublishedRow struct {
 	ID            uuid.UUID
+	Topic         string
 	AggregateType string
 	AggregateID   string
 	EventType     string
@@ -55,6 +56,7 @@ func (q *Queries) FetchUnpublished(ctx context.Context, limit int32) ([]FetchUnp
 		var i FetchUnpublishedRow
 		if err := rows.Scan(
 			&i.ID,
+			&i.Topic,
 			&i.AggregateType,
 			&i.AggregateID,
 			&i.EventType,
@@ -73,12 +75,13 @@ func (q *Queries) FetchUnpublished(ctx context.Context, limit int32) ([]FetchUnp
 }
 
 const insertOutbox = `-- name: InsertOutbox :exec
-insert into outbox (id, aggregate_type, aggregate_id, event_type, payload, headers)
-values ($1, $2, $3, $4, $5, $6)
+insert into outbox (id, topic, aggregate_type, aggregate_id, event_type, payload, headers)
+values ($1, $2, $3, $4, $5, $6, $7)
 `
 
 type InsertOutboxParams struct {
 	ID            uuid.UUID
+	Topic         string
 	AggregateType string
 	AggregateID   string
 	EventType     string
@@ -87,9 +90,9 @@ type InsertOutboxParams struct {
 }
 
 func (q *Queries) InsertOutbox(ctx context.Context, arg InsertOutboxParams) error {
-	_, err := q.db.Exec(
-		ctx, insertOutbox,
+	_, err := q.db.Exec(ctx, insertOutbox,
 		arg.ID,
+		arg.Topic,
 		arg.AggregateType,
 		arg.AggregateID,
 		arg.EventType,

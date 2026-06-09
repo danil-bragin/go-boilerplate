@@ -23,9 +23,12 @@ import (
 	"go-boilerplate/examples/payments/internal/transport"
 	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/config"
+	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/run"
 	"go-boilerplate/platform/security/audit"
+
+	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
 // Config aggregates all configuration for the payments service.
@@ -73,6 +76,14 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		return nil, err
 	}
 
+	// Schema Registry (no-op when SERDE_SR_URL is unset).
+	if err := svc.RegisterSchema(ctx, cfg.EventsTopic, transport.OrderCreatedEventType, &ordersv1.OrderCreated{}); err != nil {
+		return nil, err
+	}
+	if err := svc.RegisterSchema(ctx, "payments.events", "orders.PaymentProcessed.v1", &ordersv1.PaymentProcessed{}); err != nil {
+		return nil, err
+	}
+
 	// Outbox relay + cleaner (publishes PaymentProcessed events).
 	outboxRepo := outbox.NewRepository(svc.Pool())
 	svc.AddOutboxRelay(svc.DefaultOutboxPublisher(), outbox.RelayConfig{
@@ -83,7 +94,11 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	auditStore := audit.NewPgStore(svc.Pool())
 	rawHandler := app.ProcessPaymentHandler(svc.Pool(), outboxRepo)
 	decoratedHandler := app.DecorateProcessPaymentHandler(rawHandler, auditStore)
-	evtHandler := transport.NewEventHandler(svc.Pool(), decoratedHandler)
+	var consumeOpts []consume.Option
+	if sd := svc.Serde(); sd != nil {
+		consumeOpts = append(consumeOpts, consume.WithSerde(sd))
+	}
+	evtHandler := transport.NewEventHandler(svc.Pool(), decoratedHandler, consumeOpts...)
 
 	// Register consumer; harness wraps with WithRetry+DLT automatically.
 	if err := svc.AddConsumer(ctx, "payments", []string{cfg.EventsTopic}, evtHandler); err != nil {

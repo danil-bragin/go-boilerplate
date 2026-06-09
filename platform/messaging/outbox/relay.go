@@ -155,6 +155,7 @@ func (r *Relay) ProcessBatch(ctx context.Context) (int, error) {
 		for i, row := range rows {
 			msgs[i] = Message{
 				ID:            row.ID,
+				Topic:         row.Topic,
 				AggregateType: row.AggregateType,
 				AggregateID:   row.AggregateID,
 				EventType:     row.EventType,

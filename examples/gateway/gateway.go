@@ -56,11 +56,13 @@ import (
 	"go-boilerplate/examples/gateway/internal/projection"
 	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/config"
+	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/run"
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/web/httpserver"
 
 	gatewayapp "go-boilerplate/examples/gateway/internal/app"
+	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
 // Option is a functional option for [NewApp].
@@ -133,6 +135,18 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		return nil, err
 	}
 
+	// Schema Registry (no-op when SERDE_SR_URL is unset): commands the gateway
+	// produces and events the projection consumes.
+	if err := svc.RegisterSchema(ctx, cfg.CommandsTopic, "orders.CreateOrderCommand.v1", &ordersv1.CreateOrderCommand{}); err != nil {
+		return nil, err
+	}
+	if err := svc.RegisterSchema(ctx, cfg.OrdersEventsTopic, projection.OrderCreatedEventType, &ordersv1.OrderCreated{}); err != nil {
+		return nil, err
+	}
+	if err := svc.RegisterSchema(ctx, cfg.PaymentsEventsTopic, projection.PaymentProcessedEventType, &ordersv1.PaymentProcessed{}); err != nil {
+		return nil, err
+	}
+
 	// Parse trusted-proxy CIDRs (fail fast on invalid CIDR).
 	trustedPrefixes, err := ParseTrustedProxies(cfg.TrustedProxies)
 	if err != nil {
@@ -152,7 +166,11 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	decoratedGetOrder := gatewayapp.DecorateGetOrderHandler(rawGetOrder, appCache)
 
 	// Projection consumer subscribes to both events topics.
-	projHandler := projection.NewHandler(svc.Pool(), svc.Logger(), appCache)
+	var consumeOpts []consume.Option
+	if sd := svc.Serde(); sd != nil {
+		consumeOpts = append(consumeOpts, consume.WithSerde(sd))
+	}
+	projHandler := projection.NewHandler(svc.Pool(), svc.Logger(), appCache, consumeOpts...)
 	if err := svc.AddConsumer(
 		ctx, "gateway-projection",
 		[]string{cfg.OrdersEventsTopic, cfg.PaymentsEventsTopic},
@@ -177,6 +195,9 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		decoratedGetOrder,
 		cfg.AuthDisabled,
 	)
+	if sd := svc.Serde(); sd != nil {
+		apiServer.SetEncoder(sd)
+	}
 
 	// Apply edge security and mount all routes.
 	applyEdgeSecurity(cfg, httpSrv.Mux(), limiter, trustedPrefixes)

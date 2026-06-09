@@ -1,9 +1,9 @@
 -- name: InsertOutbox :exec
-insert into outbox (id, aggregate_type, aggregate_id, event_type, payload, headers)
-values ($1, $2, $3, $4, $5, $6);
+insert into outbox (id, topic, aggregate_type, aggregate_id, event_type, payload, headers)
+values ($1, $2, $3, $4, $5, $6, $7);
 
 -- name: FetchUnpublished :many
-select id, aggregate_type, aggregate_id, event_type, payload, headers, created_at
+select id, topic, aggregate_type, aggregate_id, event_type, payload, headers, created_at
 from outbox
 where published_at is null
 order by created_at

@@ -109,7 +109,7 @@ func TestGateway_ProjectionAndGetOrder(t *testing.T) {
 	orderID := uuid.New().String()
 
 	// Produce an OrderCreated event to orders.events.
-	produceEvent(t, broker, "orders.events", "OrderCreated", orderID, func() proto.Message {
+	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
 		return &ordersv1.OrderCreated{
 			OrderId:     orderID,
 			CustomerId:  "cust-proj",
@@ -123,7 +123,7 @@ func TestGateway_ProjectionAndGetOrder(t *testing.T) {
 
 	// Produce a PaymentProcessed event to payments.events.
 	paymentID := uuid.New().String()
-	produceEvent(t, broker, "payments.events", "PaymentProcessed", orderID, func() proto.Message {
+	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", orderID, func() proto.Message {
 		return &ordersv1.PaymentProcessed{
 			OrderId:   orderID,
 			PaymentId: paymentID,
@@ -381,7 +381,7 @@ func TestGateway_ProjectionPaidBeforeCreatedStillPaid(t *testing.T) {
 
 	// Step 1: produce PaymentProcessed FIRST (no OrderCreated yet).
 	paymentID := uuid.New().String()
-	produceEvent(t, broker, "payments.events", "PaymentProcessed", orderID, func() proto.Message {
+	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", orderID, func() proto.Message {
 		return &ordersv1.PaymentProcessed{
 			OrderId:   orderID,
 			PaymentId: paymentID,
@@ -393,7 +393,7 @@ func TestGateway_ProjectionPaidBeforeCreatedStillPaid(t *testing.T) {
 	pollOrderStatus(t, baseURL, orderID, "paid", 30*time.Second)
 
 	// Step 2: produce OrderCreated LATE — must NOT downgrade status to "created".
-	produceEvent(t, broker, "orders.events", "OrderCreated", orderID, func() proto.Message {
+	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
 		return &ordersv1.OrderCreated{
 			OrderId:     orderID,
 			CustomerId:  "cust-reorder",
@@ -518,7 +518,7 @@ func TestGateway_GetOrderCachedSecondCallSkipsDB(t *testing.T) {
 		orderID := uuid.New().String()
 
 		// Seed the projection by producing an OrderCreated event.
-		produceEvent(t, broker, "orders.events", "OrderCreated", orderID, func() proto.Message {
+		produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
 			return &ordersv1.OrderCreated{
 				OrderId:     orderID,
 				CustomerId:  "cust-cache",

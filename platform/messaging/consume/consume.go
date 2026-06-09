@@ -1,0 +1,185 @@
+// Package consume provides the standard typed Kafka consumer pipeline used by
+// every service in this repository. It bundles the per-record concerns that
+// were previously copy-pasted into each service transport:
+//
+//   - event-type header dispatch using versioned names ("orders.OrderCreated.v1");
+//     unknown or missing event types are SKIPPED with a log line (forward
+//     compatible — new producers must not break old consumers), never errored.
+//   - payload decoding: Schema Registry wire format when a serde is injected
+//     (WithSerde), raw proto.Unmarshal otherwise.
+//   - uniform message-id policy: the "message-id" header (set by the outbox
+//     publisher to the outbox row id) with a "topic:partition:offset" fallback
+//     for records produced outside the outbox path.
+//   - idempotency: the typed handler runs inside inbox.ProcessOnce, so the
+//     side effect and the dedup marker commit atomically.
+//   - principal propagation: principal-sub / principal-roles headers are
+//     installed into ctx before the handler runs (see auth.ExtractToContext) —
+//     audit trails record the real actor, not "anonymous".
+//
+// Usage:
+//
+//	handler := consume.New(pool, "gateway-projection", consume.WithLogger(l)).Handler(
+//	    consume.Typed("orders.OrderCreated.v1", onOrderCreated),
+//	    consume.Typed("orders.PaymentProcessed.v1", onPaymentProcessed),
+//	)
+//	svc.AddConsumer(ctx, "gateway-projection", topics, handler)
+package consume
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+
+	"go-boilerplate/platform/messaging/inbox"
+	"go-boilerplate/platform/messaging/kafka"
+	"go-boilerplate/platform/messaging/serde"
+	"go-boilerplate/platform/storage/pg"
+
+	"google.golang.org/protobuf/proto"
+)
+
+// Consumer builds kafka.HandlerFuncs that share a pool, inbox consumer-group
+// name, decoder, and logger.
+type Consumer struct {
+	pool   *pg.Pool
+	group  string
+	dec    serde.Deserializer // nil → raw proto.Unmarshal
+	logger *slog.Logger
+}
+
+// Option configures a Consumer.
+type Option func(*Consumer)
+
+// WithSerde injects a Schema Registry deserializer; record values are then
+// expected in the Confluent wire format. Without it, values are decoded with
+// plain proto.Unmarshal. Must match the producer side (SERDE_SR_URL).
+func WithSerde(d serde.Deserializer) Option {
+	return func(c *Consumer) { c.dec = d }
+}
+
+// WithLogger sets the logger used for skip lines (default slog.Default()).
+func WithLogger(l *slog.Logger) Option {
+	return func(c *Consumer) { c.logger = l }
+}
+
+// New creates a Consumer. group is the inbox consumer name — messages are
+// processed at most once per (group, message-id).
+func New(pool *pg.Pool, group string, opts ...Option) *Consumer {
+	c := &Consumer{pool: pool, group: group, logger: slog.Default()}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
+}
+
+// Handler is one typed event handler bound to a versioned event type.
+// Construct with Typed.
+type Handler interface {
+	eventType() string
+	handle(ctx context.Context, dec serde.Deserializer, value []byte) (onCommitted func(context.Context), err error)
+}
+
+type typedHandler[T proto.Message] struct {
+	event       string
+	fn          func(context.Context, T) error
+	onCommitted func(context.Context, T)
+}
+
+// Typed builds a Handler that decodes the record value into T and invokes fn
+// inside the inbox transaction. The optional onCommitted callback (at most
+// one) runs AFTER the inbox transaction commits successfully — use it for
+// post-commit side effects such as cache invalidation that must not run
+// before the write is visible. It does not run for duplicate messages (the
+// original delivery already ran it) nor when the transaction rolled back.
+func Typed[T proto.Message](
+	eventType string,
+	fn func(context.Context, T) error,
+	onCommitted ...func(context.Context, T),
+) Handler {
+	h := typedHandler[T]{event: eventType, fn: fn}
+	if len(onCommitted) > 0 {
+		if len(onCommitted) > 1 {
+			panic("consume.Typed: at most one onCommitted callback")
+		}
+		h.onCommitted = onCommitted[0]
+	}
+	return h
+}
+
+func (h typedHandler[T]) eventType() string { return h.event }
+
+func (h typedHandler[T]) handle(ctx context.Context, dec serde.Deserializer, value []byte) (func(context.Context), error) {
+	// Instantiate a fresh T (T is a pointer type; ProtoReflect works on the
+	// zero value and gives us the message type to allocate).
+	var zero T
+	msg, ok := zero.ProtoReflect().Type().New().Interface().(T)
+	if !ok {
+		return nil, fmt.Errorf("consume: cannot instantiate message for %s", h.event)
+	}
+
+	if dec != nil {
+		if err := dec.Decode(value, msg); err != nil {
+			return nil, fmt.Errorf("consume: decode %s: %w", h.event, err)
+		}
+	} else if err := proto.Unmarshal(value, msg); err != nil {
+		return nil, fmt.Errorf("consume: unmarshal %s: %w", h.event, err)
+	}
+
+	if err := h.fn(ctx, msg); err != nil {
+		return nil, err
+	}
+	if h.onCommitted == nil {
+		return noopCommitted, nil
+	}
+	return func(ctx context.Context) { h.onCommitted(ctx, msg) }, nil
+}
+
+// noopCommitted is the post-commit callback for handlers without one; a
+// non-nil sentinel keeps the (callback, error) return unambiguous.
+func noopCommitted(context.Context) {}
+
+// Handler combines the given typed handlers into a single kafka.HandlerFunc
+// that dispatches on the "event-type" record header. Records whose event type
+// matches none of the handlers are skipped with a debug log line and nil
+// error (committed, never redelivered): unknown events are a forward-
+// compatibility situation, not a failure.
+func (c *Consumer) Handler(handlers ...Handler) kafka.HandlerFunc {
+	byType := make(map[string]Handler, len(handlers))
+	for _, h := range handlers {
+		if _, dup := byType[h.eventType()]; dup {
+			panic(fmt.Sprintf("consume: duplicate handler for event type %q", h.eventType()))
+		}
+		byType[h.eventType()] = h
+	}
+
+	return func(ctx context.Context, r kafka.Record) error {
+		eventType := r.Headers["event-type"]
+		h, ok := byType[eventType]
+		if !ok {
+			c.logger.DebugContext(ctx, "consume: skipping unknown event type",
+				"event_type", eventType, "topic", r.Topic, "group", c.group)
+			return nil
+		}
+
+		// Uniform message-id policy: outbox-stamped header first, stable
+		// topic:partition:offset position as the fallback.
+		msgID := r.Headers["message-id"]
+		if msgID == "" {
+			msgID = fmt.Sprintf("%s:%d:%d", r.Topic, r.Partition, r.Offset)
+		}
+
+		var onCommitted func(context.Context)
+		_, err := inbox.ProcessOnce(ctx, c.pool, c.group, msgID, func(ctx context.Context) error {
+			var err error
+			onCommitted, err = h.handle(ctx, c.dec, r.Value)
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("consume: process %s (id=%s): %w", eventType, msgID, err)
+		}
+		if onCommitted != nil {
+			onCommitted(ctx)
+		}
+		return nil
+	}
+}

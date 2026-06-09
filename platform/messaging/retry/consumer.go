@@ -466,10 +466,12 @@ func recordFromKGO(rec *kgo.Record) kafka.Record {
 		headers[h.Key] = string(h.Value)
 	}
 	return kafka.Record{
-		Topic:   rec.Topic,
-		Key:     rec.Key,
-		Value:   rec.Value,
-		Headers: headers,
+		Topic:     rec.Topic,
+		Key:       rec.Key,
+		Value:     rec.Value,
+		Headers:   headers,
+		Partition: rec.Partition,
+		Offset:    rec.Offset,
 	}
 }
 

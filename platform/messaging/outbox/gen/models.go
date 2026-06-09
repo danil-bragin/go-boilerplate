@@ -20,4 +20,5 @@ type Outbox struct {
 	Headers       json.RawMessage
 	CreatedAt     pgtype.Timestamptz
 	PublishedAt   pgtype.Timestamptz
+	Topic         string
 }

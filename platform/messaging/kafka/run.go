@@ -300,9 +300,11 @@ func recordFromKGO(rec *kgo.Record) Record {
 		headers[h.Key] = string(h.Value)
 	}
 	return Record{
-		Topic:   rec.Topic,
-		Key:     rec.Key,
-		Value:   rec.Value,
-		Headers: headers,
+		Topic:     rec.Topic,
+		Key:       rec.Key,
+		Value:     rec.Value,
+		Headers:   headers,
+		Partition: rec.Partition,
+		Offset:    rec.Offset,
 	}
 }

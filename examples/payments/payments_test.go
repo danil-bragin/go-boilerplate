@@ -137,6 +137,7 @@ func produceOrderCreated(t *testing.T, broker, topic string, evt *ordersv1.Order
 		Value: payload,
 		Headers: map[string]string{
 			"message-id": evt.OrderId,
+			"event-type": "orders.OrderCreated.v1",
 		},
 	}))
 }

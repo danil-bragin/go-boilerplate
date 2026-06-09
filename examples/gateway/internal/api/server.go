@@ -30,6 +30,12 @@ var rbacPolicy = authz.NewRBAC(map[string][]string{
 	"order:create": {"user", "admin"},
 })
 
+// Encoder frames a proto message for the wire (Confluent Schema Registry
+// format). Implemented by serde.Serde; nil means raw protobuf.
+type Encoder interface {
+	Encode(msg proto.Message) ([]byte, error)
+}
+
 // Server implements StrictServerInterface.
 type Server struct {
 	pool            *pg.Pool
@@ -38,7 +44,13 @@ type Server struct {
 	logger          *slog.Logger
 	getOrderHandler cqrs.HandlerFunc[app.GetOrder, app.OrderView]
 	authDisabled    bool
+	encoder         Encoder
 }
+
+// SetEncoder enables Schema Registry wire-format framing of produced command
+// payloads (SERDE_SR_URL). Must be called before the server starts handling
+// requests.
+func (s *Server) SetEncoder(enc Encoder) { s.encoder = enc }
 
 // NewServer creates a new Server wired with the given dependencies.
 //
@@ -104,7 +116,13 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 		AmountCents: body.AmountCents,
 		Currency:    body.Currency,
 	}
-	payload, err := proto.Marshal(cmd)
+	var payload []byte
+	var err error
+	if s.encoder != nil {
+		payload, err = s.encoder.Encode(cmd)
+	} else {
+		payload, err = proto.Marshal(cmd)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("gateway: marshal command: %w", err)
 	}
@@ -117,6 +135,7 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 			Value: payload,
 			Headers: map[string]string{
 				"message-id": orderID,
+				"event-type": "orders.CreateOrderCommand.v1",
 			},
 		})
 	}, resilience.Retry(3, 50*time.Millisecond), resilience.Timeout(2*time.Second))

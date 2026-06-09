@@ -137,6 +137,7 @@ func produceCommand(t *testing.T, broker, topic string, cmd *ordersv1.CreateOrde
 		Value: payload,
 		Headers: map[string]string{
 			"message-id": cmd.OrderId,
+			"event-type": "orders.CreateOrderCommand.v1",
 		},
 	}))
 }
