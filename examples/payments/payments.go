@@ -80,7 +80,10 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if err := svc.RegisterSchema(ctx, cfg.EventsTopic, transport.OrderCreatedEventType, &ordersv1.OrderCreated{}); err != nil {
 		return nil, err
 	}
-	if err := svc.RegisterSchema(ctx, "payments.events", "orders.PaymentProcessed.v1", &ordersv1.PaymentProcessed{}); err != nil {
+	if err := svc.RegisterSchema(ctx, "payments.events", app.PaymentProcessedEventType, &ordersv1.PaymentProcessed{}); err != nil {
+		return nil, err
+	}
+	if err := svc.RegisterSchema(ctx, "payments.events", app.PaymentFailedEventType, &ordersv1.PaymentFailed{}); err != nil {
 		return nil, err
 	}
 

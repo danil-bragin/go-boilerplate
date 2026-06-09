@@ -12,6 +12,7 @@ import (
 	"go-boilerplate/examples/gateway/internal/app"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/messaging/kafka"
+	"go-boilerplate/platform/messaging/msgctx"
 	"go-boilerplate/platform/resilience"
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/security/authz"
@@ -148,9 +149,16 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 	// Propagate the authenticated principal so downstream audit trails record
 	// the real actor (transport metadata, not authentication — see
 	// auth.InjectHeaders for the trust-boundary note).
+	//
+	// correlation-id seeds the chain lineage: the command is the chain root,
+	// so its correlation id is its own message id (= order id). Every event
+	// emitted downstream (OrderCreated, PaymentProcessed/PaymentFailed, …)
+	// carries this same correlation-id, with causation-id pointing at the
+	// direct parent message (see platform/messaging/msgctx).
 	headers := map[string]string{
-		"message-id": orderID,
-		"event-type": "orders.CreateOrderCommand.v1",
+		"message-id":               orderID,
+		"event-type":               "orders.CreateOrderCommand.v1",
+		msgctx.HeaderCorrelationID: orderID,
 	}
 	auth.InjectHeaders(ctx, headers)
 

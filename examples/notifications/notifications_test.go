@@ -199,3 +199,64 @@ func TestNotifications_DuplicateProcessedOnce(t *testing.T) {
 	// Inbox dedup must ensure the notifier is called exactly once.
 	assert.Equal(t, 1, notifCapture.Count(), "inbox dedup must ensure exactly one notification")
 }
+
+// producePaymentFailed publishes a PaymentFailed event to "payments.events".
+func producePaymentFailed(t *testing.T, broker string, evt *ordersv1.PaymentFailed) {
+	t.Helper()
+
+	payload, err := proto.Marshal(evt)
+	require.NoError(t, err)
+
+	cfg := kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "notifications-test-failed-producer",
+	}
+	cl, err := kafka.NewClient(cfg)
+	require.NoError(t, err)
+	p := kafka.NewProducer(cl)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = p.Close(ctx)
+	})
+
+	require.NoError(t, p.Produce(context.Background(), kafka.Record{
+		Topic: "payments.events",
+		Key:   []byte(evt.OrderId),
+		Value: payload,
+		Headers: map[string]string{
+			"message-id": evt.OrderId + "-failed",
+			"event-type": "orders.PaymentFailed.v1",
+		},
+	}))
+}
+
+// TestNotifications_ConsumesPaymentFailed verifies the failure branch: a
+// PaymentFailed event must fire a failure notification (status "failed",
+// empty payment id — no payment was created).
+func TestNotifications_ConsumesPaymentFailed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+
+	notifCapture := &captureNotifier{}
+	buildApp(t, broker, notifCapture)
+
+	orderID := uuid.New().String()
+	producePaymentFailed(t, broker, &ordersv1.PaymentFailed{
+		OrderId: orderID,
+		Reason:  "declined",
+	})
+
+	ok := pollUntil(t, 30*time.Second, func() bool {
+		return notifCapture.Count() >= 1
+	})
+	require.True(t, ok, "failure notifier was not called within timeout")
+
+	got := notifCapture.Get(0)
+	assert.Equal(t, orderID, got[0], "order_id mismatch")
+	assert.Equal(t, "", got[1], "payment_id must be empty for a failed payment")
+	assert.Equal(t, "failed", got[2], "status mismatch")
+}

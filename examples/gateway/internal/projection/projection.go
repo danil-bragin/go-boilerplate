@@ -24,8 +24,10 @@ const consumerGroup = "gateway-projection"
 
 // Versioned event types consumed by the projection.
 const (
-	OrderCreatedEventType     = "orders.OrderCreated.v1"
-	PaymentProcessedEventType = "orders.PaymentProcessed.v1"
+	OrderCreatedEventType         = "orders.OrderCreated.v1"
+	PaymentProcessedEventType     = "orders.PaymentProcessed.v1"
+	PaymentFailedEventType        = "orders.PaymentFailed.v1"
+	OrderPaymentTimedOutEventType = "orders.OrderPaymentTimedOut.v1"
 )
 
 // NewHandler returns a kafka.HandlerFunc that handles both "orders.events"
@@ -70,13 +72,69 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, opts ...co
 					return err
 				}
 				q := storegen.New(pg.FromContext(ctx, pool))
-				if err := q.MarkPaid(ctx, orderID); err != nil {
+				rows, err := q.MarkPaid(ctx, orderID)
+				if err != nil {
 					return fmt.Errorf("projection: mark paid: %w", err)
+				}
+				if rows == 0 {
+					// First terminal state wins: the row is already in a
+					// terminal status (payment_failed/payment_timeout/paid) —
+					// a later conflicting terminal event is ignored, loudly.
+					logger.Warn("projection: PaymentProcessed ignored — order already in a terminal status",
+						"order_id", orderID)
+					return nil
 				}
 				logger.Debug("projection: marked paid", "order_id", orderID)
 				return nil
 			},
 			func(ctx context.Context, evt *ordersv1.PaymentProcessed) {
+				bustOrderCache(ctx, cache, logger, evt.GetOrderId())
+			},
+		),
+		consume.Typed(OrderPaymentTimedOutEventType,
+			func(ctx context.Context, evt *ordersv1.OrderPaymentTimedOut) error {
+				orderID, err := parseOrderID(evt.GetOrderId())
+				if err != nil {
+					return err
+				}
+				q := storegen.New(pg.FromContext(ctx, pool))
+				rows, err := q.MarkPaymentTimeout(ctx, orderID)
+				if err != nil {
+					return fmt.Errorf("projection: mark payment_timeout: %w", err)
+				}
+				if rows == 0 {
+					logger.Warn("projection: OrderPaymentTimedOut ignored — order already in a terminal status",
+						"order_id", orderID)
+					return nil
+				}
+				logger.Debug("projection: marked payment_timeout", "order_id", orderID)
+				return nil
+			},
+			func(ctx context.Context, evt *ordersv1.OrderPaymentTimedOut) {
+				bustOrderCache(ctx, cache, logger, evt.GetOrderId())
+			},
+		),
+		consume.Typed(PaymentFailedEventType,
+			func(ctx context.Context, evt *ordersv1.PaymentFailed) error {
+				orderID, err := parseOrderID(evt.GetOrderId())
+				if err != nil {
+					return err
+				}
+				q := storegen.New(pg.FromContext(ctx, pool))
+				rows, err := q.MarkPaymentFailed(ctx, orderID)
+				if err != nil {
+					return fmt.Errorf("projection: mark payment_failed: %w", err)
+				}
+				if rows == 0 {
+					logger.Warn("projection: PaymentFailed ignored — order already in a terminal status",
+						"order_id", orderID, "reason", evt.GetReason())
+					return nil
+				}
+				logger.Debug("projection: marked payment_failed",
+					"order_id", orderID, "reason", evt.GetReason())
+				return nil
+			},
+			func(ctx context.Context, evt *ordersv1.PaymentFailed) {
 				bustOrderCache(ctx, cache, logger, evt.GetOrderId())
 			},
 		),

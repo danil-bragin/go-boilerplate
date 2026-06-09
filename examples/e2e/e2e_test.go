@@ -23,14 +23,17 @@ import (
 	"go-boilerplate/examples/notifications"
 	"go-boilerplate/examples/orders"
 	"go-boilerplate/examples/payments"
+	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/storage/pg/pgtest"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	gateway "go-boilerplate/examples/gateway"
+	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
 // captureNotifier records all notification invocations in a thread-safe slice.
@@ -288,6 +291,75 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	assert.NotEmpty(t, inv[1], "notification payment_id should be non-empty")
 	assert.Equal(t, "processed", inv[2], "notification status should be 'processed'")
 	t.Logf("Step 4 OK: notification captured for order %s (payment_id=%s, status=%s)", orderID, inv[1], inv[2])
+
+	// --- Step 5: chain lineage — correlation/causation ids across the chain ---
+	// Every event in one order's chain must share correlation-id == the
+	// original command's message id (== order id, seeded by the gateway), and
+	// each causation-id must point at the DIRECT parent message:
+	//
+	//	CreateOrderCommand (message-id = orderID, correlation = orderID)
+	//	  └─ OrderCreated      (causation = orderID)
+	//	       └─ PaymentProcessed (causation = OrderCreated's message-id)
+	t.Log("Step 5: asserting correlation/causation chain on raw event records")
+	orderCreatedRec := consumeRawEvent(t, broker, "orders.events", "orders.OrderCreated.v1", func(value []byte) bool {
+		var evt ordersv1.OrderCreated
+		return proto.Unmarshal(value, &evt) == nil && evt.GetOrderId() == orderID
+	})
+	paymentProcessedRec := consumeRawEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", func(value []byte) bool {
+		var evt ordersv1.PaymentProcessed
+		return proto.Unmarshal(value, &evt) == nil && evt.GetOrderId() == orderID
+	})
+
+	assert.Equal(t, orderID, orderCreatedRec.Headers["correlation-id"],
+		"OrderCreated must carry the chain correlation id (== command id)")
+	assert.Equal(t, orderID, paymentProcessedRec.Headers["correlation-id"],
+		"PaymentProcessed must carry the chain correlation id (== command id)")
+
+	assert.Equal(t, orderID, orderCreatedRec.Headers["causation-id"],
+		"OrderCreated's causation must be the command's message id")
+	require.NotEmpty(t, orderCreatedRec.Headers["message-id"])
+	assert.Equal(t, orderCreatedRec.Headers["message-id"], paymentProcessedRec.Headers["causation-id"],
+		"PaymentProcessed's causation must be OrderCreated's message id")
+	t.Log("Step 5 OK: correlation/causation chain verified")
+}
+
+// consumeRawEvent consumes raw records from topic until one matches the given
+// event-type header and predicate, returning the full record (headers intact).
+func consumeRawEvent(t *testing.T, broker, topic, eventType string, match func(value []byte) bool) kafka.Record {
+	t.Helper()
+
+	cfg := kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "e2e-raw-" + uuid.New().String(),
+		GroupID:  "e2e-raw-" + uuid.New().String(),
+	}
+	consumer, err := kafka.NewConsumer(cfg, []string{topic})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = consumer.Close(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	found := make(chan kafka.Record, 1)
+	go func() {
+		_ = consumer.Run(ctx, func(_ context.Context, r kafka.Record) error {
+			if r.Headers["event-type"] == eventType && match(r.Value) {
+				select {
+				case found <- r:
+				default:
+				}
+			}
+			return nil
+		})
+	}()
+
+	select {
+	case rec := <-found:
+		return rec
+	case <-ctx.Done():
+		t.Fatalf("no %s record matched on topic %s within timeout", eventType, topic)
+		return kafka.Record{}
+	}
 }
 
 // getOrderStatus calls GET /v1/orders/{id} and returns the status string, or "" on

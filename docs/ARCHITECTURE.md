@@ -108,6 +108,12 @@ Client → Gateway (REST POST /v1/orders)
 
 Topics: `orders.commands`, `orders.events`, `payments.events`.
 
+Failure path: payments with `amount_cents >= 1_000_000` are declined (deterministic demo rule) → `PaymentFailed` on `payments.events` → projection status `payment_failed` + failure notification. Orders unpaid past `ORDERS_PAYMENT_DEADLINE` emit `OrderPaymentTimedOut` (orders service unpaid watcher, exactly once) → projection status `payment_timeout`. Projection terminal precedence: `pending < created < {paid, payment_failed, payment_timeout}` — first terminal wins, later terminal events are ignored with a WARN.
+
+Chain lineage: every record carries `correlation-id` (constant per chain, == the root command's message id, seeded by the gateway) and `causation-id` (the direct parent's message id). `consume.Typed` installs both into ctx; `outbox.Enqueue` stamps them onto outgoing events automatically (`platform/messaging/msgctx`).
+
+Projection split seam: the gateway runs the read-model projection embedded by default (`GATEWAY_EMBEDDED_PROJECTION=true`). Setting it to `false` and deploying `examples/gateway/cmd/projection` (consumer-only binary, admin server only) splits the edge from the read-model builder; both share the `gateway-projection` consumer group and inbox, so the handover is safe.
+
 ---
 
 ## DB topology

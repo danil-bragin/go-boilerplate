@@ -233,3 +233,13 @@ func (s *Service) Cfg() Config { return s.cfg }
 
 // AdminAddr returns the actual bound admin server address (useful when :0 was used).
 func (s *Service) AdminAddr() string { return s.adminServer.Addr() }
+
+// AddWorker registers a named background goroutine that Start launches and
+// teardown cancels/waits like any consumer goroutine. fn must return promptly
+// when ctx is cancelled. Must be called before Start.
+func (s *Service) AddWorker(name string, fn func(context.Context)) {
+	s.goroutines = append(s.goroutines, func(ctx context.Context) {
+		s.logger.Debug("worker started", "worker", name)
+		fn(ctx)
+	})
+}

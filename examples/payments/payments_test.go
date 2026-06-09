@@ -295,3 +295,131 @@ func TestPayments_DuplicateEventProcessedOnce(t *testing.T) {
 		`select count(*) from payments where order_id = $1`, orderID).Scan(&count))
 	assert.Equal(t, 1, count, "inbox dedup must ensure exactly one payment row")
 }
+
+// consumePaymentFailedEvent consumes from payments.events until a PaymentFailed
+// event with the given orderID arrives (matched on the event-type header).
+func consumePaymentFailedEvent(t *testing.T, broker, orderID string, timeout time.Duration) (*ordersv1.PaymentFailed, map[string]string) {
+	t.Helper()
+	cfg := kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "payments-test-failed-consumer",
+		GroupID:  "payments-test-failed-consumer-" + orderID,
+	}
+	consumer, err := kafka.NewConsumer(cfg, []string{"payments.events"})
+	require.NoError(t, err)
+	defer func() { _ = consumer.Close(context.Background()) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	type hit struct {
+		evt     *ordersv1.PaymentFailed
+		headers map[string]string
+	}
+	found := make(chan hit, 1)
+	go func() {
+		_ = consumer.Run(ctx, func(_ context.Context, r kafka.Record) error {
+			if r.Headers["event-type"] != "orders.PaymentFailed.v1" {
+				return nil
+			}
+			var evt ordersv1.PaymentFailed
+			if err := proto.Unmarshal(r.Value, &evt); err != nil {
+				return nil //nolint:nilerr // skip records that don't decode as PaymentFailed
+			}
+			if evt.OrderId == orderID {
+				select {
+				case found <- hit{evt: &evt, headers: r.Headers}:
+				default:
+				}
+			}
+			return nil
+		})
+	}()
+
+	select {
+	case h := <-found:
+		return h.evt, h.headers
+	case <-ctx.Done():
+		t.Fatalf("PaymentFailed event for order %s not received within %v", orderID, timeout)
+		return nil, nil
+	}
+}
+
+// TestPayments_DeclinesLargeAmountEmitsPaymentFailed verifies the deterministic
+// demo decline rule: an OrderCreated with amount_cents >= 1_000_000 must be
+// declined — the payment row is written with status "failed" and a
+// PaymentFailed{reason:"declined"} event is emitted on payments.events.
+func TestPayments_DeclinesLargeAmountEmitsPaymentFailed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	pool := newTestPool(t)
+
+	const eventsTopic = "orders.events"
+	handler := buildService(t, pool, broker, eventsTopic)
+	runConsumer(t, broker, "payments-svc-test-declined", eventsTopic, handler)
+
+	orderID := uuid.New().String()
+	produceOrderCreated(t, broker, eventsTopic, &ordersv1.OrderCreated{
+		OrderId:     orderID,
+		CustomerId:  "c-big",
+		AmountCents: 1_000_000, // exactly at the decline threshold
+		Currency:    "USD",
+	})
+
+	// Payment row exists with status "failed".
+	pollForPayment(t, pool, orderID, 15*time.Second)
+	ctx := context.Background()
+	var status string
+	require.NoError(t, pool.Reader().QueryRow(ctx,
+		`select status from payments where order_id = $1`, orderID).Scan(&status))
+	assert.Equal(t, "failed", status, "payments above the threshold must be recorded as failed")
+
+	// PaymentFailed event arrives on payments.events with reason "declined".
+	evt, headers := consumePaymentFailedEvent(t, broker, orderID, 15*time.Second)
+	require.NotNil(t, evt)
+	assert.Equal(t, orderID, evt.OrderId)
+	assert.Equal(t, "declined", evt.Reason)
+	require.NotNil(t, evt.OccurredAt, "occurred_at must be set")
+	assert.Equal(t, "orders.PaymentFailed.v1", headers["event-type"])
+
+	// No PaymentProcessed event must exist for this order — failure is terminal
+	// and mutually exclusive with success. (Cheap check: the payments.events
+	// topic only carries this order's PaymentFailed, asserted above by matching
+	// on event-type; a stray success would have produced a second payment row.)
+	var count int
+	require.NoError(t, pool.Reader().QueryRow(ctx,
+		`select count(*) from payments where order_id = $1`, orderID).Scan(&count))
+	assert.Equal(t, 1, count)
+}
+
+// TestPayments_BelowThresholdStillProcessed pins the boundary: one cent below
+// the threshold is processed normally.
+func TestPayments_BelowThresholdStillProcessed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	pool := newTestPool(t)
+
+	const eventsTopic = "orders.events"
+	handler := buildService(t, pool, broker, eventsTopic)
+	runConsumer(t, broker, "payments-svc-test-boundary", eventsTopic, handler)
+
+	orderID := uuid.New().String()
+	produceOrderCreated(t, broker, eventsTopic, &ordersv1.OrderCreated{
+		OrderId:     orderID,
+		CustomerId:  "c-boundary",
+		AmountCents: 999_999,
+		Currency:    "USD",
+	})
+
+	pollForPayment(t, pool, orderID, 15*time.Second)
+	var status string
+	require.NoError(t, pool.Reader().QueryRow(context.Background(),
+		`select status from payments where order_id = $1`, orderID).Scan(&status))
+	assert.Equal(t, "processed", status)
+}

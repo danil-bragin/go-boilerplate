@@ -3,8 +3,10 @@ package outbox_test
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"testing"
 
+	"go-boilerplate/platform/messaging/msgctx"
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/storage/pg/pgtest"
@@ -73,4 +75,63 @@ func TestEnqueue_RolledBackWithFailedTx(t *testing.T) {
 	require.NoError(t, pool.Reader().QueryRow(ctx,
 		`select count(*) from outbox where id=$1`, id).Scan(&count))
 	require.Equal(t, 0, count, "enqueue must roll back with the business tx")
+}
+
+func TestEnqueue_StampsCorrelationCausationFromContext(t *testing.T) {
+	pool := newPoolWithSchema(t)
+	ctx := context.Background()
+	repo := outbox.NewRepository(pool)
+
+	readHeaders := func(id uuid.UUID) map[string]string {
+		var raw []byte
+		require.NoError(t, pool.Reader().QueryRow(ctx,
+			`select headers from outbox where id=$1`, id).Scan(&raw))
+		var h map[string]string
+		require.NoError(t, json.Unmarshal(raw, &h))
+		return h
+	}
+
+	t.Run("from consumer context", func(t *testing.T) {
+		id := uuid.New()
+		msgCtx := msgctx.WithParentMessageID(msgctx.WithCorrelationID(ctx, "root-cmd"), "parent-msg")
+		require.NoError(t, pg.RunInTx(msgCtx, pool, func(ctx context.Context) error {
+			return repo.Enqueue(ctx, outbox.Message{
+				ID: id, Topic: "orders.events", AggregateType: "order",
+				AggregateID: "1", EventType: "X", Payload: []byte(`{}`),
+			})
+		}))
+		h := readHeaders(id)
+		require.Equal(t, "root-cmd", h["correlation-id"], "correlation-id must be stamped from ctx")
+		require.Equal(t, "parent-msg", h["causation-id"], "causation-id must be the parent message id")
+	})
+
+	t.Run("no chain in ctx: correlation defaults to own id, no causation", func(t *testing.T) {
+		id := uuid.New()
+		require.NoError(t, pg.RunInTx(ctx, pool, func(ctx context.Context) error {
+			return repo.Enqueue(ctx, outbox.Message{
+				ID: id, Topic: "orders.events", AggregateType: "order",
+				AggregateID: "2", EventType: "X", Payload: []byte(`{}`),
+			})
+		}))
+		h := readHeaders(id)
+		require.Equal(t, id.String(), h["correlation-id"], "chain root: correlation = own message id")
+		_, hasCausation := h["causation-id"]
+		require.False(t, hasCausation, "no parent in ctx → no causation-id header")
+	})
+
+	t.Run("explicit headers win over ctx", func(t *testing.T) {
+		id := uuid.New()
+		msgCtx := msgctx.WithParentMessageID(msgctx.WithCorrelationID(ctx, "ctx-corr"), "ctx-parent")
+		require.NoError(t, pg.RunInTx(msgCtx, pool, func(ctx context.Context) error {
+			return repo.Enqueue(ctx, outbox.Message{
+				ID: id, Topic: "orders.events", AggregateType: "order",
+				AggregateID: "3", EventType: "X", Payload: []byte(`{}`),
+				Headers: []byte(`{"correlation-id":"explicit-corr","causation-id":"explicit-parent","custom":"v"}`),
+			})
+		}))
+		h := readHeaders(id)
+		require.Equal(t, "explicit-corr", h["correlation-id"])
+		require.Equal(t, "explicit-parent", h["causation-id"])
+		require.Equal(t, "v", h["custom"], "pre-existing custom headers must survive stamping")
+	})
 }

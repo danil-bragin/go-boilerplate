@@ -143,7 +143,13 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if err := svc.RegisterSchema(ctx, cfg.OrdersEventsTopic, projection.OrderCreatedEventType, &ordersv1.OrderCreated{}); err != nil {
 		return nil, err
 	}
+	if err := svc.RegisterSchema(ctx, cfg.OrdersEventsTopic, projection.OrderPaymentTimedOutEventType, &ordersv1.OrderPaymentTimedOut{}); err != nil {
+		return nil, err
+	}
 	if err := svc.RegisterSchema(ctx, cfg.PaymentsEventsTopic, projection.PaymentProcessedEventType, &ordersv1.PaymentProcessed{}); err != nil {
+		return nil, err
+	}
+	if err := svc.RegisterSchema(ctx, cfg.PaymentsEventsTopic, projection.PaymentFailedEventType, &ordersv1.PaymentFailed{}); err != nil {
 		return nil, err
 	}
 
@@ -166,18 +172,25 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	decoratedGetOrder := gatewayapp.DecorateGetOrderHandler(rawGetOrder, appCache)
 	decoratedListOrders := gatewayapp.DecorateListOrdersHandler(gatewayapp.ListOrdersHandler(svc.Pool()))
 
-	// Projection consumer subscribes to both events topics.
-	var consumeOpts []consume.Option
-	if sd := svc.Serde(); sd != nil {
-		consumeOpts = append(consumeOpts, consume.WithSerde(sd))
-	}
-	projHandler := projection.NewHandler(svc.Pool(), svc.Logger(), appCache, consumeOpts...)
-	if err := svc.AddConsumer(
-		ctx, "gateway-projection",
-		[]string{cfg.OrdersEventsTopic, cfg.PaymentsEventsTopic},
-		projHandler,
-	); err != nil {
-		return nil, err
+	// Projection consumer subscribes to both events topics. With
+	// GATEWAY_EMBEDDED_PROJECTION=false the consumer is NOT registered here —
+	// the standalone projection binary (cmd/projection) owns the group
+	// instead, and this process is a pure HTTP edge.
+	if cfg.EmbeddedProjection {
+		var consumeOpts []consume.Option
+		if sd := svc.Serde(); sd != nil {
+			consumeOpts = append(consumeOpts, consume.WithSerde(sd))
+		}
+		projHandler := projection.NewHandler(svc.Pool(), svc.Logger(), appCache, consumeOpts...)
+		if err := svc.AddConsumer(
+			ctx, "gateway-projection",
+			[]string{cfg.OrdersEventsTopic, cfg.PaymentsEventsTopic},
+			projHandler,
+		); err != nil {
+			return nil, err
+		}
+	} else {
+		svc.Logger().Info("gateway: embedded projection disabled — expecting a standalone projection deployment (cmd/projection)")
 	}
 
 	// Public HTTP server (separate from the admin server on AdminAddr).

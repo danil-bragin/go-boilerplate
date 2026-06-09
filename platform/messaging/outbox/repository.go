@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"go-boilerplate/platform/messaging/msgctx"
 	"go-boilerplate/platform/messaging/outbox/gen"
 	"go-boilerplate/platform/storage/pg"
 )
@@ -24,11 +25,14 @@ func NewRepository(pool *pg.Pool) *Repository {
 // Enqueue inserts a message into the outbox using the context's DBTX.
 // Message.Topic defaults to Message.AggregateType when empty (legacy callers
 // that encoded the topic in the aggregate type).
+//
+// Chain lineage is stamped automatically (see platform/messaging/msgctx):
+// "correlation-id" is taken from ctx (set by consume.Typed), defaulting to
+// the message's own id when this message starts a new chain; "causation-id"
+// is the parent message id from ctx when present. Explicit values already in
+// Message.Headers always win — stamping never overwrites.
 func (r *Repository) Enqueue(ctx context.Context, msg Message) error {
-	headers := msg.Headers
-	if headers == nil {
-		headers = []byte("{}")
-	}
+	headers := stampChainHeaders(ctx, msg)
 	topic := msg.Topic
 	if topic == "" {
 		topic = msg.AggregateType
@@ -47,4 +51,36 @@ func (r *Repository) Enqueue(ctx context.Context, msg Message) error {
 		return fmt.Errorf("outbox: enqueue: %w", err)
 	}
 	return nil
+}
+
+// stampChainHeaders merges correlation/causation ids from ctx into the
+// message's JSON headers. Malformed Message.Headers are passed through
+// untouched (the kafka publisher already tolerates and drops them — a poison
+// row must not fail the enqueue path either).
+func stampChainHeaders(ctx context.Context, msg Message) []byte {
+	h := map[string]string{}
+	if len(msg.Headers) > 0 {
+		if err := json.Unmarshal(msg.Headers, &h); err != nil {
+			return msg.Headers // not a JSON object — leave as-is
+		}
+	}
+	if _, ok := h[msgctx.HeaderCorrelationID]; !ok {
+		if corr := msgctx.CorrelationID(ctx); corr != "" {
+			h[msgctx.HeaderCorrelationID] = corr
+		} else {
+			// This message starts a new chain: correlate to itself so every
+			// downstream event still shares one chain id.
+			h[msgctx.HeaderCorrelationID] = msg.ID.String()
+		}
+	}
+	if _, ok := h[msgctx.HeaderCausationID]; !ok {
+		if parent := msgctx.ParentMessageID(ctx); parent != "" {
+			h[msgctx.HeaderCausationID] = parent
+		}
+	}
+	out, err := json.Marshal(h)
+	if err != nil {
+		return []byte("{}") // unreachable for map[string]string; defensive
+	}
+	return out
 }

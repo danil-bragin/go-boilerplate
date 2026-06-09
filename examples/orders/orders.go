@@ -36,6 +36,14 @@ import (
 type Config struct {
 	servicekit.Config
 	CommandsTopic string `env:"ORDERS_COMMANDS_TOPIC" envDefault:"orders.commands"`
+	// PaymentsEventsTopic is consumed to record payment outcomes on order rows
+	// (paid / payment_failed) so the unpaid watcher is a pure local query.
+	PaymentsEventsTopic string `env:"PAYMENTS_EVENTS_TOPIC" envDefault:"payments.events"`
+	// UnpaidCheckInterval is how often the unpaid-order watcher polls.
+	UnpaidCheckInterval time.Duration `env:"ORDERS_UNPAID_CHECK_INTERVAL" envDefault:"1m"`
+	// PaymentDeadline is how long an order may stay 'created' (unpaid) before
+	// an OrderPaymentTimedOut event is emitted.
+	PaymentDeadline time.Duration `env:"ORDERS_PAYMENT_DEADLINE" envDefault:"15m"`
 }
 
 // Option is a functional option for [NewApp].
@@ -74,7 +82,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	a.svc = svc
 
 	// Ensure topics (commands, events); DLT topics handled by AddConsumer.
-	if err := svc.EnsureTopics(ctx, cfg.CommandsTopic, "orders.events"); err != nil {
+	if err := svc.EnsureTopics(ctx, cfg.CommandsTopic, "orders.events", cfg.PaymentsEventsTopic); err != nil {
 		return nil, err
 	}
 
@@ -84,6 +92,15 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		return nil, err
 	}
 	if err := svc.RegisterSchema(ctx, "orders.events", "orders.OrderCreated.v1", &ordersv1.OrderCreated{}); err != nil {
+		return nil, err
+	}
+	if err := svc.RegisterSchema(ctx, "orders.events", app.OrderPaymentTimedOutEventType, &ordersv1.OrderPaymentTimedOut{}); err != nil {
+		return nil, err
+	}
+	if err := svc.RegisterSchema(ctx, cfg.PaymentsEventsTopic, transport.PaymentProcessedEventType, &ordersv1.PaymentProcessed{}); err != nil {
+		return nil, err
+	}
+	if err := svc.RegisterSchema(ctx, cfg.PaymentsEventsTopic, transport.PaymentFailedEventType, &ordersv1.PaymentFailed{}); err != nil {
 		return nil, err
 	}
 
@@ -107,6 +124,19 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if err := svc.AddConsumerWithRetry(ctx, "orders-consumer", []string{cfg.CommandsTopic}, cmdHandler, retry.DefaultPolicy()); err != nil {
 		return nil, err
 	}
+
+	// Payment-outcome consumer: records paid/payment_failed on the local order
+	// rows (inbox-deduped) so the unpaid watcher below never needs to look
+	// beyond this service's own database.
+	paymentsHandler := transport.NewPaymentsEventHandler(svc.Pool(), svc.Logger(), consumeOpts...)
+	if err := svc.AddConsumer(ctx, "orders-payments", []string{cfg.PaymentsEventsTopic}, paymentsHandler); err != nil {
+		return nil, err
+	}
+
+	// Unpaid-order watcher: emits OrderPaymentTimedOut (via outbox, exactly
+	// once per order) for orders still 'created' past the payment deadline.
+	watcher := app.NewUnpaidWatcher(svc.Pool(), outboxRepo, cfg.UnpaidCheckInterval, cfg.PaymentDeadline, svc.Logger())
+	svc.AddWorker("unpaid-watcher", watcher.Run)
 
 	// Launch audit_log cleanup; defaults to 90-day retention / 6-hour interval.
 	svc.AddAuditCleanup(auditStore, cfg.AuditCleanupInterval, cfg.AuditRetention)

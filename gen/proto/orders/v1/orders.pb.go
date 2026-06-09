@@ -9,6 +9,7 @@ package ordersv1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -234,11 +235,137 @@ func (x *PaymentProcessed) GetStatus() string {
 	return ""
 }
 
+// OrderPaymentTimedOut is the domain event emitted by the orders service when
+// an order has stayed unpaid past the configured payment deadline
+// (ORDERS_PAYMENT_DEADLINE). Emitted at most once per order by the unpaid
+// watcher; consumers treat it as a terminal payment outcome unless a payment
+// outcome (paid/failed) was already recorded.
+type OrderPaymentTimedOut struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// order_id is the identifier of the order whose payment window expired.
+	OrderId string `protobuf:"bytes,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	// deadline is the instant the payment window expired (created_at + deadline).
+	Deadline      *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=deadline,proto3" json:"deadline,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OrderPaymentTimedOut) Reset() {
+	*x = OrderPaymentTimedOut{}
+	mi := &file_orders_v1_orders_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OrderPaymentTimedOut) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OrderPaymentTimedOut) ProtoMessage() {}
+
+func (x *OrderPaymentTimedOut) ProtoReflect() protoreflect.Message {
+	mi := &file_orders_v1_orders_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OrderPaymentTimedOut.ProtoReflect.Descriptor instead.
+func (*OrderPaymentTimedOut) Descriptor() ([]byte, []int) {
+	return file_orders_v1_orders_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *OrderPaymentTimedOut) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+func (x *OrderPaymentTimedOut) GetDeadline() *timestamppb.Timestamp {
+	if x != nil {
+		return x.Deadline
+	}
+	return nil
+}
+
+// PaymentFailed is the domain event emitted when the payments service declines
+// (or fails to process) a payment for an order. It is the failure branch of
+// the choreography: consumers must treat it as a terminal payment outcome for
+// the order, mutually exclusive with PaymentProcessed.
+type PaymentFailed struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// order_id is the identifier of the order whose payment failed.
+	OrderId string `protobuf:"bytes,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"`
+	// reason is a short machine-readable failure reason (e.g. "declined").
+	Reason string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	// occurred_at is when the payments service recorded the failure.
+	OccurredAt    *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PaymentFailed) Reset() {
+	*x = PaymentFailed{}
+	mi := &file_orders_v1_orders_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PaymentFailed) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PaymentFailed) ProtoMessage() {}
+
+func (x *PaymentFailed) ProtoReflect() protoreflect.Message {
+	mi := &file_orders_v1_orders_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PaymentFailed.ProtoReflect.Descriptor instead.
+func (*PaymentFailed) Descriptor() ([]byte, []int) {
+	return file_orders_v1_orders_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *PaymentFailed) GetOrderId() string {
+	if x != nil {
+		return x.OrderId
+	}
+	return ""
+}
+
+func (x *PaymentFailed) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *PaymentFailed) GetOccurredAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.OccurredAt
+	}
+	return nil
+}
+
 var File_orders_v1_orders_proto protoreflect.FileDescriptor
 
 const file_orders_v1_orders_proto_rawDesc = "" +
 	"\n" +
-	"\x16orders/v1/orders.proto\x12\torders.v1\"\x8f\x01\n" +
+	"\x16orders/v1/orders.proto\x12\torders.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8f\x01\n" +
 	"\x12CreateOrderCommand\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\tR\aorderId\x12\x1f\n" +
 	"\vcustomer_id\x18\x02 \x01(\tR\n" +
@@ -255,7 +382,15 @@ const file_orders_v1_orders_proto_rawDesc = "" +
 	"\border_id\x18\x01 \x01(\tR\aorderId\x12\x1d\n" +
 	"\n" +
 	"payment_id\x18\x02 \x01(\tR\tpaymentId\x12\x16\n" +
-	"\x06status\x18\x03 \x01(\tR\x06statusB\x8e\x01\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\"i\n" +
+	"\x14OrderPaymentTimedOut\x12\x19\n" +
+	"\border_id\x18\x01 \x01(\tR\aorderId\x126\n" +
+	"\bdeadline\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\bdeadline\"\x7f\n" +
+	"\rPaymentFailed\x12\x19\n" +
+	"\border_id\x18\x01 \x01(\tR\aorderId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12;\n" +
+	"\voccurred_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
+	"occurredAtB\x8e\x01\n" +
 	"\rcom.orders.v1B\vOrdersProtoP\x01Z+go-boilerplate/gen/proto/orders/v1;ordersv1\xa2\x02\x03OXX\xaa\x02\tOrders.V1\xca\x02\tOrders\\V1\xe2\x02\x15Orders\\V1\\GPBMetadata\xea\x02\n" +
 	"Orders::V1b\x06proto3"
 
@@ -271,18 +406,23 @@ func file_orders_v1_orders_proto_rawDescGZIP() []byte {
 	return file_orders_v1_orders_proto_rawDescData
 }
 
-var file_orders_v1_orders_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_orders_v1_orders_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_orders_v1_orders_proto_goTypes = []any{
-	(*CreateOrderCommand)(nil), // 0: orders.v1.CreateOrderCommand
-	(*OrderCreated)(nil),       // 1: orders.v1.OrderCreated
-	(*PaymentProcessed)(nil),   // 2: orders.v1.PaymentProcessed
+	(*CreateOrderCommand)(nil),    // 0: orders.v1.CreateOrderCommand
+	(*OrderCreated)(nil),          // 1: orders.v1.OrderCreated
+	(*PaymentProcessed)(nil),      // 2: orders.v1.PaymentProcessed
+	(*OrderPaymentTimedOut)(nil),  // 3: orders.v1.OrderPaymentTimedOut
+	(*PaymentFailed)(nil),         // 4: orders.v1.PaymentFailed
+	(*timestamppb.Timestamp)(nil), // 5: google.protobuf.Timestamp
 }
 var file_orders_v1_orders_proto_depIdxs = []int32{
-	0, // [0:0] is the sub-list for method output_type
-	0, // [0:0] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	5, // 0: orders.v1.OrderPaymentTimedOut.deadline:type_name -> google.protobuf.Timestamp
+	5, // 1: orders.v1.PaymentFailed.occurred_at:type_name -> google.protobuf.Timestamp
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_orders_v1_orders_proto_init() }
@@ -296,7 +436,7 @@ func file_orders_v1_orders_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orders_v1_orders_proto_rawDesc), len(file_orders_v1_orders_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
