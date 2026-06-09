@@ -9,6 +9,7 @@ import (
 
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/kafka"
+	"go-boilerplate/platform/messaging/msgctx"
 	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/storage/pg/pgtest"
 
@@ -250,4 +251,42 @@ func TestTyped_OnCommittedRunsAfterTx(t *testing.T) {
 	}, 0, 11)
 	require.NoError(t, h(ctx, rec))
 	assert.EqualValues(t, 1, committed.Load())
+}
+
+func TestTyped_CorrelationCausationInContext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (postgres container)")
+	}
+	t.Parallel()
+	ctx := context.Background()
+	pool := newPool(t)
+
+	var gotCorr, gotParent string
+	h := consume.New(pool, "grp").Handler(
+		consume.Typed("orders.OrderCreated.v1", func(ctx context.Context, _ *ordersv1.OrderCreated) error {
+			gotCorr = msgctx.CorrelationID(ctx)
+			gotParent = msgctx.ParentMessageID(ctx)
+			return nil
+		}),
+	)
+
+	// Record WITH a correlation-id header: both ids visible in ctx.
+	rec := orderCreatedRecord(t, map[string]string{
+		"event-type":     "orders.OrderCreated.v1",
+		"message-id":     "m-corr-1",
+		"correlation-id": "root-cmd-id",
+	}, 0, 21)
+	require.NoError(t, h(ctx, rec))
+	assert.Equal(t, "root-cmd-id", gotCorr, "correlation-id header must propagate to ctx")
+	assert.Equal(t, "m-corr-1", gotParent, "current message-id must become the causation parent")
+
+	// Record WITHOUT a correlation-id header: this message starts the chain,
+	// so correlation falls back to its own message id.
+	rec = orderCreatedRecord(t, map[string]string{
+		"event-type": "orders.OrderCreated.v1",
+		"message-id": "m-corr-2",
+	}, 0, 22)
+	require.NoError(t, h(ctx, rec))
+	assert.Equal(t, "m-corr-2", gotCorr, "missing correlation-id must default to the message id")
+	assert.Equal(t, "m-corr-2", gotParent)
 }

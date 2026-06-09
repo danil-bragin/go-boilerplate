@@ -32,6 +32,7 @@ import (
 
 	"go-boilerplate/platform/messaging/inbox"
 	"go-boilerplate/platform/messaging/kafka"
+	"go-boilerplate/platform/messaging/msgctx"
 	"go-boilerplate/platform/messaging/serde"
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/storage/pg"
@@ -173,6 +174,17 @@ func (c *Consumer) Handler(handlers ...Handler) kafka.HandlerFunc {
 		if msgID == "" {
 			msgID = fmt.Sprintf("%s:%d:%d", r.Topic, r.Partition, r.Offset)
 		}
+
+		// Chain lineage: propagate the correlation id (falling back to this
+		// record's message id when it starts a chain) and make this message
+		// the causation parent of everything the handler emits. The outbox
+		// repository stamps both onto enqueued messages automatically.
+		corrID := r.Headers[msgctx.HeaderCorrelationID]
+		if corrID == "" {
+			corrID = msgID
+		}
+		ctx = msgctx.WithCorrelationID(ctx, corrID)
+		ctx = msgctx.WithParentMessageID(ctx, msgID)
 
 		var onCommitted func(context.Context)
 		_, err := inbox.ProcessOnce(ctx, c.pool, c.group, msgID, func(ctx context.Context) error {
