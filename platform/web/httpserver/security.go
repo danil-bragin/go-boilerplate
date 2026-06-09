@@ -37,8 +37,9 @@ func SecurityHeaders(next http.Handler) http.Handler {
 // CORSOptions configures the CORS middleware.
 type CORSOptions struct {
 	// AllowedOrigins is the list of origins that may make cross-origin requests.
-	// Use []string{"*"} to allow any origin (not recommended for credentialed
-	// requests). Defaults to an empty list (no origin allowed).
+	// Empty (the default) means DENY ALL: no Access-Control-Allow-Origin header
+	// is ever emitted and preflights are rejected with 403. Use []string{"*"}
+	// to allow any origin (dev only — never with credentialed requests).
 	AllowedOrigins []string
 
 	// AllowedMethods is the list of HTTP methods allowed for cross-origin requests.
@@ -56,10 +57,16 @@ type CORSOptions struct {
 
 // CORS returns a minimal, hand-rolled CORS middleware (no heavy dependency).
 //
-// It handles preflight OPTIONS requests by writing the appropriate
-// Access-Control-Allow-* headers and returning 204. For actual requests it
-// appends the Access-Control-Allow-Origin header when the Origin matches an
-// allowed origin.
+// Behaviour:
+//   - Deny-by-default: with no AllowedOrigins configured, no
+//     Access-Control-Allow-* header is ever emitted.
+//   - Allowed preflight OPTIONS → 204 with the Access-Control-Allow-* headers.
+//   - Disallowed preflight → 403 with NO CORS headers.
+//   - Actual requests from an allowed origin get Access-Control-Allow-Origin;
+//     disallowed origins get none (the browser blocks the response).
+//   - Vary: Origin is always set when the request carries an Origin header, so
+//     shared caches never serve a response with one origin's CORS headers to
+//     another origin.
 //
 // For production use with credentials (cookies / Authorization headers) set
 // AllowedOrigins to the exact allowed origin(s); never use "*" with
@@ -86,6 +93,9 @@ func CORS(opts CORSOptions) func(http.Handler) http.Handler {
 	originSet := make(map[string]bool, len(opts.AllowedOrigins))
 	allowAll := false
 	for _, o := range opts.AllowedOrigins {
+		if o == "" {
+			continue // tolerate empty entries from env parsing ("" default = deny-all)
+		}
 		if o == "*" {
 			allowAll = true
 		}
@@ -101,17 +111,24 @@ func CORS(opts CORSOptions) func(http.Handler) http.Handler {
 				return
 			}
 
+			// The response depends on the Origin request header from here on:
+			// caches must key on it (cache-poisoning defence).
+			w.Header().Add("Vary", "Origin")
+
 			allowed := allowAll || originSet[origin]
 
 			if r.Method == http.MethodOptions {
 				// Preflight request.
-				if allowed {
-					h := w.Header()
-					h.Set("Access-Control-Allow-Origin", origin)
-					h.Set("Access-Control-Allow-Methods", methodsStr)
-					h.Set("Access-Control-Allow-Headers", headersStr)
-					h.Set("Access-Control-Max-Age", maxAgeStr)
+				if !allowed {
+					// No CORS headers for disallowed origins; reject outright.
+					w.WriteHeader(http.StatusForbidden)
+					return
 				}
+				h := w.Header()
+				h.Set("Access-Control-Allow-Origin", origin)
+				h.Set("Access-Control-Allow-Methods", methodsStr)
+				h.Set("Access-Control-Allow-Headers", headersStr)
+				h.Set("Access-Control-Max-Age", maxAgeStr)
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}

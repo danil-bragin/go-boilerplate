@@ -56,9 +56,9 @@ func responseErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 
 // applyEdgeSecurity adds CORS and per-IP rate-limit middleware to the mux.
 //
-// CORS is applied only when cfg.CORSOrigins is set. For demo/local the
-// default allows all origins. In production set GATEWAY_CORS_ORIGINS to
-// an explicit comma-separated list and remove the "*" wildcard.
+// CORS is deny-by-default: with GATEWAY_CORS_ORIGINS unset (the default) no
+// cross-origin browser access is allowed. Set an explicit comma-separated
+// origin list in production, or "*" for local dev/demo only.
 //
 // The rate limiter is keyed by real client IP: RemoteAddr unless the request
 // arrives via a trusted proxy, in which case X-Forwarded-For is consulted.

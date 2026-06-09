@@ -30,9 +30,10 @@ type Config struct {
 	// Empty disables the check.
 	AuthRequiredAZP string `env:"AUTH_REQUIRED_AZP" envDefault:""`
 	// CORSOrigins is the list of allowed CORS origins for the public HTTP server.
-	// Use ["*"] for dev/demo. In production set explicit origins.
-	// Default "*" allows any origin (demo-safe; auth should enforce identity).
-	CORSOrigins []string `env:"GATEWAY_CORS_ORIGINS"          envSeparator:"," envDefault:"*"`
+	// Default empty = DENY ALL cross-origin browser requests (no ACAO header
+	// emitted, preflights rejected). Set explicit origins in production, or
+	// "*" for local dev/demo only — never "*" with credentialed requests.
+	CORSOrigins []string `env:"GATEWAY_CORS_ORIGINS"          envSeparator:"," envDefault:""`
 	// RatelimitRPS is the sustained token refill rate (requests per second per IP).
 	RatelimitRPS float64 `env:"RATELIMIT_RPS"   envDefault:"50"`
 	// RatelimitBurst is the maximum burst depth per IP.

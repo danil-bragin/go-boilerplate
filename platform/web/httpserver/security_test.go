@@ -73,8 +73,11 @@ func TestCORS_PreflightAndAllowOrigin(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 
-		require.Equal(t, http.StatusNoContent, rec.Code, "preflight still returns 204 but no CORS headers")
+		require.Equal(t, http.StatusForbidden, rec.Code, "disallowed preflight must be rejected")
 		require.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"), "disallowed origin must not get CORS header")
+		require.Empty(t, rec.Header().Get("Access-Control-Allow-Methods"))
+		require.Empty(t, rec.Header().Get("Access-Control-Allow-Headers"))
+		require.Equal(t, "Origin", rec.Header().Get("Vary"))
 	})
 
 	t.Run("actual request from allowed origin gets ACAO header", func(t *testing.T) {
@@ -97,6 +100,54 @@ func TestCORS_PreflightAndAllowOrigin(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rec.Code)
 		require.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
+		require.Empty(t, rec.Header().Get("Vary"), "no Origin header → no Vary needed")
+	})
+
+	t.Run("Vary Origin always present when Origin sent", func(t *testing.T) {
+		for _, origin := range []string{"https://example.com", "https://evil.com"} {
+			req := httptest.NewRequest(http.MethodGet, "/orders", http.NoBody)
+			req.Header.Set("Origin", origin)
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			require.Equal(t, "Origin", rec.Header().Get("Vary"),
+				"Vary: Origin must be set for origin %s (cache poisoning defence)", origin)
+		}
+	})
+}
+
+// TestCORS_EmptyOriginsDenyAll: the zero-config default is deny-all — no
+// Access-Control-Allow-Origin is ever emitted, for any origin, on either the
+// preflight or the actual request path.
+func TestCORS_EmptyOriginsDenyAll(t *testing.T) {
+	h := httpserver.CORS(httpserver.CORSOptions{})(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	)
+
+	t.Run("actual request gets no ACAO", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+		req.Header.Set("Origin", "https://anything.example")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code, "request itself still served (CORS is a browser control)")
+		require.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
+		require.Equal(t, "Origin", rec.Header().Get("Vary"))
+	})
+
+	t.Run("preflight denied", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodOptions, "/", http.NoBody)
+		req.Header.Set("Origin", "https://anything.example")
+		req.Header.Set("Access-Control-Request-Method", "POST")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusForbidden, rec.Code)
+		require.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
+		require.Empty(t, rec.Header().Get("Access-Control-Allow-Methods"))
 	})
 }
 
