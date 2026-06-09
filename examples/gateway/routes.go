@@ -7,13 +7,52 @@ import (
 	"go-boilerplate/examples/gateway/internal/api"
 	"go-boilerplate/examples/gateway/internal/attachments"
 	"go-boilerplate/platform/featureflags"
+	"go-boilerplate/platform/observability/log"
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/storage/blob"
 	"go-boilerplate/platform/web/httpserver"
+	"go-boilerplate/platform/web/httpx"
 	"go-boilerplate/platform/web/ratelimit"
 
 	"github.com/go-chi/chi/v5"
 )
+
+// requestErrorHandler maps request-binding errors (malformed JSON, bad params)
+// from the strict handler to an RFC7807 400. Binding errors describe the
+// client's own input, so the message is safe to echo.
+func requestErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
+	ctx := r.Context()
+	log.From(ctx).InfoContext(ctx, "gateway: request binding error",
+		"error", err,
+		"request_id", httpserver.RequestIDFromContext(ctx),
+	)
+	httpx.WriteProblem(w, httpx.Problem{
+		Status: http.StatusBadRequest,
+		Title:  "Bad Request",
+		Detail: err.Error(),
+	})
+}
+
+// responseErrorHandler maps handler errors from the strict handler to RFC7807
+// responses. Auth errors keep their status (401/403); everything else is an
+// internal failure: the real error is LOGGED (with request_id for correlation)
+// and the client receives only a generic problem — internal error strings
+// (DSNs, hosts, stack details) must never leak through the edge.
+func responseErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
+	if api.WriteAuthError(w, err) {
+		return
+	}
+	ctx := r.Context()
+	log.From(ctx).ErrorContext(ctx, "gateway: handler error",
+		"error", err,
+		"request_id", httpserver.RequestIDFromContext(ctx),
+	)
+	httpx.WriteProblem(w, httpx.Problem{
+		Status: http.StatusInternalServerError,
+		Title:  "Internal Server Error",
+		Detail: "internal error",
+	})
+}
 
 // applyEdgeSecurity adds CORS and per-IP rate-limit middleware to the mux.
 //
@@ -39,17 +78,11 @@ func mountAPIRoutes(
 	apiServer api.StrictServerInterface,
 	verifier auth.Verifier,
 ) {
-	// Wrap handler errors: map authError → 403/401, others → 500.
+	// Wrap handler errors: map authError → 403/401, others → generic RFC7807
+	// (real error logged, never echoed — see responseErrorHandler).
 	strictOpts := api.StrictHTTPServerOptions{
-		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		},
-		ResponseErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
-			if api.WriteAuthError(w, err) {
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		},
+		RequestErrorHandlerFunc:  requestErrorHandler,
+		ResponseErrorHandlerFunc: responseErrorHandler,
 	}
 	strictHandler := api.NewStrictHandlerWithOptions(apiServer, nil, strictOpts)
 
