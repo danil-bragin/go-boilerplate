@@ -128,8 +128,10 @@ jobs:
 
       - name: Check gofumpt formatting
         run: |
-          unformatted=$(go run mvdan.cc/gofumpt@latest -l \
-            $(git ls-files '*.go' | grep -vE 'gen/|\.pb\.go|_mock\.go'))
+          # Exclude generated files by their standard "// Code generated ... DO NOT EDIT." header
+          # (covers gen/*.pb.go, *_mock.go, oapi gen.go, sqlc output) rather than fragile path globs.
+          src=$(git ls-files '*.go' | xargs grep -L '^// Code generated')
+          unformatted=$(go run mvdan.cc/gofumpt@latest -l $src)
           if [ -n "$unformatted" ]; then
             echo "The following files are not formatted with gofumpt:"
             echo "$unformatted"
