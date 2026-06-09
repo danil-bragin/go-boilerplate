@@ -18,7 +18,8 @@ func NewClient(cfg Config, extra ...kgo.Opt) (*kgo.Client, error) {
 	)
 
 	opts := make([]kgo.Opt, 0, 3+len(extra))
-	opts = append(opts,
+	opts = append(
+		opts,
 		kgo.SeedBrokers(cfg.Brokers...),
 		kgo.ClientID(cfg.ClientID),
 		kgo.WithHooks(kt.Hooks()...),
