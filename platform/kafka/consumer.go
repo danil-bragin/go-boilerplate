@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -16,7 +17,7 @@ import (
 type HandlerFunc func(ctx context.Context, r Record) error
 
 // Consumer wraps a *kgo.Client configured for cooperative-sticky group
-// consumption with manual offset commit.
+// consumption with manual offset commit and per-partition parallel processing.
 type Consumer struct {
 	cl *kgo.Client
 }
@@ -31,6 +32,9 @@ type Consumer struct {
 //   - kgo.ConsumeTopics(topics...)
 //   - kgo.Balancers(kgo.CooperativeStickyBalancer())
 //   - kgo.DisableAutoCommit()
+//   - kgo.BlockRebalanceOnPoll() — prevents a rebalance from occurring between
+//     PollFetches and AllowRebalance, so concurrent partition processing cannot
+//     accidentally commit offsets for partitions that have been revoked.
 func NewConsumer(cfg Config, topics ...string) (*Consumer, error) {
 	if cfg.GroupID == "" {
 		return nil, errors.New("kafka: NewConsumer: cfg.GroupID must not be empty")
@@ -44,6 +48,7 @@ func NewConsumer(cfg Config, topics ...string) (*Consumer, error) {
 		kgo.ConsumeTopics(topics...),
 		kgo.Balancers(kgo.CooperativeStickyBalancer()),
 		kgo.DisableAutoCommit(),
+		kgo.BlockRebalanceOnPoll(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: NewConsumer: %w", err)
@@ -52,36 +57,33 @@ func NewConsumer(cfg Config, topics ...string) (*Consumer, error) {
 	return &Consumer{cl: cl}, nil
 }
 
-// Run enters a poll loop, calling h for each record received from the broker.
+// Run enters a poll loop, processing partitions concurrently within each poll
+// and committing all successful offsets in a single batch RPC per poll.
 //
-// Commit semantics (at-least-once, per-record):
-//   - After h returns nil the record's offset is committed synchronously via
-//     CommitRecords before the next record is processed.
-//   - If h returns a non-nil error the loop breaks out of the current batch
-//     and returns to PollFetches without committing the failed record or any
-//     subsequent records in the same batch. Those offsets will be redelivered
-//     on the next assignment.
+// Concurrency model:
+//   - Each call to PollFetches may return records from multiple partitions.
+//   - One goroutine is launched per partition (via sync.WaitGroup). Within a
+//     partition records are processed SEQUENTIALLY, preserving per-partition
+//     ordering.
+//   - After all partition goroutines finish, the last successfully-handled
+//     record from EACH partition is committed in a single CommitRecords call
+//     (one OffsetCommit RPC for the whole poll instead of one per record).
+//   - kgo.BlockRebalanceOnPoll() ensures no rebalance can occur between
+//     PollFetches and AllowRebalance(), so concurrent processing is safe.
+//     AllowRebalance() is called after every commit, even on error.
+//
+// Failure semantics (at-least-once, per-partition):
+//   - Within a partition, on the first handler error processing stops for that
+//     partition. The failing record and all subsequent records in that partition
+//     are NOT committed and will be redelivered. Other partitions are
+//     unaffected and commit their own progress independently.
 //
 // Duplicate-delivery window:
 //   - There is a small window between a successful handler return and the
-//     CommitRecords RPC completing.  If the process crashes or a rebalance
+//     CommitRecords RPC completing. If the process crashes or a rebalance
 //     occurs in that window the record will be redelivered after the partition
-//     is reassigned.  Consumers MUST be idempotent and deduplicate by a
-//     stable idempotency key (e.g. an inbox table keyed on message-id).
-//
-// DLQ / dead-letter behaviour (WithRetry):
-//   - When using WithRetry, a record that exhausts all retry attempts is
-//     produced to the dead-letter topic and the wrapper returns nil so the
-//     consumer commits the offset (park-and-commit).  This means the
-//     handler for records on the DLT must also be idempotent; use the inbox
-//     pattern to deduplicate replays.
-//
-// Fetch/commit error swallowing:
-//   - Non-fatal fetch-level errors (e.g. transient broker errors, auth
-//     hiccups) are currently swallowed so the poll loop can resume once the
-//     condition clears.  Commit errors from CommitRecords are similarly
-//     swallowed (the record may be redelivered but will not be lost).
-//     SP5 will add structured logging and metrics for these discarded errors.
+//     is reassigned. Consumers MUST be idempotent and deduplicate by a stable
+//     idempotency key (e.g. an inbox table keyed on message-id).
 //
 // The loop stops when ctx is cancelled; Run returns ctx.Err() in that case.
 // It also returns if the underlying client is closed (ErrClientClosed).
@@ -91,50 +93,85 @@ func (c *Consumer) Run(ctx context.Context, h HandlerFunc) error {
 
 		// Stop if the caller cancelled the context.
 		if ctx.Err() != nil {
+			c.cl.AllowRebalance()
 			return ctx.Err()
 		}
 
 		// Stop if the client itself has been closed.
 		if fetches.IsClientClosed() {
+			c.cl.AllowRebalance()
 			return nil
 		}
 
-		// Log / handle fetch-level errors.  Context and client-closed errors
-		// are already handled above.  Other errors (e.g. auth, data-loss) are
-		// non-fatal for the poll loop: log them and continue so the client can
-		// resume once the underlying condition is resolved.
+		// Handle fetch-level errors. Context and client-closed errors are
+		// already handled above. Other errors are non-fatal for the poll loop.
 		for _, fe := range fetches.Errors() {
 			if errors.Is(fe.Err, context.Canceled) || errors.Is(fe.Err, context.DeadlineExceeded) {
+				c.cl.AllowRebalance()
 				return fe.Err
 			}
 			if errors.Is(fe.Err, kgo.ErrClientClosed) {
+				c.cl.AllowRebalance()
 				return nil
 			}
-			// Non-fatal: log and continue (real implementations would use
-			// a structured logger; keep it simple for the platform layer).
-			_ = fe.Err // swallow; iterator will skip errored partitions
+			// Non-fatal: swallow; errored partitions are skipped by the iterator.
+			_ = fe.Err
 		}
 
-		// Process records one at a time.  Break on the first handler failure
-		// so un-processed records are redelivered.
-		var handlerErr error
-		fetches.EachRecord(func(rec *kgo.Record) {
-			if handlerErr != nil {
-				// A previous record in this batch already failed; skip the rest.
-				return
-			}
+		// Collect the last successfully-handled record per partition.
+		// mu guards lastGood; each goroutine writes to its own slot after
+		// finishing, so contention is minimal.
+		var (
+			mu       sync.Mutex
+			lastGood []*kgo.Record
+		)
 
-			r := recordFromKGO(rec)
-			if err := h(ctx, r); err != nil {
-				handlerErr = err
-				return
-			}
+		// Launch one goroutine per partition; preserve per-partition ordering.
+		var wg sync.WaitGroup
 
-			// Commit immediately after a successful handler invocation.
-			// Errors here are non-fatal for the record (it may already be
-			// committed or will be retried on the next session).
-			_ = c.cl.CommitRecords(ctx, rec)
+		fetches.EachPartition(func(p kgo.FetchTopicPartition) {
+			// Capture by value so the closure is safe to run concurrently.
+			part := p
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				var (
+					last   *kgo.Record
+					failed bool
+				)
+				part.EachRecord(func(rec *kgo.Record) {
+					if failed {
+						// A previous record in this partition failed; skip the rest
+						// so the offset does not advance past the failure point.
+						return
+					}
+					r := recordFromKGO(rec)
+					if err := h(ctx, r); err != nil {
+						// Stop processing this partition; the failing record and
+						// everything after it will be redelivered.
+						failed = true
+						return
+					}
+					last = rec
+				})
+				if last != nil {
+					mu.Lock()
+					lastGood = append(lastGood, last)
+					mu.Unlock()
+				}
+			}()
 		})
+
+		// Wait for all partition goroutines to finish.
+		wg.Wait()
+
+		// Commit all successfully-processed partitions in one RPC.
+		if len(lastGood) > 0 {
+			_ = c.cl.CommitRecords(ctx, lastGood...)
+		}
+
+		// Allow the next rebalance now that we have committed.
+		c.cl.AllowRebalance()
 	}
 }
 

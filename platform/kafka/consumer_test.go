@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/twmb/franz-go/pkg/kgo"
 
 	"go-boilerplate/platform/kafka"
 	"go-boilerplate/platform/kafka/kafkatest"
@@ -265,4 +267,303 @@ func TestConsumer_HandlerErrorRedeliversRecord(t *testing.T) {
 	// proving the broker redelivered the uncommitted offset from phase 1.
 	assert.GreaterOrEqual(t, int(secondCallCount.Load()), 1,
 		"second consumer must receive the redelivered record at least once")
+}
+
+// TestConsumer_PerPartitionParallelOrdering verifies that:
+//  1. Within each partition, records are processed in order (no reordering).
+//  2. Partitions are processed concurrently: total wall-time is significantly
+//     less than the serial upper bound (nRecords * sleepPerRecord).
+//
+// Three partitions are created and records are routed explicitly via
+// ManualPartitioner. Each record carries a monotonically increasing sequence
+// number per partition. The handler sleeps a few ms to make parallel speedup
+// observable, then records the sequence in the order it was called. After all
+// records are consumed the test asserts (a) each partition's sequences are in
+// ascending order and (b) total elapsed < nPartitions * nPerPartition *
+// sleepPerRecord * 0.7 (i.e. ≥30 % faster than fully serial).
+func TestConsumer_PerPartitionParallelOrdering(t *testing.T) {
+	broker, _ := kafkatest.NewRedpanda(t)
+
+	const (
+		topic          = "parallel-ordering-topic"
+		groupID        = "parallel-ordering-group"
+		nPartitions    = 3
+		nPerPartition  = 4
+		sleepPerRecord = 10 * time.Millisecond
+	)
+
+	ctx := context.Background()
+
+	// Admin client: create the topic with nPartitions partitions.
+	adminCl, err := kafka.NewClient(kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "parallel-admin",
+	})
+	require.NoError(t, err)
+	defer adminCl.Close()
+
+	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, nPartitions, 1, topic))
+
+	// Produce nPerPartition records to each partition with explicit partition
+	// assignment. Key encodes "p<partition>-<seq>" for later validation.
+	rawCl, err := kgo.NewClient(
+		kgo.SeedBrokers(broker),
+		kgo.DefaultProduceTopic(topic),
+		kgo.RecordPartitioner(kgo.ManualPartitioner()),
+	)
+	require.NoError(t, err)
+	defer rawCl.Close()
+
+	for p := int32(0); p < nPartitions; p++ {
+		for seq := 0; seq < nPerPartition; seq++ {
+			rec := &kgo.Record{
+				Topic:     topic,
+				Partition: p,
+				Key:       []byte(fmt.Sprintf("p%d", p)),
+				Value:     []byte(fmt.Sprintf("%d", seq)),
+			}
+			if err := rawCl.ProduceSync(ctx, rec).FirstErr(); err != nil {
+				t.Fatalf("produce to partition %d seq %d: %v", p, seq, err)
+			}
+		}
+	}
+
+	// consumed tracks the order records were processed: partition → []seq.
+	// firstRecordAt is set atomically when the very first record is handed to
+	// the handler; this excludes consumer-group-join latency from the timing
+	// assertion so CI overhead does not cause false failures.
+	var (
+		mu            sync.Mutex
+		consumed      = make(map[int32][]int)
+		total         = int32(0)
+		allDone       = make(chan struct{})
+		firstRecordAt atomic.Pointer[time.Time]
+	)
+	const nTotal = nPartitions * nPerPartition
+
+	consumer, err := kafka.NewConsumer(kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "parallel-ordering-consumer",
+		GroupID:  groupID,
+	}, topic)
+	require.NoError(t, err)
+
+	runCtx, cancelRun := context.WithTimeout(ctx, 60*time.Second)
+	defer cancelRun()
+
+	go func() {
+		_ = consumer.Run(runCtx, func(_ context.Context, r kafka.Record) error {
+			// Record wall-clock when first record enters the handler.
+			now := time.Now()
+			firstRecordAt.CompareAndSwap(nil, &now)
+
+			// Simulate work per record.
+			time.Sleep(sleepPerRecord)
+
+			var seq int
+			fmt.Sscanf(string(r.Value), "%d", &seq)
+
+			// Determine partition from the key ("p0", "p1", "p2").
+			var part int32
+			fmt.Sscanf(string(r.Key)[1:], "%d", &part)
+
+			mu.Lock()
+			consumed[part] = append(consumed[part], seq)
+			n := atomic.AddInt32(&total, 1)
+			mu.Unlock()
+
+			if n >= nTotal {
+				select {
+				case <-allDone:
+				default:
+					close(allDone)
+				}
+			}
+			return nil
+		})
+	}()
+
+	select {
+	case <-allDone:
+	case <-runCtx.Done():
+		t.Fatal("timed out waiting for all records")
+	}
+
+	// Measure processing duration from first-record-entered to allDone.
+	// This deliberately excludes group-join latency, which varies with
+	// container startup and has nothing to do with parallelism.
+	startPtr := firstRecordAt.Load()
+	require.NotNil(t, startPtr, "firstRecordAt must be set")
+	elapsed := time.Since(*startPtr)
+
+	cancelRun()
+	consumer.Close()
+
+	// (a) Per-partition ordering: sequences must be in ascending order.
+	mu.Lock()
+	defer mu.Unlock()
+
+	for p := int32(0); p < nPartitions; p++ {
+		seqs := consumed[p]
+		require.Len(t, seqs, nPerPartition, "partition %d: wrong record count", p)
+		sorted := make([]int, len(seqs))
+		copy(sorted, seqs)
+		sort.Ints(sorted)
+		assert.Equal(t, sorted, seqs, "partition %d: records out of order: %v", p, seqs)
+	}
+
+	// (b) Parallel speedup: fully serial processing would take
+	//     nPartitions * nPerPartition * sleepPerRecord (= 120ms here).
+	//     With 3 concurrent partitions the ideal is ~nPerPartition*sleep (= 40ms).
+	//     We assert elapsed < 70% of serial to prove overlap, using only
+	//     in-handler time (group-join latency excluded above).
+	serialBound := time.Duration(nPartitions*nPerPartition) * sleepPerRecord
+	parallelBound := serialBound * 70 / 100
+	assert.Less(t, elapsed, parallelBound,
+		"processing elapsed %v should be < 70%% of serial bound %v — partitions may not be running concurrently",
+		elapsed, parallelBound)
+}
+
+// TestConsumer_OnePartitionFailureDoesNotBlockOthers verifies per-partition
+// failure isolation: a handler that always fails for one partition's records
+// must not prevent the other partition's records from being committed.
+//
+// Setup: 2-partition topic. Partition 0 records fail the handler forever;
+// partition 1 records always succeed. After the healthy partition has been
+// fully consumed, the context is cancelled. A second consumer (same group)
+// then joins and should see zero records from partition 1 (all committed) but
+// at least one redelivery from partition 0 (never committed).
+func TestConsumer_OnePartitionFailureDoesNotBlockOthers(t *testing.T) {
+	broker, _ := kafkatest.NewRedpanda(t)
+
+	const (
+		topic         = "partition-isolation-topic"
+		groupID       = "partition-isolation-group"
+		nHealthy      = 3
+		healthyPartID = int32(1)
+		failingPartID = int32(0)
+	)
+
+	ctx := context.Background()
+
+	// Admin setup.
+	adminCl, err := kafka.NewClient(kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "isolation-admin",
+	})
+	require.NoError(t, err)
+	defer adminCl.Close()
+
+	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, 2, 1, topic))
+
+	// Produce to specific partitions.
+	rawCl, err := kgo.NewClient(
+		kgo.SeedBrokers(broker),
+		kgo.DefaultProduceTopic(topic),
+		kgo.RecordPartitioner(kgo.ManualPartitioner()),
+	)
+	require.NoError(t, err)
+	defer rawCl.Close()
+
+	// One record on the failing partition.
+	require.NoError(t, rawCl.ProduceSync(ctx, &kgo.Record{
+		Topic:     topic,
+		Partition: failingPartID,
+		Key:       []byte("fail"),
+		Value:     []byte("should-never-commit"),
+	}).FirstErr())
+
+	// nHealthy records on the healthy partition.
+	for i := 0; i < nHealthy; i++ {
+		require.NoError(t, rawCl.ProduceSync(ctx, &kgo.Record{
+			Topic:     topic,
+			Partition: healthyPartID,
+			Key:       []byte("ok"),
+			Value:     []byte(fmt.Sprintf("healthy-%d", i)),
+		}).FirstErr())
+	}
+
+	// Phase 1: consume; healthy partition succeeds, failing partition always errors.
+	var (
+		healthyCount atomic.Int32
+		healthyDone  = make(chan struct{})
+		healthyOnce  sync.Once
+	)
+
+	c1, err := kafka.NewConsumer(kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "isolation-consumer-1",
+		GroupID:  groupID,
+	}, topic)
+	require.NoError(t, err)
+
+	c1Ctx, cancelC1 := context.WithTimeout(ctx, 60*time.Second)
+	defer cancelC1()
+
+	c1Done := make(chan struct{})
+	go func() {
+		defer close(c1Done)
+		_ = c1.Run(c1Ctx, func(_ context.Context, r kafka.Record) error {
+			if string(r.Key) == "fail" {
+				return errors.New("intentional failure")
+			}
+			n := healthyCount.Add(1)
+			if int(n) >= nHealthy {
+				healthyOnce.Do(func() { close(healthyDone) })
+			}
+			return nil
+		})
+	}()
+
+	// Wait until all healthy records are processed.
+	select {
+	case <-healthyDone:
+		// Give CommitRecords a moment to land before cancelling.
+		time.Sleep(300 * time.Millisecond)
+	case <-c1Ctx.Done():
+		t.Fatal("timed out waiting for healthy partition records to be consumed")
+	}
+
+	cancelC1()
+	<-c1Done
+	c1.Close()
+
+	assert.GreaterOrEqual(t, int(healthyCount.Load()), nHealthy,
+		"healthy partition should have processed all %d records", nHealthy)
+
+	// Phase 2: second consumer in same group.
+	// Healthy partition: 0 redeliveries (all committed).
+	// Failing partition: ≥1 redelivery (never committed).
+	var (
+		mu2         sync.Mutex
+		redelivered = make(map[string]int) // key → count
+	)
+
+	c2, err := kafka.NewConsumer(kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "isolation-consumer-2",
+		GroupID:  groupID,
+	}, topic)
+	require.NoError(t, err)
+
+	c2Ctx, cancelC2 := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelC2()
+
+	_ = c2.Run(c2Ctx, func(_ context.Context, r kafka.Record) error {
+		mu2.Lock()
+		redelivered[string(r.Key)]++
+		mu2.Unlock()
+		return nil
+	})
+	c2.Close()
+
+	mu2.Lock()
+	okCount := redelivered["ok"]
+	failCount := redelivered["fail"]
+	mu2.Unlock()
+
+	assert.Equal(t, 0, okCount,
+		"healthy partition must have 0 redeliveries; got %d", okCount)
+	assert.GreaterOrEqual(t, failCount, 1,
+		"failing partition must redeliver at least 1 record; got %d", failCount)
 }
