@@ -59,6 +59,9 @@ func headerVal(rec *kgo.Record, key string) string {
 // then produced to the DLT with the correct headers/key/value.  The wrapped
 // handler must return nil (commit).
 func TestWithRetry_RoutesToDLTAfterMaxAttempts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
 	broker, _ := kafkatest.NewRedpanda(t)
 	ctx := context.Background()
 
@@ -119,6 +122,9 @@ func TestWithRetry_RoutesToDLTAfterMaxAttempts(t *testing.T) {
 // succeeds before exhausting MaxAttempts the wrapper returns nil and
 // nothing is produced to the DLT.
 func TestWithRetry_SucceedsWithinAttempts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
 	broker, _ := kafkatest.NewRedpanda(t)
 	ctx := context.Background()
 
@@ -167,6 +173,9 @@ func TestWithRetry_SucceedsWithinAttempts(t *testing.T) {
 // during the backoff sleep causes the wrapper to return ctx.Err() without
 // writing to the DLT.
 func TestWithRetry_CtxCancelStopsRetry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
 	broker, _ := kafkatest.NewRedpanda(t)
 
 	const (

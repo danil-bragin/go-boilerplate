@@ -18,6 +18,9 @@ import (
 // The container and cache are both cleaned up via t.Cleanup.
 func newCache(t *testing.T) *cache.Cache {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redis container)")
+	}
 	ctx := context.Background()
 
 	rc, err := tcredis.Run(ctx, "redis:7-alpine")

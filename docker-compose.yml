@@ -1,3 +1,29 @@
+# =============================================================================
+# DEMO ONLY — all credentials in this file are insecure defaults.
+# NEVER use these values in production.
+#
+# Production secret management:
+#   • Use Docker Swarm secrets, Kubernetes Secrets (prefer sealed-secrets or
+#     external-secrets-operator), HashiCorp Vault, or a cloud secret manager
+#     (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault).
+#   • Mount secrets as files (not env vars) and read them at startup using the
+#     caarlos0/env `file:"true"` tag, e.g.:
+#
+#       PG_DSN_FILE=/run/secrets/pg_dsn   (container mounts the secret here)
+#
+#     With `file:"true"` caarlos0/env reads the file at *_FILE and populates
+#     the struct field, keeping the raw credential out of the process env.
+#     See https://github.com/caarlos0/env#from-file for details.
+#
+#   • Never commit .env files, credentials, or private keys to version control.
+#   • Rotate all default passwords before any production deployment.
+#
+# TLS note: All inter-service connections in this file are plaintext
+# (HTTP, OTLP WithInsecure, sslmode=disable, Kafka PLAINTEXT). In production
+# TLS should terminate at the ingress layer or service mesh (Istio, Linkerd,
+# AWS ALB, GCP HTTPS LB). See docs/ARCHITECTURE.md "Deferred" section.
+# =============================================================================
+
 services:
 
   # ── Infrastructure ──────────────────────────────────────────────────────────

@@ -11,6 +11,9 @@ import (
 )
 
 func TestPool_ConnectsPingsAndHealthChecks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (postgres container)")
+	}
 	dsn := pgtest.NewDSN(t)
 	ctx := context.Background()
 

@@ -19,6 +19,9 @@ import (
 )
 
 func TestConsumer_GroupConsumesCommitted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
 	broker, _ := kafkatest.NewRedpanda(t)
 
 	const (
@@ -161,6 +164,9 @@ func TestConsumer_GroupConsumesCommitted(t *testing.T) {
 // partition is reassigned. Consumers MUST be idempotent and deduplicate by a
 // stable idempotency key (e.g. an inbox table keyed on message-id).
 func TestConsumer_HandlerErrorRedeliversRecord(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
 	broker, _ := kafkatest.NewRedpanda(t)
 
 	const (
@@ -282,6 +288,9 @@ func TestConsumer_HandlerErrorRedeliversRecord(t *testing.T) {
 // ascending order and (b) total elapsed < nPartitions * nPerPartition *
 // sleepPerRecord * 0.7 (i.e. ≥30 % faster than fully serial).
 func TestConsumer_PerPartitionParallelOrdering(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
 	broker, _ := kafkatest.NewRedpanda(t)
 
 	const (
@@ -434,6 +443,9 @@ func TestConsumer_PerPartitionParallelOrdering(t *testing.T) {
 // then joins and should see zero records from partition 1 (all committed) but
 // at least one redelivery from partition 0 (never committed).
 func TestConsumer_OnePartitionFailureDoesNotBlockOthers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
 	broker, _ := kafkatest.NewRedpanda(t)
 
 	const (

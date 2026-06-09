@@ -17,6 +17,9 @@ import (
 var testMigrations embed.FS
 
 func TestMigrate_AppliesEmbeddedMigrations(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (postgres container)")
+	}
 	dsn := pgtest.NewDSN(t)
 	ctx := context.Background()
 
@@ -42,6 +45,9 @@ func TestMigrate_AppliesEmbeddedMigrations(t *testing.T) {
 //   - the target table exists exactly once (no duplicate/corrupted schema),
 //   - goose's version table shows the expected migration version.
 func TestMigrate_ConcurrentReplicasNoError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (postgres container)")
+	}
 	const replicas = 5
 	dsn := pgtest.NewDSN(t)
 	ctx := context.Background()

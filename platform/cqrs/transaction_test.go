@@ -16,6 +16,9 @@ import (
 // seeded with a single row of 0.
 func setupTxCounter(t *testing.T) *pg.Pool {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("integration test requires Docker (postgres container)")
+	}
 	dsn := pgtest.NewDSN(t)
 	ctx := context.Background()
 	pool, err := pg.New(ctx, pg.Config{DSN: dsn})

@@ -25,6 +25,9 @@ import (
 var testMigrations embed.FS
 
 func TestKafkaPublisher_DrainsOutboxToKafka(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (postgres + redpanda containers)")
+	}
 	ctx := context.Background()
 
 	// 1. Start Postgres and Redpanda containers.
@@ -152,6 +155,9 @@ func TestKafkaPublisher_DrainsOutboxToKafka(t *testing.T) {
 // TestKafkaPublisher_PublishBatch verifies that PublishBatch produces all
 // messages to Kafka in one batched call and they are all consumable.
 func TestKafkaPublisher_PublishBatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (postgres + redpanda containers)")
+	}
 	ctx := context.Background()
 
 	dsn := pgtest.NewDSN(t)
@@ -250,6 +256,9 @@ func TestKafkaPublisher_PublishBatch(t *testing.T) {
 // RequestRetries(0) and a short ProduceRequestTimeout so the test stays
 // under ~5 s total.
 func TestKafkaPublisher_BrokerDownLeavesRowsUnpublished(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (postgres container)")
+	}
 	ctx := context.Background()
 
 	// 1. Start Postgres only (no Redpanda).

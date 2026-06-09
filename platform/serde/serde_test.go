@@ -36,6 +36,9 @@ func TestProtobufSerde_RoundTrip(t *testing.T) {
 }
 
 func TestSchemaRegistrySerde_RoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
 	t.Parallel()
 
 	_, srURL := kafkatest.NewRedpanda(t)
@@ -73,6 +76,9 @@ func TestSchemaRegistrySerde_RoundTrip(t *testing.T) {
 // FileDescriptor, which emits the correct import; Redpanda SR resolves WKTs
 // internally so no explicit schema reference is needed.
 func TestSchemaRegistrySerde_EnvelopeWithTimestampRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
 	t.Parallel()
 
 	_, srURL := kafkatest.NewRedpanda(t)

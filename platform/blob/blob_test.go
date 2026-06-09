@@ -20,6 +20,9 @@ import (
 // The container is terminated automatically when the test ends.
 func newStore(t *testing.T) *blob.MinioStore {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("integration test requires Docker (minio container)")
+	}
 	ctx := context.Background()
 
 	ctr, err := tcminio.Run(ctx, "minio/minio:RELEASE.2024-01-16T16-07-38Z")

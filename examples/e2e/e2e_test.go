@@ -186,12 +186,26 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	})
 
 	baseURL := "http://" + gatewayApp.Addr()
+	adminURL := "http://" + gatewayApp.AdminAddr()
 
-	// Give all consumers a moment to join their groups and get partition
-	// assignments before sending the first message. With four services all
-	// connecting simultaneously, the group coordinator needs a short grace
-	// period to complete initial assignment.
-	time.Sleep(2 * time.Second)
+	// Wait until the gateway's readiness probe reports healthy instead of
+	// sleeping a fixed duration. This eliminates the fixed 2 s warm-up delay
+	// and makes the test resilient to slow CI environments where 2 s is not
+	// enough and fast laptops where it's unnecessarily long.
+	//
+	// The readyz endpoint is served by the admin HTTP server (AdminAddr).
+	// All four consumers must have joined their groups and received partition
+	// assignments before readyz returns 200 (the pg + kafka health checks pass
+	// once the connections are up; the Kafka consumer is registered as a
+	// readiness dependency on the service harness).
+	require.Eventually(t, func() bool {
+		resp, err := http.Get(adminURL + "/readyz")
+		if err != nil {
+			return false
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}, 30*time.Second, 300*time.Millisecond, "gateway did not become ready within timeout")
 
 	// --- Step 1: POST /orders → 202 + order_id ---
 	t.Log("Step 1: POST /orders")

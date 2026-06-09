@@ -18,6 +18,9 @@ var migrations embed.FS
 
 func newPool(t *testing.T) *pg.Pool {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("integration test requires Docker (postgres container)")
+	}
 	dsn := pgtest.NewDSN(t)
 	ctx := context.Background()
 	require.NoError(t, pg.Migrate(ctx, dsn, migrations, "migrations"))

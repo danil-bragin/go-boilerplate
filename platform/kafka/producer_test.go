@@ -18,6 +18,9 @@ import (
 // and delivers them to the broker in a single batched flush (one RTT), not via
 // per-record ProduceSync calls.
 func TestProducer_ProduceBatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
 	broker, _ := kafkatest.NewRedpanda(t)
 
 	ctx := context.Background()
@@ -80,6 +83,9 @@ func TestProducer_ProduceBatch(t *testing.T) {
 }
 
 func TestProducer_ProduceAndConsumeRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
 	broker, _ := kafkatest.NewRedpanda(t)
 
 	ctx := context.Background()
