@@ -34,10 +34,12 @@ gen:
     sqlc generate -f examples/payments/internal/store/sqlc.yaml
     sqlc generate -f platform/messaging/outbox/sqlc.yaml
     go generate ./platform/testkit/mocks/...
+    goimports -w -local go-boilerplate platform/testkit/mocks/
 
-# Regenerate moq mocks for platform interfaces
+# Regenerate moq mocks for platform interfaces (goimports normalizes moq's import grouping)
 gen-mocks:
     go generate ./platform/testkit/mocks/...
+    goimports -w -local go-boilerplate platform/testkit/mocks/
 
 # Run tests for a package or pattern (default: ./...)
 test pkg='./...':
