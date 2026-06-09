@@ -249,7 +249,7 @@ components:
           description: The unique identifier of the order.
         status:
           type: string
-          description: The current status of the order ("pending", "created", "paid").
+          description: The current status of the order ("pending", "created", "paid", "payment_failed", "payment_timeout").
         amount_cents:
           type: integer
           format: int64

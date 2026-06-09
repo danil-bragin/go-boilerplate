@@ -146,6 +146,9 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if err := svc.RegisterSchema(ctx, cfg.PaymentsEventsTopic, projection.PaymentProcessedEventType, &ordersv1.PaymentProcessed{}); err != nil {
 		return nil, err
 	}
+	if err := svc.RegisterSchema(ctx, cfg.PaymentsEventsTopic, projection.PaymentFailedEventType, &ordersv1.PaymentFailed{}); err != nil {
+		return nil, err
+	}
 
 	// Parse trusted-proxy CIDRs (fail fast on invalid CIDR).
 	trustedPrefixes, err := ParseTrustedProxies(cfg.TrustedProxies)

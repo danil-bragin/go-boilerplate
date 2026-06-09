@@ -13,9 +13,22 @@ import (
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
+
+// Versioned event types emitted by the payments service on payments.events.
+const (
+	PaymentProcessedEventType = "orders.PaymentProcessed.v1"
+	PaymentFailedEventType    = "orders.PaymentFailed.v1"
+)
+
+// DeclineThresholdCents is the deterministic demo decline rule: payments with
+// amount_cents >= this threshold are declined. It gives the choreography a
+// reproducible failure path (PaymentFailed) without external dependencies —
+// any order of 10 000.00 currency units or more fails payment.
+const DeclineThresholdCents = 1_000_000
 
 // ProcessPayment is the command to process a payment for an order.
 type ProcessPayment struct {
@@ -25,32 +38,56 @@ type ProcessPayment struct {
 }
 
 // ProcessPaymentResult is the result of a successful ProcessPayment command.
+// Status is "processed" for accepted payments and "failed" for declined ones —
+// a decline is a valid domain outcome, not a handler error (errors trigger
+// redelivery; a deterministic decline would just fail again).
 type ProcessPaymentResult struct {
 	PaymentID string
+	Status    string
 }
 
 // ProcessPaymentHandler returns a cqrs.HandlerFunc that writes a payment row
-// and enqueues a PaymentProcessed event to the outbox. It must be called within
-// an ambient transaction (e.g. from inbox.ProcessOnce) so that pg.FromContext
+// and enqueues a PaymentProcessed (or PaymentFailed, for amounts at or above
+// DeclineThresholdCents) event to the outbox. It must be called within an
+// ambient transaction (e.g. from inbox.ProcessOnce) so that pg.FromContext
 // returns the active transaction.
 func ProcessPaymentHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.HandlerFunc[ProcessPayment, ProcessPaymentResult] {
 	return func(ctx context.Context, cmd ProcessPayment) (ProcessPaymentResult, error) {
 		paymentID := uuid.New()
+
+		status := "processed"
+		if cmd.AmountCents >= DeclineThresholdCents {
+			status = "failed"
+		}
 
 		q := gen.New(pg.FromContext(ctx, pool))
 		if err := q.InsertPayment(ctx, gen.InsertPaymentParams{
 			ID:          paymentID,
 			OrderID:     cmd.OrderID,
 			AmountCents: cmd.AmountCents,
-			Status:      "processed",
+			Status:      status,
 		}); err != nil {
 			return ProcessPaymentResult{}, fmt.Errorf("process_payment: insert payment: %w", err)
 		}
 
-		event := &ordersv1.PaymentProcessed{
-			OrderId:   cmd.OrderID,
-			PaymentId: paymentID.String(),
-			Status:    "processed",
+		var (
+			event     proto.Message
+			eventType string
+		)
+		if status == "failed" {
+			event = &ordersv1.PaymentFailed{
+				OrderId:    cmd.OrderID,
+				Reason:     "declined",
+				OccurredAt: timestamppb.Now(),
+			}
+			eventType = PaymentFailedEventType
+		} else {
+			event = &ordersv1.PaymentProcessed{
+				OrderId:   cmd.OrderID,
+				PaymentId: paymentID.String(),
+				Status:    "processed",
+			}
+			eventType = PaymentProcessedEventType
 		}
 		protoBytes, err := proto.Marshal(event)
 		if err != nil {
@@ -62,13 +99,13 @@ func ProcessPaymentHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.Ha
 			Topic:         "payments.events",
 			AggregateType: "payment",
 			AggregateID:   cmd.OrderID,
-			EventType:     "orders.PaymentProcessed.v1",
+			EventType:     eventType,
 			Payload:       protoBytes,
 		}); err != nil {
 			return ProcessPaymentResult{}, fmt.Errorf("process_payment: enqueue event: %w", err)
 		}
 
-		return ProcessPaymentResult{PaymentID: paymentID.String()}, nil
+		return ProcessPaymentResult{PaymentID: paymentID.String(), Status: status}, nil
 	}
 }
 

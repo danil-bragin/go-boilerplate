@@ -123,17 +123,44 @@ func (q *Queries) ListOrders(ctx context.Context, arg ListOrdersParams) ([]ListO
 	return items, nil
 }
 
-const markPaid = `-- name: MarkPaid :exec
+const markPaid = `-- name: MarkPaid :execrows
+
 insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)
 values ($1, '', 0, '', 'paid', now())
 on conflict (order_id) do update set
   status     = 'paid',
   updated_at = now()
+where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout')
 `
 
-func (q *Queries) MarkPaid(ctx context.Context, orderID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, markPaid, orderID)
-	return err
+// Terminal-status precedence (MarkPaid / MarkPaymentFailed / MarkPaymentTimeout):
+// 'paid', 'payment_failed', and 'payment_timeout' are TERMINAL. Precedence is
+// pending < created < {terminal}; the FIRST terminal event wins and any later
+// terminal event is ignored (0 rows affected — the projection logs a warning).
+// This keeps the projection reorder-safe under at-least-once delivery.
+func (q *Queries) MarkPaid(ctx context.Context, orderID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markPaid, orderID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const markPaymentFailed = `-- name: MarkPaymentFailed :execrows
+insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)
+values ($1, '', 0, '', 'payment_failed', now())
+on conflict (order_id) do update set
+  status     = 'payment_failed',
+  updated_at = now()
+where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout')
+`
+
+func (q *Queries) MarkPaymentFailed(ctx context.Context, orderID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markPaymentFailed, orderID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const upsertOrderCreated = `-- name: UpsertOrderCreated :exec

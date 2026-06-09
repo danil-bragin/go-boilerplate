@@ -1009,3 +1009,86 @@ func TestGateway_ListOrdersKeysetPagination(t *testing.T) {
 	_, code = fetch("?limit=101")
 	assert.Equal(t, http.StatusOK, code)
 }
+
+// TestGateway_ProjectionPaymentFailed verifies the failure branch of the
+// choreography: a PaymentFailed event moves the read model to
+// "payment_failed", and a later PaymentProcessed must NOT overwrite it —
+// payment_failed and paid are both terminal, first terminal wins.
+func TestGateway_ProjectionPaymentFailed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+	baseURL := startApp(t, broker, dsn)
+
+	orderID := uuid.New().String()
+	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
+		return &ordersv1.OrderCreated{OrderId: orderID, CustomerId: "c-fail", AmountCents: 1_000_000, Currency: "USD"}
+	})
+	pollOrderStatus(t, baseURL, orderID, "created", 30*time.Second)
+
+	produceEvent(t, broker, "payments.events", "orders.PaymentFailed.v1", orderID, func() proto.Message {
+		return &ordersv1.PaymentFailed{OrderId: orderID, Reason: "declined"}
+	})
+	pollOrderStatus(t, baseURL, orderID, "payment_failed", 30*time.Second)
+
+	// A late PaymentProcessed must be ignored: first terminal state wins.
+	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", orderID, func() proto.Message {
+		return &ordersv1.PaymentProcessed{OrderId: orderID, PaymentId: uuid.New().String(), Status: "success"}
+	})
+	time.Sleep(3 * time.Second)
+	require.Equal(t, "payment_failed", getStatus(t, baseURL, orderID),
+		"a terminal payment_failed must not be overwritten by a later paid")
+}
+
+// TestGateway_ProjectionPaidWinsOverLateFailure is the mirror precedence case:
+// once paid, a late PaymentFailed must be ignored (first terminal wins).
+func TestGateway_ProjectionPaidWinsOverLateFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+	baseURL := startApp(t, broker, dsn)
+
+	orderID := uuid.New().String()
+	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
+		return &ordersv1.OrderCreated{OrderId: orderID, CustomerId: "c-paid", AmountCents: 100, Currency: "USD"}
+	})
+	pollOrderStatus(t, baseURL, orderID, "created", 30*time.Second)
+
+	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", orderID, func() proto.Message {
+		return &ordersv1.PaymentProcessed{OrderId: orderID, PaymentId: uuid.New().String(), Status: "success"}
+	})
+	pollOrderStatus(t, baseURL, orderID, "paid", 30*time.Second)
+
+	produceEvent(t, broker, "payments.events", "orders.PaymentFailed.v1", orderID, func() proto.Message {
+		return &ordersv1.PaymentFailed{OrderId: orderID, Reason: "declined"}
+	})
+	time.Sleep(3 * time.Second)
+	require.Equal(t, "paid", getStatus(t, baseURL, orderID),
+		"a terminal paid must not be overwritten by a later payment_failed")
+}
+
+// getStatus returns the current order status (empty string on any error).
+func getStatus(t *testing.T, baseURL, orderID string) string {
+	t.Helper()
+	resp, err := http.Get(fmt.Sprintf("%s/v1/orders/%s", baseURL, orderID))
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var view struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&view); err != nil {
+		return ""
+	}
+	return view.Status
+}

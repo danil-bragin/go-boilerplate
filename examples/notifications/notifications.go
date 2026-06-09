@@ -91,6 +91,9 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if err := svc.RegisterSchema(ctx, cfg.PaymentsEventsTopic, transport.PaymentProcessedEventType, &ordersv1.PaymentProcessed{}); err != nil {
 		return nil, err
 	}
+	if err := svc.RegisterSchema(ctx, cfg.PaymentsEventsTopic, transport.PaymentFailedEventType, &ordersv1.PaymentFailed{}); err != nil {
+		return nil, err
+	}
 
 	// Default notifier: structured log line. Tests override via WithNotifier.
 	notifier := nOpts.notifier
