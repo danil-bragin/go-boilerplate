@@ -38,22 +38,22 @@ func TestMemory_PerKeyIsolation(t *testing.T) {
 	ctx := context.Background()
 
 	// Exhaust A's burst (burst=2).
-	ok, err := m.Allow(ctx, "A")
+	res, err := m.Allow(ctx, "A")
 	require.NoError(t, err)
-	assert.True(t, ok, "A first allow")
+	assert.True(t, res.Allowed, "A first allow")
 
-	ok, err = m.Allow(ctx, "A")
+	res, err = m.Allow(ctx, "A")
 	require.NoError(t, err)
-	assert.True(t, ok, "A second allow")
+	assert.True(t, res.Allowed, "A second allow")
 
-	ok, err = m.Allow(ctx, "A")
+	res, err = m.Allow(ctx, "A")
 	require.NoError(t, err)
-	assert.False(t, ok, "A third allow should be denied")
+	assert.False(t, res.Allowed, "A third allow should be denied")
 
 	// B must still be allowed (independent bucket).
-	ok, err = m.Allow(ctx, "B")
+	res, err = m.Allow(ctx, "B")
 	require.NoError(t, err)
-	assert.True(t, ok, "B must be unaffected by A's exhaustion")
+	assert.True(t, res.Allowed, "B must be unaffected by A's exhaustion")
 }
 
 // TestMemory_BurstHonoredExactly verifies that exactly burst=3 allows are
@@ -69,14 +69,14 @@ func TestMemory_BurstHonoredExactly(t *testing.T) {
 	ctx := context.Background()
 
 	for i := range 3 {
-		ok, err := m.Allow(ctx, "k")
+		res, err := m.Allow(ctx, "k")
 		require.NoError(t, err)
-		assert.True(t, ok, "allow %d should succeed", i+1)
+		assert.True(t, res.Allowed, "allow %d should succeed", i+1)
 	}
 
-	ok, err := m.Allow(ctx, "k")
+	res, err := m.Allow(ctx, "k")
 	require.NoError(t, err)
-	assert.False(t, ok, "4th allow must be denied (burst=3 exhausted)")
+	assert.False(t, res.Allowed, "4th allow must be denied (burst=3 exhausted)")
 }
 
 // TestMemory_RefillViaInjectedClock verifies that advancing the injected clock
@@ -93,21 +93,21 @@ func TestMemory_RefillViaInjectedClock(t *testing.T) {
 	ctx := context.Background()
 
 	// Consume the single token.
-	ok, err := m.Allow(ctx, "k")
+	res, err := m.Allow(ctx, "k")
 	require.NoError(t, err)
-	require.True(t, ok, "first allow (burst=1)")
+	require.True(t, res.Allowed, "first allow (burst=1)")
 
 	// Denied immediately.
-	ok, err = m.Allow(ctx, "k")
+	res, err = m.Allow(ctx, "k")
 	require.NoError(t, err)
-	assert.False(t, ok, "second allow must be denied (no tokens)")
+	assert.False(t, res.Allowed, "second allow must be denied (no tokens)")
 
 	// Advance clock by exactly 1/rps seconds so one token refills.
 	clock.Advance(time.Duration(float64(time.Second) / rps))
 
-	ok, err = m.Allow(ctx, "k")
+	res, err = m.Allow(ctx, "k")
 	require.NoError(t, err)
-	assert.True(t, ok, "allow after clock advance must succeed (token refilled)")
+	assert.True(t, res.Allowed, "allow after clock advance must succeed (token refilled)")
 }
 
 // TestMemory_IdleEviction verifies that entries idle past idleTTL are evicted

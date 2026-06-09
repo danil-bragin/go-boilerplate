@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"testing"
+	"time"
 
 	"go-boilerplate/platform/web/httpserver"
 	"go-boilerplate/platform/web/ratelimit"
@@ -73,8 +74,11 @@ func TestCORS_PreflightAndAllowOrigin(t *testing.T) {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 
-		require.Equal(t, http.StatusNoContent, rec.Code, "preflight still returns 204 but no CORS headers")
+		require.Equal(t, http.StatusForbidden, rec.Code, "disallowed preflight must be rejected")
 		require.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"), "disallowed origin must not get CORS header")
+		require.Empty(t, rec.Header().Get("Access-Control-Allow-Methods"))
+		require.Empty(t, rec.Header().Get("Access-Control-Allow-Headers"))
+		require.Equal(t, "Origin", rec.Header().Get("Vary"))
 	})
 
 	t.Run("actual request from allowed origin gets ACAO header", func(t *testing.T) {
@@ -97,6 +101,54 @@ func TestCORS_PreflightAndAllowOrigin(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rec.Code)
 		require.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
+		require.Empty(t, rec.Header().Get("Vary"), "no Origin header → no Vary needed")
+	})
+
+	t.Run("Vary Origin always present when Origin sent", func(t *testing.T) {
+		for _, origin := range []string{"https://example.com", "https://evil.com"} {
+			req := httptest.NewRequest(http.MethodGet, "/orders", http.NoBody)
+			req.Header.Set("Origin", origin)
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			require.Equal(t, "Origin", rec.Header().Get("Vary"),
+				"Vary: Origin must be set for origin %s (cache poisoning defence)", origin)
+		}
+	})
+}
+
+// TestCORS_EmptyOriginsDenyAll: the zero-config default is deny-all — no
+// Access-Control-Allow-Origin is ever emitted, for any origin, on either the
+// preflight or the actual request path.
+func TestCORS_EmptyOriginsDenyAll(t *testing.T) {
+	h := httpserver.CORS(httpserver.CORSOptions{})(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	)
+
+	t.Run("actual request gets no ACAO", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+		req.Header.Set("Origin", "https://anything.example")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code, "request itself still served (CORS is a browser control)")
+		require.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
+		require.Equal(t, "Origin", rec.Header().Get("Vary"))
+	})
+
+	t.Run("preflight denied", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodOptions, "/", http.NoBody)
+		req.Header.Set("Origin", "https://anything.example")
+		req.Header.Set("Access-Control-Request-Method", "POST")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusForbidden, rec.Code)
+		require.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
+		require.Empty(t, rec.Header().Get("Access-Control-Allow-Methods"))
 	})
 }
 
@@ -261,27 +313,39 @@ func TestRateLimitPer_XFFRightToLeftSkipsTrustedHops(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, rec2.Code, "same client IP must reuse the same bucket")
 }
 
-// TestRateLimitPer_429BodyMatchesRateLimit verifies that the 429 response body
-// produced by RateLimitPer matches the plain-text body used by the legacy
-// RateLimit middleware ("rate limit exceeded\n").
-func TestRateLimitPer_429BodyMatchesRateLimit(t *testing.T) {
+// TestRateLimitPer_429ProblemAndHeaders verifies the 429 ergonomics: a real
+// Retry-After (ceiled seconds), RateLimit-Limit / RateLimit-Remaining headers,
+// and an RFC7807 problem+json body.
+func TestRateLimitPer_429ProblemAndHeaders(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip: memory limiter uses real time — not suitable for -short")
 	}
-	lim := ratelimit.NewMemory(10, 1)
+	lim := ratelimit.NewMemory(0.5, 2, ratelimit.WithClock(time.Now)) // 1 token / 2s, burst 2
 	t.Cleanup(lim.Close)
 
 	keyFn := httpserver.ClientIPKey(nil)
 	h := httpserver.RateLimitPer(lim, keyFn)(okHandler)
 
-	// Exhaust the bucket.
+	// Allowed requests carry the rate-limit budget headers.
 	rec1 := httptest.NewRecorder()
 	h.ServeHTTP(rec1, newReq("1.2.3.4:1", ""))
 	require.Equal(t, http.StatusOK, rec1.Code)
+	require.Equal(t, "2", rec1.Header().Get("RateLimit-Limit"))
+	require.Equal(t, "1", rec1.Header().Get("RateLimit-Remaining"))
 
-	// Get the 429.
 	rec2 := httptest.NewRecorder()
 	h.ServeHTTP(rec2, newReq("1.2.3.4:1", ""))
-	require.Equal(t, http.StatusTooManyRequests, rec2.Code)
-	require.Equal(t, "rate limit exceeded\n", rec2.Body.String(), "429 body must match RateLimit shape")
+	require.Equal(t, http.StatusOK, rec2.Code)
+	require.Equal(t, "0", rec2.Header().Get("RateLimit-Remaining"))
+
+	// Denied request: problem+json + headers with the real wait (~2s → "2").
+	rec3 := httptest.NewRecorder()
+	h.ServeHTTP(rec3, newReq("1.2.3.4:1", ""))
+	require.Equal(t, http.StatusTooManyRequests, rec3.Code)
+	require.Equal(t, "application/problem+json", rec3.Header().Get("Content-Type"))
+	require.Contains(t, rec3.Body.String(), "rate limit exceeded")
+	require.Equal(t, "2", rec3.Header().Get("RateLimit-Limit"))
+	require.Equal(t, "0", rec3.Header().Get("RateLimit-Remaining"))
+	require.Equal(t, "2", rec3.Header().Get("Retry-After"),
+		"Retry-After must reflect the real refill wait (ceil seconds), not a hardcoded 1")
 }

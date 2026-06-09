@@ -46,7 +46,7 @@ type OrderView struct {
 
 // GetOrderHandler returns a raw (undecorated) CQRS query handler that reads an
 // order from the read-model projection table.
-// The caller should wrap it with Decorate (Logging, Tracing, Metrics, Caching)
+// The caller should wrap it with Decorate (Tracing, Logging, Metrics, Caching)
 // before use.
 func GetOrderHandler(pool *pg.Pool) cqrs.HandlerFunc[GetOrder, OrderView] {
 	return func(ctx context.Context, q GetOrder) (OrderView, error) {
@@ -77,11 +77,13 @@ func GetOrderHandler(pool *pg.Pool) cqrs.HandlerFunc[GetOrder, OrderView] {
 // When cache is non-nil, the Caching behavior is also applied (order views are
 // cached for 30 s under the key "gw:v1:order:<orderID>").
 // When cache is nil (Redis unavailable at startup), the handler is still
-// decorated with Logging / Tracing / Metrics but without Caching.
+// decorated with Tracing / Logging / Metrics but without Caching.
 func DecorateGetOrderHandler(raw cqrs.HandlerFunc[GetOrder, OrderView], cache cqrs.Cache) cqrs.HandlerFunc[GetOrder, OrderView] {
+	// Tracing is OUTERMOST so Logging (and everything else) runs inside the
+	// span and log records carry trace_id/span_id — see the cqrs package doc.
 	behaviors := []cqrs.Behavior[GetOrder, OrderView]{
-		cqrs.Logging[GetOrder, OrderView]("GetOrder"),
 		cqrs.Tracing[GetOrder, OrderView]("GetOrder"),
+		cqrs.Logging[GetOrder, OrderView]("GetOrder"),
 		cqrs.Metrics[GetOrder, OrderView]("GetOrder"),
 	}
 	if cache != nil {

@@ -85,10 +85,12 @@ func DecorateProcessPaymentHandler(
 	handler cqrs.HandlerFunc[ProcessPayment, ProcessPaymentResult],
 	auditStore audit.Store,
 ) cqrs.HandlerFunc[ProcessPayment, ProcessPaymentResult] {
+	// Tracing is OUTERMOST so Logging runs inside the span and log records
+	// carry trace_id/span_id — see the cqrs package doc.
 	return cqrs.Decorate(
 		handler,
-		cqrs.Logging[ProcessPayment, ProcessPaymentResult]("ProcessPayment"),
 		cqrs.Tracing[ProcessPayment, ProcessPaymentResult]("ProcessPayment"),
+		cqrs.Logging[ProcessPayment, ProcessPaymentResult]("ProcessPayment"),
 		cqrs.Metrics[ProcessPayment, ProcessPaymentResult]("ProcessPayment"),
 		cqrs.Validation[ProcessPayment, ProcessPaymentResult](),
 		audit.Audit[ProcessPayment, ProcessPaymentResult](auditStore, "payment:process", func(cmd ProcessPayment) string {

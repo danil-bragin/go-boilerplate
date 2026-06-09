@@ -113,7 +113,7 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 			// be defensive: fail closed.
 			return nil, &authError{status: http.StatusUnauthorized, msg: "no authenticated principal"}
 		}
-		if err := rbacPolicy.Authorize(p, "order:create"); err != nil {
+		if err := rbacPolicy.Authorize(ctx, p, "order:create", nil); err != nil {
 			return nil, &authError{status: http.StatusForbidden, msg: "insufficient privileges"}
 		}
 	}

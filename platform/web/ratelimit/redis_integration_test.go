@@ -59,14 +59,19 @@ func TestRedis_BurstThenDeny(t *testing.T) {
 	ctx := context.Background()
 
 	for i := range 3 {
-		ok, err := limiter.Allow(ctx, "burst-key")
+		res, err := limiter.Allow(ctx, "burst-key")
 		require.NoError(t, err)
-		assert.True(t, ok, "allow %d must succeed (burst=3)", i+1)
+		assert.True(t, res.Allowed, "allow %d must succeed (burst=3)", i+1)
+		assert.EqualValues(t, 3, res.Limit, "Limit must report the bucket capacity")
+		assert.EqualValues(t, 3-(i+1), res.Remaining, "Remaining must count down with each allow")
 	}
 
-	ok, err := limiter.Allow(ctx, "burst-key")
+	res, err := limiter.Allow(ctx, "burst-key")
 	require.NoError(t, err)
-	assert.False(t, ok, "4th allow must be denied after burst exhausted")
+	assert.False(t, res.Allowed, "4th allow must be denied after burst exhausted")
+	assert.EqualValues(t, 0, res.Remaining)
+	assert.Greater(t, res.RetryAfter, time.Duration(0), "denied result must carry the real refill wait")
+	assert.LessOrEqual(t, res.RetryAfter, time.Second+100*time.Millisecond, "at 1 rps the wait is ≈1s")
 }
 
 // TestRedis_KeyIsolation verifies that two distinct keys have independent budgets.
@@ -79,14 +84,14 @@ func TestRedis_KeyIsolation(t *testing.T) {
 	// Exhaust key A.
 	_, _ = limiter.Allow(ctx, "iso-A")
 	_, _ = limiter.Allow(ctx, "iso-A")
-	okA, err := limiter.Allow(ctx, "iso-A")
+	resA, err := limiter.Allow(ctx, "iso-A")
 	require.NoError(t, err)
-	assert.False(t, okA, "A must be denied after burst exhausted")
+	assert.False(t, resA.Allowed, "A must be denied after burst exhausted")
 
 	// B must still be allowed.
-	okB, err := limiter.Allow(ctx, "iso-B")
+	resB, err := limiter.Allow(ctx, "iso-B")
 	require.NoError(t, err)
-	assert.True(t, okB, "B must be unaffected by A's exhaustion")
+	assert.True(t, resB.Allowed, "B must be unaffected by A's exhaustion")
 }
 
 // TestRedis_RefillAfterSleep verifies that a 1 rps limiter refills one token
@@ -98,20 +103,20 @@ func TestRedis_RefillAfterSleep(t *testing.T) {
 	limiter := ratelimit.NewRedis(client, 1, 1)
 	ctx := context.Background()
 
-	ok, err := limiter.Allow(ctx, "refill-key")
+	res, err := limiter.Allow(ctx, "refill-key")
 	require.NoError(t, err)
-	require.True(t, ok, "first allow must succeed")
+	require.True(t, res.Allowed, "first allow must succeed")
 
-	ok, err = limiter.Allow(ctx, "refill-key")
+	res, err = limiter.Allow(ctx, "refill-key")
 	require.NoError(t, err)
-	require.False(t, ok, "second allow must be denied immediately")
+	require.False(t, res.Allowed, "second allow must be denied immediately")
 
 	// Wait for one token to refill. 1.1s is generous to avoid flakiness.
 	time.Sleep(1100 * time.Millisecond)
 
-	ok, err = limiter.Allow(ctx, "refill-key")
+	res, err = limiter.Allow(ctx, "refill-key")
 	require.NoError(t, err)
-	assert.True(t, ok, "allow after ~1s must succeed (token refilled)")
+	assert.True(t, res.Allowed, "allow after ~1s must succeed (token refilled)")
 }
 
 // TestRedis_DistributedSharedBudget is the distributed-proof test.
@@ -133,23 +138,23 @@ func TestRedis_DistributedSharedBudget(t *testing.T) {
 
 	// Fire 5 allows on each limiter (10 total, exactly at burst).
 	for i := range 5 {
-		ok, err := limiter1.Allow(ctx, key)
+		res, err := limiter1.Allow(ctx, key)
 		require.NoError(t, err)
-		assert.True(t, ok, "limiter1 allow %d must succeed", i+1)
+		assert.True(t, res.Allowed, "limiter1 allow %d must succeed", i+1)
 
-		ok, err = limiter2.Allow(ctx, key)
+		res, err = limiter2.Allow(ctx, key)
 		require.NoError(t, err)
-		assert.True(t, ok, "limiter2 allow %d must succeed", i+1)
+		assert.True(t, res.Allowed, "limiter2 allow %d must succeed", i+1)
 	}
 
 	// 11th call on either limiter must be denied — shared budget via Redis.
-	ok1, err1 := limiter1.Allow(ctx, key)
+	res1, err1 := limiter1.Allow(ctx, key)
 	require.NoError(t, err1)
-	ok2, err2 := limiter2.Allow(ctx, key)
+	res2, err2 := limiter2.Allow(ctx, key)
 	require.NoError(t, err2)
 
 	// At least one of the two 11th calls must be denied.
-	assert.False(t, ok1 && ok2,
+	assert.False(t, res1.Allowed && res2.Allowed,
 		"at least one 11th allow must be denied across both replicas (shared budget)")
 }
 
@@ -188,9 +193,9 @@ func TestRedis_FailOpen(t *testing.T) {
 		client, 1, 10,
 		ratelimit.WithOnError(func(error) {}),
 	)
-	ok, err := limiter.Allow(ctx, "pre-kill")
+	res, err := limiter.Allow(ctx, "pre-kill")
 	require.NoError(t, err)
-	require.True(t, ok, "must allow before container is killed")
+	require.True(t, res.Allowed, "must allow before container is killed")
 
 	// Kill the container — subsequent calls must hit a dead connection.
 	require.NoError(t, rc.Terminate(ctx))
@@ -201,9 +206,9 @@ func TestRedis_FailOpen(t *testing.T) {
 		ratelimit.WithOnError(func(error) { errCount.Add(1) }),
 	)
 
-	ok, err = limiter2.Allow(ctx, "fail-open-key")
+	res, err = limiter2.Allow(ctx, "fail-open-key")
 	assert.NoError(t, err, "fail-open must not propagate error to caller")
-	assert.True(t, ok, "fail-open must allow the request")
+	assert.True(t, res.Allowed, "fail-open must allow the request")
 	assert.Greater(t, errCount.Load(), int64(0), "onError must have been called")
 }
 
@@ -234,9 +239,9 @@ func TestRedis_FailClosed(t *testing.T) {
 
 	// Warm up the connection.
 	limiter := ratelimit.NewRedis(client, 1, 10)
-	ok, err := limiter.Allow(ctx, "pre-kill")
+	res, err := limiter.Allow(ctx, "pre-kill")
 	require.NoError(t, err)
-	require.True(t, ok, "must allow before container is killed")
+	require.True(t, res.Allowed, "must allow before container is killed")
 
 	// Kill the container.
 	require.NoError(t, rc.Terminate(ctx))
@@ -248,8 +253,8 @@ func TestRedis_FailClosed(t *testing.T) {
 		ratelimit.WithOnError(func(error) { errCount.Add(1) }),
 	)
 
-	ok, err = limiter2.Allow(ctx, "fail-closed-key")
+	res, err = limiter2.Allow(ctx, "fail-closed-key")
 	assert.Error(t, err, "fail-closed must propagate the error")
-	assert.False(t, ok, "fail-closed must deny the request on error")
+	assert.False(t, res.Allowed, "fail-closed must deny the request on error")
 	assert.Greater(t, errCount.Load(), int64(0), "onError must have been called")
 }

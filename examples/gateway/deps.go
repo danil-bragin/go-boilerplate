@@ -32,7 +32,11 @@ func buildVerifier(ctx context.Context, cfg Config, override auth.Verifier) (aut
 	if override != nil {
 		return override, nil
 	}
-	v, err := auth.NewJWKSVerifier(ctx, cfg.JWKSUrl, cfg.JWKSIssuer, cfg.JWKSAudience)
+	opts := []auth.Option{auth.WithClockSkew(cfg.AuthClockSkew)}
+	if cfg.AuthRequiredAZP != "" {
+		opts = append(opts, auth.WithRequiredAZP(cfg.AuthRequiredAZP))
+	}
+	v, err := auth.NewJWKSVerifier(ctx, cfg.JWKSUrl, cfg.JWKSIssuer, cfg.JWKSAudience, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("gateway: building JWKS verifier (auth is enabled): %w", err)
 	}

@@ -21,9 +21,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v2/jwa"
-	"github.com/lestrrat-go/jwx/v2/jwk"
-	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/lestrrat-go/jwx/v3/jwa"
+	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v3/jwt"
 )
 
 // ─── JWKS server ─────────────────────────────────────────────────────────────
@@ -53,26 +53,26 @@ func JWKS(t *testing.T) *JWKSServer {
 	}
 
 	// Wrap the public key as a JWK with kid + alg.
-	pubJWK, err := jwk.FromRaw(priv.Public())
+	pubJWK, err := jwk.Import(priv.Public())
 	if err != nil {
 		t.Fatalf("mockhttp.JWKS: wrap public key: %v", err)
 	}
 	if err := pubJWK.Set(jwk.KeyIDKey, jwksKid); err != nil {
 		t.Fatalf("mockhttp.JWKS: set kid: %v", err)
 	}
-	if err := pubJWK.Set(jwk.AlgorithmKey, jwa.RS256); err != nil {
+	if err := pubJWK.Set(jwk.AlgorithmKey, jwa.RS256()); err != nil {
 		t.Fatalf("mockhttp.JWKS: set alg: %v", err)
 	}
 
 	// Wrap the private key as a JWK with kid + alg (needed for signing).
-	privJWK, err := jwk.FromRaw(priv)
+	privJWK, err := jwk.Import(priv)
 	if err != nil {
 		t.Fatalf("mockhttp.JWKS: wrap private key: %v", err)
 	}
 	if err := privJWK.Set(jwk.KeyIDKey, jwksKid); err != nil {
 		t.Fatalf("mockhttp.JWKS: set kid on privJWK: %v", err)
 	}
-	if err := privJWK.Set(jwk.AlgorithmKey, jwa.RS256); err != nil {
+	if err := privJWK.Set(jwk.AlgorithmKey, jwa.RS256()); err != nil {
 		t.Fatalf("mockhttp.JWKS: set alg on privJWK: %v", err)
 	}
 
@@ -126,7 +126,7 @@ func (j *JWKSServer) Sign(claims map[string]any) string {
 		panic("mockhttp.JWKSServer.Sign: build token: " + err.Error())
 	}
 
-	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256, j.privJWK))
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256(), j.privJWK))
 	if err != nil {
 		panic("mockhttp.JWKSServer.Sign: sign token: " + err.Error())
 	}

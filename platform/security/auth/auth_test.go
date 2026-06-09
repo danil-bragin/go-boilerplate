@@ -15,9 +15,9 @@ import (
 
 	"go-boilerplate/platform/security/auth"
 
-	"github.com/lestrrat-go/jwx/v2/jwa"
-	"github.com/lestrrat-go/jwx/v2/jwk"
-	"github.com/lestrrat-go/jwx/v2/jwt"
+	"github.com/lestrrat-go/jwx/v3/jwa"
+	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v3/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,10 +35,10 @@ func generateTestKeys(t *testing.T) testKeys {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
-	pubJWK, err := jwk.FromRaw(priv.Public())
+	pubJWK, err := jwk.Import(priv.Public())
 	require.NoError(t, err)
 	require.NoError(t, pubJWK.Set(jwk.KeyIDKey, "test-key-1"))
-	require.NoError(t, pubJWK.Set(jwk.AlgorithmKey, jwa.RS256))
+	require.NoError(t, pubJWK.Set(jwk.AlgorithmKey, jwa.RS256()))
 
 	return testKeys{priv: priv, pubJWK: pubJWK}
 }
@@ -99,12 +99,12 @@ func signToken(
 	require.NoError(t, err)
 
 	// Sign using the private key; kid is propagated from the JWK.
-	privJWK, err := jwk.FromRaw(keys.priv)
+	privJWK, err := jwk.Import(keys.priv)
 	require.NoError(t, err)
 	require.NoError(t, privJWK.Set(jwk.KeyIDKey, "test-key-1"))
-	require.NoError(t, privJWK.Set(jwk.AlgorithmKey, jwa.RS256))
+	require.NoError(t, privJWK.Set(jwk.AlgorithmKey, jwa.RS256()))
 
-	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256, privJWK))
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256(), privJWK))
 	require.NoError(t, err)
 	return signed
 }
@@ -380,12 +380,12 @@ func TestJWKSVerifier_RejectsTokenWithoutExp(t *testing.T) {
 		Build()
 	require.NoError(t, err)
 
-	privJWK, err := jwk.FromRaw(keys.priv)
+	privJWK, err := jwk.Import(keys.priv)
 	require.NoError(t, err)
 	require.NoError(t, privJWK.Set(jwk.KeyIDKey, "test-key-1"))
-	require.NoError(t, privJWK.Set(jwk.AlgorithmKey, jwa.RS256))
+	require.NoError(t, privJWK.Set(jwk.AlgorithmKey, jwa.RS256()))
 
-	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256, privJWK))
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256(), privJWK))
 	require.NoError(t, err)
 
 	_, err = v.Verify(context.Background(), string(signed))

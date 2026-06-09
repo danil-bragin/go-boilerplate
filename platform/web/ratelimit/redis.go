@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/redis/rueidis"
 )
@@ -30,15 +31,22 @@ import (
 const luaTokenBucket = `
 local t      = redis.call('TIME')
 local now    = t[1] * 1000 + math.floor(t[2] / 1000)
+local rps    = tonumber(ARGV[1])
 local tokens = tonumber(redis.call('HGET', KEYS[1], 't') or ARGV[2])
 local ts     = tonumber(redis.call('HGET', KEYS[1], 'ts') or now)
-local refill = (now - ts) / 1000.0 * tonumber(ARGV[1])
+local refill = (now - ts) / 1000.0 * rps
 tokens = math.min(tokens + refill, tonumber(ARGV[2]))
 local allowed = 0
-if tokens >= 1 then tokens = tokens - 1; allowed = 1 end
+local retry_ms = 0
+if tokens >= 1 then
+  tokens = tokens - 1
+  allowed = 1
+elseif rps > 0 then
+  retry_ms = math.ceil((1 - tokens) / rps * 1000)
+end
 redis.call('HSET', KEYS[1], 't', tokens, 'ts', now)
 redis.call('PEXPIRE', KEYS[1], ARGV[3])
-return allowed
+return {allowed, math.floor(tokens), retry_ms}
 `
 
 var bucketScript = rueidis.NewLuaScript(luaTokenBucket)
@@ -113,11 +121,14 @@ func NewRedis(client rueidis.Client, rps float64, burst int, opts ...RedisOption
 	return r
 }
 
-// Allow returns (true, nil) if key is allowed, (false, nil) if rate-limited.
-// On Redis error the behaviour depends on the fail-open / fail-closed setting:
-//   - fail-open (default): returns (true, nil) and calls onError(err).
-//   - fail-closed: returns (false, err) and calls onError(err).
-func (r *Redis) Allow(ctx context.Context, key string) (bool, error) {
+// Allow reports whether key may proceed, together with the remaining budget
+// and (when denied) the wait until the next token, both computed atomically
+// by the Lua bucket. On Redis error the behaviour depends on the fail-open /
+// fail-closed setting:
+//   - fail-open (default): returns an Allowed result with Remaining=-1
+//     (unknown budget) and calls onError(err).
+//   - fail-closed: returns a denied result and the error; calls onError(err).
+func (r *Redis) Allow(ctx context.Context, key string) (Result, error) {
 	rpsStr := strconv.FormatFloat(r.rps, 'f', -1, 64)
 	burstStr := strconv.Itoa(r.burst)
 	bucketKey := r.prefix + key
@@ -130,20 +141,38 @@ func (r *Redis) Allow(ctx context.Context, key string) (bool, error) {
 		[]string{rpsStr, burstStr, r.idleTTLms},
 	)
 	if err := res.Error(); err != nil {
-		r.onError(fmt.Errorf("ratelimit: redis: %w", err))
-		if r.failOpen {
-			return true, nil
-		}
-		return false, fmt.Errorf("ratelimit: redis: %w", err)
+		return r.errResult(fmt.Errorf("ratelimit: redis: %w", err))
 	}
 
-	allowed, err := res.AsInt64()
-	if err != nil {
-		r.onError(fmt.Errorf("ratelimit: redis parse: %w", err))
-		if r.failOpen {
-			return true, nil
+	arr, err := res.AsIntSlice()
+	if err != nil || len(arr) != 3 {
+		if err == nil {
+			err = fmt.Errorf("unexpected reply length %d", len(arr))
 		}
-		return false, fmt.Errorf("ratelimit: redis parse: %w", err)
+		return r.errResult(fmt.Errorf("ratelimit: redis parse: %w", err))
 	}
-	return allowed == 1, nil
+
+	out := Result{
+		Allowed:   arr[0] == 1,
+		Limit:     int64(r.burst),
+		Remaining: arr[1],
+	}
+	if out.Remaining < 0 {
+		out.Remaining = 0
+	}
+	if !out.Allowed {
+		out.RetryAfter = time.Duration(arr[2]) * time.Millisecond
+	}
+	return out, nil
+}
+
+// errResult maps a Redis failure to the configured fail-open / fail-closed
+// behaviour and reports it via onError.
+func (r *Redis) errResult(err error) (Result, error) {
+	r.onError(err)
+	if r.failOpen {
+		// Allowed but with unknown remaining budget.
+		return Result{Allowed: true, Limit: int64(r.burst), Remaining: -1}, nil
+	}
+	return Result{Limit: int64(r.burst), Remaining: -1}, err
 }

@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,8 @@ import (
 	"go-boilerplate/platform/web/httpserver"
 	"go-boilerplate/platform/web/httpx"
 
+	"github.com/grafana/pyroscope-go"
+
 	// automaxprocs sets GOMAXPROCS to match the container CPU quota at startup.
 	// Go 1.25+ also does this natively when GOMAXPROCS is unset, but automaxprocs
 	// is the belt-and-suspenders standard and works across all supported versions.
@@ -29,6 +32,9 @@ type appConfig struct {
 	Log       log.Config
 	Telemetry telemetry.Config
 	HTTP      httpserver.Config
+	// PyroscopeAddr enables continuous profiling when set (e.g.
+	// "http://pyroscope:4040"). Empty (default) = no profiler started.
+	PyroscopeAddr string `env:"PYROSCOPE_ADDR" envDefault:""`
 }
 
 type app struct {
@@ -64,6 +70,21 @@ func newApp(ctx context.Context) (*app, error) {
 	closer.Add("telemetry", func(ctx context.Context) error {
 		return shutdownTel(ctx)
 	})
+
+	// Continuous profiling (opt-in via PYROSCOPE_ADDR). No-op when unset.
+	if cfg.PyroscopeAddr != "" {
+		profiler, err := pyroscope.Start(pyroscope.Config{
+			ApplicationName: cfg.Telemetry.ServiceName,
+			ServerAddress:   cfg.PyroscopeAddr,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("skeleton: starting pyroscope profiler: %w", err)
+		}
+		closer.Add("pyroscope", func(context.Context) error {
+			return profiler.Stop()
+		})
+		logger.Info("pyroscope continuous profiling enabled", "addr", cfg.PyroscopeAddr)
+	}
 
 	h := health.New()
 	server := httpserver.New(cfg.HTTP)

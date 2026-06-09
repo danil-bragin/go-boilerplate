@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"go-boilerplate/platform/observability/log"
 	"go-boilerplate/platform/web/httpx"
 )
 
@@ -29,9 +30,18 @@ func Middleware(v Verifier) func(http.Handler) http.Handler {
 
 			p, err := v.Verify(r.Context(), raw)
 			if err != nil {
+				// SECURITY: never echo verifier internals (JWKS URLs, network
+				// errors, …) to the client. Token-validation failures get the
+				// generic "invalid token"; anything else (infrastructure
+				// failure) gets an even more generic detail and the real
+				// error goes to the structured log only.
 				detail := "invalid token"
 				if !errors.Is(err, ErrInvalidToken) {
-					detail = err.Error()
+					detail = "authentication failed"
+					log.From(r.Context()).ErrorContext(r.Context(),
+						"auth: token verification failed with non-token error",
+						"error", err,
+					)
 				}
 				httpx.WriteProblem(w, httpx.Problem{
 					Status: http.StatusUnauthorized,

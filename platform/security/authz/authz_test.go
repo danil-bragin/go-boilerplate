@@ -17,7 +17,7 @@ func TestRBAC_AllowsWithMatchingRole(t *testing.T) {
 		"order:create": {"admin", "ops"},
 	})
 	p := auth.Principal{Roles: []string{"ops"}}
-	if err := rbac.Authorize(p, "order:create"); err != nil {
+	if err := rbac.Authorize(context.Background(), p, "order:create", nil); err != nil {
 		t.Fatalf("expected nil, got %v", err)
 	}
 }
@@ -27,7 +27,7 @@ func TestRBAC_DeniesWithoutRole(t *testing.T) {
 		"order:create": {"admin", "ops"},
 	})
 	p := auth.Principal{Roles: []string{"viewer"}}
-	err := rbac.Authorize(p, "order:create")
+	err := rbac.Authorize(context.Background(), p, "order:create", nil)
 	if !errors.Is(err, authz.ErrForbidden) {
 		t.Fatalf("expected ErrForbidden, got %v", err)
 	}
@@ -38,7 +38,7 @@ func TestRBAC_DeniesUnknownAction(t *testing.T) {
 		"order:create": {"admin"},
 	})
 	p := auth.Principal{Roles: []string{"admin"}}
-	err := rbac.Authorize(p, "order:delete")
+	err := rbac.Authorize(context.Background(), p, "order:delete", nil)
 	if !errors.Is(err, authz.ErrForbidden) {
 		t.Fatalf("expected ErrForbidden for unknown action, got %v", err)
 	}

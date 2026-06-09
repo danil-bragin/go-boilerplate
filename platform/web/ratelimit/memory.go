@@ -76,16 +76,33 @@ func NewMemory(rps float64, burst int, opts ...MemoryOption) *Memory {
 	return m
 }
 
-// Allow returns (true, nil) if key is allowed to proceed, (false, nil) otherwise.
+// Allow reports whether key may proceed, together with the real remaining
+// budget and (when denied) the wait until the next token refills.
 // It never returns a non-nil error; the error return exists to satisfy Limiter.
-func (m *Memory) Allow(_ context.Context, key string) (bool, error) {
+func (m *Memory) Allow(_ context.Context, key string) (Result, error) {
 	m.mu.Lock()
 	e := m.getLocked(key)
 	now := m.now()
 	e.lastSeen = now
 	ok := e.lim.AllowN(now, 1)
+	tokens := e.lim.TokensAt(now)
 	m.mu.Unlock()
-	return ok, nil
+
+	res := Result{
+		Allowed:   ok,
+		Limit:     int64(m.burst),
+		Remaining: int64(tokens),
+	}
+	if res.Remaining < 0 {
+		res.Remaining = 0
+	}
+	if !ok && m.rps > 0 {
+		// Wait until the bucket refills the deficit up to one whole token.
+		if deficit := 1 - tokens; deficit > 0 {
+			res.RetryAfter = time.Duration(deficit / m.rps * float64(time.Second))
+		}
+	}
+	return res, nil
 }
 
 // Close stops the background eviction janitor.

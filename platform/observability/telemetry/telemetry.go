@@ -38,11 +38,30 @@ import (
 )
 
 // Config controls telemetry setup.
+//
+// Exemplars (operations note): the OTel Go SDK supports metric exemplars —
+// sampled trace links attached to histogram buckets, which make "this latency
+// spike → that exact trace" navigation work in Grafana. They are enabled via
+// the standard SDK environment variable, no code changes needed:
+//
+//	OTEL_METRICS_EXEMPLAR_FILTER=trace_based   # attach exemplars from sampled traces (recommended)
+//	OTEL_METRICS_EXEMPLAR_FILTER=always_off    # disable exemplars
+//
+// trace_based only records exemplars while a sampled span is in ctx, so keep
+// TELEMETRY_TRACE_RATIO > 0 for exemplars to appear. The Prometheus exporter
+// exposes them on histograms when the scrape uses the OpenMetrics format.
 type Config struct {
 	ServiceName       string `env:"OTEL_SERVICE_NAME"         envDefault:"service"`
 	OTLPEndpoint      string `env:"OTEL_EXPORTER_OTLP_ENDPOINT" envDefault:"localhost:4317"`
 	Enabled           bool   `env:"OTEL_ENABLED"              envDefault:"false"`
 	MetricsPrometheus bool   `env:"OTEL_METRICS_PROMETHEUS"   envDefault:"true"`
+	// TraceRatio is the head-sampling ratio for ROOT spans, applied as
+	// ParentBased(TraceIDRatioBased(ratio)): locally-started traces are
+	// sampled at this ratio, while spans with a remote parent follow the
+	// parent's decision (so a sampled distributed trace is never broken
+	// mid-chain). 1.0 (default) samples everything — right for dev and
+	// moderate traffic; lower it (e.g. 0.1) on high-QPS edges.
+	TraceRatio float64 `env:"TELEMETRY_TRACE_RATIO" envDefault:"1.0"`
 }
 
 // ShutdownFunc flushes and stops telemetry providers.
@@ -104,6 +123,7 @@ func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handl
 		tp := sdktrace.NewTracerProvider(
 			sdktrace.WithResource(res),
 			sdktrace.WithBatcher(traceExp),
+			sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.TraceRatio))),
 		)
 		otel.SetTracerProvider(tp)
 

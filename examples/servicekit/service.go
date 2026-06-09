@@ -3,16 +3,24 @@
 // kafka client+producer, health checks, admin HTTP server (/livez /readyz /metrics),
 // consumer wiring with poison-DLT, and outbox relay + cleanup.
 //
-// Cancel-before-close ordering:
+// Readiness-first teardown ordering:
 //
-//	Registration order in closer: log-sync, telemetry, pg, kafka-producer, admin-server, [consumers-cancel LAST]
-//	Closer runs LIFO: consumers-cancel fires FIRST (stops goroutines), then admin-server shuts down,
-//	then kafka-producer flushes+closes, then pg pool closes, then telemetry shuts down, then log syncs.
-//	This ensures goroutines stop before the resources they use are torn down.
+//	Registration order in closer: admin-server FIRST, then log-sync, telemetry, pg,
+//	kafka-producer, [service-specific closers], consumers-cancel, drain-gate LAST.
+//	Closer runs LIFO, so teardown is:
+//
+//	  1. drain-gate      — /readyz flips to 503, then sleeps DRAIN_GRACE so load
+//	                       balancers stop routing before anything shuts down.
+//	  2. consumers-cancel — stops goroutines and WAITS for them to exit.
+//	  3. service closers  — public HTTP servers, caches, … (whatever the service
+//	                       registered after New).
+//	  4. kafka-producer flushes+closes, pg pool closes, telemetry shuts down, log syncs.
+//	  5. admin-server     — LAST, so /readyz keeps answering 503 for the entire drain.
 package servicekit
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -27,6 +35,7 @@ import (
 	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/web/httpserver"
 
+	"github.com/grafana/pyroscope-go"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -66,6 +75,19 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 	slog.SetDefault(logger)
 
 	closer := run.NewCloser()
+
+	// Admin-server teardown is registered FIRST so it runs LAST (LIFO): the
+	// /readyz endpoint must keep serving 503 while everything else drains.
+	// The server itself is constructed further down; the closure reads the
+	// variable at teardown time, after New has assigned it.
+	var adminServer *httpserver.Server
+	closer.Add("admin-server", func(ctx context.Context) error {
+		if adminServer == nil {
+			return nil
+		}
+		return adminServer.Shutdown(ctx)
+	})
+
 	closer.Add("log-sync", func(context.Context) error {
 		_ = logSync()
 		return nil
@@ -92,6 +114,26 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 	closer.Add("telemetry", func(ctx context.Context) error {
 		return shutdownTel(ctx)
 	})
+
+	// 2b. Continuous profiling (opt-in via PYROSCOPE_ADDR). No-op when unset.
+	if cfg.PyroscopeAddr != "" {
+		appName := cfg.Telemetry.ServiceName
+		if appName == "" {
+			appName = "service" // mirror the OTEL_SERVICE_NAME default
+		}
+		profiler, err := pyroscope.Start(pyroscope.Config{
+			ApplicationName: appName,
+			ServerAddress:   cfg.PyroscopeAddr,
+			Logger:          nil, // background upload errors must not spam logs
+		})
+		if err != nil {
+			return nil, fmt.Errorf("servicekit: starting pyroscope profiler: %w", err)
+		}
+		closer.Add("pyroscope", func(context.Context) error {
+			return profiler.Stop() // flushes the final profile batch
+		})
+		logger.Info("pyroscope continuous profiling enabled", "addr", cfg.PyroscopeAddr)
+	}
 
 	// 3. Postgres pool.
 	pool, err := pg.New(ctx, cfg.PG)
@@ -135,15 +177,13 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 	if adminAddr == "" {
 		adminAddr = ":9090"
 	}
-	adminServer := httpserver.New(httpserver.Config{Addr: adminAddr})
+	adminServer = httpserver.New(httpserver.Config{Addr: adminAddr})
 	health.Mount(adminServer.Mux(), h)
 	if metricsHandler != nil {
 		adminServer.Mux().Get("/metrics", metricsHandler.ServeHTTP)
 	}
-	closer.Add("admin-server", func(ctx context.Context) error {
-		h.SetNotReady() // signal not-ready before draining
-		return adminServer.Shutdown(ctx)
-	})
+	// NOTE: the admin-server closer was registered FIRST (top of New) so it
+	// shuts down last; SetNotReady happens in the drain-gate closer (Start).
 
 	// 8. Optional Schema Registry serde (SERDE_SR_URL). Construction is
 	// offline; schema registration happens via RegisterSchema (fail-fast).
