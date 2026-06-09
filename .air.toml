@@ -1,0 +1,26 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  # Default target: skeleton. The `just dev <svc>` recipe overrides cmd + bin
+  # via -build.cmd / -build.bin flags for other services.
+  cmd = "go build -o ./tmp/app ./cmd/skeleton"
+  bin = "./tmp/app"
+  delay = 1000
+  include_ext = ["go"]
+  exclude_dir = ["tmp", "gen", "vendor", "bin", ".git", "docs", "deploy"]
+  exclude_regex = ["_test\\.go", ".*\\.pb\\.go", ".*_mock\\.go"]
+  stop_on_error = false
+  log = "build-errors.log"
+
+[color]
+  build   = "yellow"
+  watcher = "cyan"
+  runner  = "green"
+  main    = "magenta"
+
+[log]
+  time = false
+
+[misc]
+  clean_on_exit = false

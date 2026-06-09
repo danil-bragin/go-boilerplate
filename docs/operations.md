@@ -9,12 +9,12 @@ only the services they actually need.
 
 ### Profile matrix
 
-| Profile | Services | Task command |
+| Profile | Services | Command |
 |---|---|---|
-| _(none — core)_ | postgres, redpanda, redpanda-console, redis, minio, minio-setup, keycloak | `task up` |
-| `observability` | core + otel-collector, jaeger, prometheus, grafana, pyroscope | `task up:obs` |
-| `apps` | core + gateway, orders, payments, notifications | `task up:apps` |
-| `observability` + `apps` | Everything | `task up:full` |
+| _(none — core)_ | postgres, redpanda, redpanda-console, redis, minio, minio-setup, keycloak | `just up` |
+| `observability` | core + otel-collector, jaeger, prometheus, grafana, pyroscope | `just up-obs` |
+| `apps` | core + gateway, orders, payments, notifications | `just up-apps` |
+| `observability` + `apps` | Everything | `just up-full` |
 
 ### Notes
 
@@ -30,9 +30,9 @@ only the services they actually need.
   > **Note:** running `--profile apps` without `--profile observability` is
   > fully supported, but each service will log periodic OTLP export errors
   > because the `otel-collector` hostname is not resolvable. These errors are
-  > non-fatal and can be ignored in local development. Run `task up:full`
+  > non-fatal and can be ignored in local development. Run `just up-full`
   > (`--profile observability --profile apps`) to get collected telemetry.
-- **`task down` stops everything** (`--profile observability --profile apps`)
+- **`just down` stops everything** (`--profile observability --profile apps`)
   regardless of which profiles were originally used to start the stack, and
   removes volumes (`-v`).
 
@@ -40,23 +40,25 @@ only the services they actually need.
 
 ```bash
 # Option A — full stack (everything running in containers)
-task up:full
+just up-full
 # Edit code, rebuild a single service:
 docker compose --profile apps up -d --build gateway
 
 # Option B — local development (run one service on the host, rest in containers)
-task up          # starts only core infra
-go run ./examples/gateway  # runs against postgres/redpanda/redis/minio/keycloak on localhost
+just up          # starts only core infra
+go run ./examples/gateway/cmd/gateway  # runs against postgres/redpanda/redis/minio/keycloak on localhost
+# or with hot-reload:
+just dev gateway
 
 # Option C — core + observability (no app containers; run services via go run)
-task up:obs
-go run ./examples/gateway  # OTLP traces sent to otel-collector on localhost:4317
+just up-obs
+just dev gateway  # OTLP traces sent to otel-collector on localhost:4317
 
 # Tail logs from whatever is running
-task logs
+just logs
 
 # Tear down
-task down
+just down
 ```
 
 ---

@@ -12,7 +12,7 @@ Read this before writing a new test; copy the linked examples rather than invent
 | **Unit** | One function / method | None | moq mocks (`mocks.*`) | Always (`-short`) |
 | **Functional** | A use-case slice across several collaborators | None | Hand fakes (`fakes.*`) + `mockhttp.*` | Always (`-short`) |
 | **Integration** | A service wired to real DB / broker | Docker (testcontainers) | Real infra containers | Full `go test ./...` only |
-| **E2E** | Multiple services via HTTP/gRPC/Kafka | Full stack (`docker compose up`) | None | `task test:e2e` / CI nightly |
+| **E2E** | Multiple services via HTTP/gRPC/Kafka | Full stack (`docker compose up`) | None | `just test-e2e` / CI nightly |
 
 ---
 
@@ -36,7 +36,7 @@ This creates two CI lanes:
 - **Full lane** — `go test ./...`: also runs integration tests that spin up
   real Postgres, Redpanda, Redis, and MinIO via testcontainers.
 
-Use `task test:unit` for the fast lane and `task test:integration` for the full lane (see §5).
+Use `just test-unit` for the fast lane and `just test-integration` for the full lane (see §5).
 
 ---
 
@@ -107,19 +107,19 @@ rec := fixtures.Record(fixtures.WithTopic("orders"))
 
 ```bash
 # Fast lane — unit + functional only (no Docker)
-task test:unit
+just test-unit
 
 # Full lane — includes integration tests (requires Docker)
-task test:integration
+just test-integration
 
 # E2E only
-task test:e2e
+just test-e2e
 
 # Coverage report (fast lane)
-task test:cover
+just test-cover
 
 # Regenerate moq mocks
-task gen:mocks
+just gen-mocks
 ```
 
 Raw `go test` equivalents:
@@ -142,7 +142,7 @@ changing a platform interface:
 ```bash
 go generate ./platform/testkit/mocks/...
 # or
-task gen:mocks
+just gen-mocks
 ```
 
 The `go:generate` directives live in `platform/testkit/mocks/gen.go` and pin

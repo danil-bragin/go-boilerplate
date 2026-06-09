@@ -30,7 +30,7 @@ A **production-grade, opinionated Go microservice boilerplate** for highload / e
 | CQRS | **typed generic decorators** (`platform/cqrs`) |
 | DI | **manual constructor wiring** + `run.Closer` reverse-order teardown |
 | Testing | **testify + testcontainers-go** + `uber-go/goleak` |
-| Dev tooling | **Taskfile** + golangci-lint + buf + sqlc |
+| Dev tooling | **just** + golangci-lint + buf + sqlc + air |
 
 ---
 
@@ -64,7 +64,7 @@ All domain state transitions are driven by Kafka events. The gateway owns a **re
 
 ## Quickstart
 
-**Prerequisites:** Docker, Go 1.25+, [Task](https://taskfile.dev/).
+**Prerequisites:** Docker, Go 1.25+, [just](https://just.systems/).
 
 ### Compose profiles
 
@@ -72,20 +72,20 @@ The stack is split into three profiles so you only run what you need:
 
 | Profile | Services started | Command |
 |---|---|---|
-| _(none — core)_ | postgres, redpanda, redpanda-console, redis, minio, minio-setup, keycloak | `task up` |
-| `observability` | core + otel-collector, jaeger, prometheus, grafana, pyroscope | `task up:obs` |
-| `apps` | core + gateway, orders, payments, notifications | `task up:apps` |
-| both | Everything | `task up:full` |
+| _(none — core)_ | postgres, redpanda, redpanda-console, redis, minio, minio-setup, keycloak | `just up` |
+| `observability` | core + otel-collector, jaeger, prometheus, grafana, pyroscope | `just up-obs` |
+| `apps` | core + gateway, orders, payments, notifications | `just up-apps` |
+| both | Everything | `just up-full` |
 
 ```bash
 # Start everything (core infra + observability + apps)
-task up:full
+just up-full
 
 # Or: start just core infra for local development (run services via go run)
-task up
+just up
 
 # Stop everything and remove volumes
-task down
+just down
 ```
 
 ```bash
@@ -110,7 +110,7 @@ open http://localhost:9001    # MinIO Console (minioadmin/minioadmin)
 Tests use testcontainers-go and spin up real containers. **Docker must be running.**
 
 ```bash
-task test          # go test -race ./... (3–5 min; starts Postgres, Redpanda, Redis, MinIO)
+just test          # go test ./... (3–5 min; starts Postgres, Redpanda, Redis, MinIO)
 ```
 
 ### Auth — Keycloak
@@ -129,7 +129,7 @@ Keycloak is published on **host port 8180** (maps to container port 8080) to avo
 
 ```bash
 # Fetch a demo token and call the API (gateway listens on host port 8080)
-TOKEN=$(task token)
+TOKEN=$(just token)
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/orders/<id>
 ```
 
@@ -175,7 +175,8 @@ go-boilerplate/
 ├── docs/            ARCHITECTURE.md, ADRs, adding-a-service guide
 ├── Dockerfile       parametric multi-stage (--build-arg SERVICE=<svc>)
 ├── docker-compose.yml full local stack
-├── Taskfile.yml     dev loop: up/up:obs/up:apps/up:full/down/logs/test/lint/buf/sqlc/build-images
+├── justfile         dev loop: up/up-obs/up-apps/up-full/down/logs/test/lint/buf/sqlc/build-images
+├── .air.toml        air hot-reload config (default target: skeleton; override via just dev <svc>)
 └── buf.yaml         buf v2 config (proto lint + breaking rules)
 ```
 
