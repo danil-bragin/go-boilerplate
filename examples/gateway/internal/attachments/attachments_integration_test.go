@@ -17,37 +17,57 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
-	tcminio "github.com/testcontainers/testcontainers-go/modules/minio"
+	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// newMinioStore starts a MinIO testcontainer and returns a real blob.MinioStore
-// wired to it. The container is terminated automatically when the test ends.
-func newMinioStore(t *testing.T) *blob.MinioStore {
+// newBlobStore starts a SeaweedFS testcontainer (S3 gateway on 8333) and
+// returns a real blob.S3Store wired to it. The container is terminated
+// automatically when the test ends.
+func newBlobStore(t *testing.T) *blob.S3Store {
 	t.Helper()
 	if testing.Short() {
-		t.Skip("integration test requires Docker (minio container)")
+		t.Skip("integration test requires Docker (seaweedfs container)")
 	}
 	ctx := context.Background()
 
-	ctr, err := tcminio.Run(ctx, "minio/minio:RELEASE.2024-01-16T16-07-38Z")
+	ctr, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        "chrislusf/seaweedfs:3.80",
+			Cmd:          []string{"server", "-s3"},
+			ExposedPorts: []string{"8333/tcp"},
+			WaitingFor:   wait.ForListeningPort("8333/tcp").WithStartupTimeout(2 * time.Minute),
+		},
+		Started: true,
+	})
 	testcontainers.CleanupContainer(t, ctr)
 	require.NoError(t, err)
 
-	endpoint, err := ctr.ConnectionString(ctx)
+	endpoint, err := ctr.PortEndpoint(ctx, "8333/tcp", "")
 	require.NoError(t, err)
 
 	cfg := blob.Config{
-		Endpoint:  endpoint,
-		AccessKey: ctr.Username,
-		SecretKey: ctr.Password,
-		Bucket:    "testbucket",
-		UseSSL:    false,
-		Region:    "us-east-1",
+		Endpoint:     endpoint,
+		AccessKey:    "test",
+		SecretKey:    "test",
+		Bucket:       "testbucket",
+		UseSSL:       false,
+		Region:       "us-east-1",
+		UsePathStyle: true,
 	}
 
-	store, err := blob.New(ctx, cfg)
-	require.NoError(t, err)
-	return store
+	// blob.New ensures the bucket exists; retry briefly because the SeaweedFS
+	// filer behind the S3 gateway becomes ready slightly after the port opens.
+	deadline := time.Now().Add(time.Minute)
+	for {
+		store, err := blob.New(ctx, cfg)
+		if err == nil {
+			return store
+		}
+		if time.Now().After(deadline) {
+			require.NoError(t, err, "blob.New against seaweedfs")
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
 }
 
 // integrationOrderID is a valid UUID used as the order identifier in the
@@ -64,9 +84,9 @@ func withIntegrationPrincipal(req *http.Request) *http.Request {
 }
 
 // TestIntegration_AttachmentRoundTrip uploads a file and downloads it via the
-// presigned URL, verifying the full MinIO round-trip.
+// presigned URL, verifying the full object-store round-trip.
 func TestIntegration_AttachmentRoundTrip(t *testing.T) {
-	store := newMinioStore(t)
+	store := newBlobStore(t)
 
 	h := attachments.New(store, flagOn)
 	r := chi.NewRouter()

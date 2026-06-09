@@ -1,5 +1,5 @@
 // Package blob provides an object-storage abstraction backed by any
-// S3-compatible store (MinIO locally, AWS S3 in prod).
+// S3-compatible store (SeaweedFS locally, AWS S3 in prod).
 package blob
 
 import (

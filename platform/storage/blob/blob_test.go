@@ -3,6 +3,7 @@ package blob_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"sort"
@@ -11,42 +12,96 @@ import (
 
 	"go-boilerplate/platform/storage/blob"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
-	tcminio "github.com/testcontainers/testcontainers-go/modules/minio"
+	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// newStore starts a MinIO testcontainer and returns a MinioStore wired to it.
-// The container is terminated automatically when the test ends.
-func newStore(t *testing.T) *blob.MinioStore {
+// seaweedImage is the SeaweedFS all-in-one image used for contract tests.
+const seaweedImage = "chrislusf/seaweedfs:3.80"
+
+// newStore starts a SeaweedFS testcontainer (S3 gateway on 8333), creates the
+// test bucket via the AWS SDK, and returns an S3Store wired to it. The
+// container is terminated automatically when the test ends.
+func newStore(t *testing.T) *blob.S3Store {
 	t.Helper()
 	if testing.Short() {
-		t.Skip("integration test requires Docker (minio container)")
+		t.Skip("integration test requires Docker (seaweedfs container)")
 	}
 	ctx := context.Background()
 
-	ctr, err := tcminio.Run(ctx, "minio/minio:RELEASE.2024-01-16T16-07-38Z")
+	ctr, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        seaweedImage,
+			Cmd:          []string{"server", "-s3"},
+			ExposedPorts: []string{"8333/tcp"},
+			WaitingFor:   wait.ForListeningPort("8333/tcp").WithStartupTimeout(2 * time.Minute),
+		},
+		Started: true,
+	})
 	testcontainers.CleanupContainer(t, ctr)
 	require.NoError(t, err)
 
-	endpoint, err := ctr.ConnectionString(ctx)
+	endpoint, err := ctr.PortEndpoint(ctx, "8333/tcp", "")
 	require.NoError(t, err)
 
 	cfg := blob.Config{
-		Endpoint:  endpoint,
-		AccessKey: ctr.Username, // "minioadmin" (default)
-		SecretKey: ctr.Password, // "minioadmin" (default)
-		Bucket:    "testbucket",
-		UseSSL:    false,
-		Region:    "us-east-1",
+		Endpoint:     endpoint,
+		AccessKey:    "test",
+		SecretKey:    "test",
+		Bucket:       "testbucket",
+		UseSSL:       false,
+		Region:       "us-east-1",
+		UsePathStyle: true,
 	}
+
+	createTestBucket(ctx, t, cfg)
 
 	store, err := blob.New(ctx, cfg)
 	require.NoError(t, err)
 	return store
 }
 
-func TestMinio_PutGetRoundTrip(t *testing.T) {
+// createTestBucket creates cfg.Bucket via the AWS SDK, retrying until the
+// SeaweedFS filer behind the S3 gateway is ready to serve requests (the S3
+// port starts listening slightly before the filer accepts writes).
+func createTestBucket(ctx context.Context, t *testing.T, cfg blob.Config) {
+	t.Helper()
+
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion(cfg.Region),
+		awsconfig.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
+		),
+	)
+	require.NoError(t, err)
+
+	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String("http://" + cfg.Endpoint)
+		o.UsePathStyle = true
+	})
+
+	deadline := time.Now().Add(time.Minute)
+	for {
+		_, err = client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(cfg.Bucket)})
+		var owned *types.BucketAlreadyOwnedByYou
+		var exists *types.BucketAlreadyExists
+		if err == nil || errors.As(err, &owned) || errors.As(err, &exists) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("create test bucket %q: %v", cfg.Bucket, err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func TestS3Store_PutGetRoundTrip(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := newStore(t)
@@ -64,7 +119,16 @@ func TestMinio_PutGetRoundTrip(t *testing.T) {
 	require.Equal(t, content, got)
 }
 
-func TestMinio_Exists(t *testing.T) {
+func TestS3Store_GetMissingKeyFails(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := newStore(t)
+
+	_, err := store.Get(ctx, "does/not/exist")
+	require.Error(t, err, "Get on a missing key must surface an error eagerly")
+}
+
+func TestS3Store_Exists(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := newStore(t)
@@ -88,7 +152,7 @@ func TestMinio_Exists(t *testing.T) {
 	require.False(t, ok)
 }
 
-func TestMinio_Delete(t *testing.T) {
+func TestS3Store_Delete(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := newStore(t)
@@ -107,7 +171,7 @@ func TestMinio_Delete(t *testing.T) {
 	require.False(t, ok)
 }
 
-func TestMinio_ListByPrefix(t *testing.T) {
+func TestS3Store_ListByPrefix(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := newStore(t)
@@ -131,7 +195,7 @@ func TestMinio_ListByPrefix(t *testing.T) {
 	}
 }
 
-func TestMinio_PresignGetDownloads(t *testing.T) {
+func TestS3Store_PresignGetDownloads(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := newStore(t)
