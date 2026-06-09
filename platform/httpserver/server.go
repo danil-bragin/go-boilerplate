@@ -41,8 +41,10 @@ type Server struct {
 //
 // Middleware order (outermost → innermost):
 //
-//	RequestID → AccessLog → Recover → MaxBytes → Timeout
+//	SecurityHeaders → RequestID → AccessLog → Recover → MaxBytes → Timeout
 //
+// SecurityHeaders is outermost so defensive headers are set on every response,
+// including error responses produced by Recover.
 // RequestID ensures an id is in context before AccessLog reads it.
 // AccessLog wraps with a capturingWriter to observe status+bytes; it sits
 // outside Recover so it always logs the final status (200 or 500).
@@ -73,6 +75,7 @@ func New(cfg Config) *Server {
 	}
 
 	mux := chi.NewRouter()
+	mux.Use(SecurityHeaders)
 	mux.Use(RequestID)
 	mux.Use(OTel)
 	mux.Use(AccessLog)

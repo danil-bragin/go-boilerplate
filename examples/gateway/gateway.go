@@ -79,6 +79,10 @@ type Config struct {
 	JWKSUrl             string `env:"GATEWAY_JWKS_URL"              envDefault:""`
 	JWKSIssuer          string `env:"GATEWAY_JWKS_ISSUER"           envDefault:""`
 	JWKSAudience        string `env:"GATEWAY_JWKS_AUDIENCE"         envDefault:""`
+	// CORSOrigins is the list of allowed CORS origins for the public HTTP server.
+	// Use ["*"] for dev/demo. In production set explicit origins.
+	// Default "*" allows any origin (demo-safe; auth should enforce identity).
+	CORSOrigins []string `env:"GATEWAY_CORS_ORIGINS"          envSeparator:"," envDefault:"*"`
 }
 
 // Option is a functional option for [NewApp].
@@ -199,6 +203,23 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	})
 	a.server = httpSrv
 
+	// Edge security: CORS (opt-in, configure origins via GATEWAY_CORS_ORIGINS)
+	// and a global rate limiter (100 rps, burst 200).
+	//
+	// CORS is applied only when cfg.CORSOrigins is set. For demo/local the
+	// default allows all origins. In production set GATEWAY_CORS_ORIGINS to
+	// an explicit comma-separated list and remove the "*" wildcard.
+	httpSrv.Mux().Use(httpserver.CORS(httpserver.CORSOptions{
+		AllowedOrigins: cfg.CORSOrigins,
+		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders: []string{"Content-Type", "Authorization", "X-Request-Id"},
+	}))
+	// Global edge rate limiter: 100 rps sustained, burst 200.
+	// NOTE: This is a process-local limiter. For multi-instance deployments
+	// replace with a Redis-backed distributed rate limiter (GCRA).
+	// For per-IP limiting, key the limiter by r.RemoteAddr (add an LRU map).
+	httpSrv.Mux().Use(httpserver.RateLimit(100, 200))
+
 	// Wire the API server (strict handler) with RBAC and resilience.
 	apiServer := api.NewServer(
 		svc.Pool(),
@@ -271,6 +292,11 @@ func (a *App) Closer() *run.Closer {
 // Addr returns the bound HTTP address (useful when :0 was used in tests).
 func (a *App) Addr() string {
 	return a.server.Addr()
+}
+
+// AdminAddr returns the bound admin HTTP server address (serves /livez, /readyz, /metrics).
+func (a *App) AdminAddr() string {
+	return a.svc.AdminAddr()
 }
 
 // KafkaClient returns the underlying Kafka client (used by tests that produce
