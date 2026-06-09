@@ -16,30 +16,21 @@ package payments
 import (
 	"context"
 	"io"
-	"log/slog"
-	"os"
 	"time"
 
+	"go-boilerplate/examples/internal/service"
 	"go-boilerplate/examples/payments/internal/app"
 	"go-boilerplate/examples/payments/internal/migrations"
 	"go-boilerplate/examples/payments/internal/transport"
 	"go-boilerplate/platform/audit"
 	"go-boilerplate/platform/config"
-	"go-boilerplate/platform/kafka"
-	"go-boilerplate/platform/log"
 	"go-boilerplate/platform/outbox"
-	"go-boilerplate/platform/outboxkafka"
-	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/run"
-	"go-boilerplate/platform/telemetry"
 )
 
 // Config aggregates all configuration for the payments service.
 type Config struct {
-	Log         log.Config
-	Telemetry   telemetry.Config
-	PG          pg.Config
-	Kafka       kafka.Config
+	service.Config
 	EventsTopic string `env:"ORDERS_EVENTS_TOPIC" envDefault:"orders.events"`
 }
 
@@ -47,22 +38,14 @@ type Config struct {
 type Option func(*App)
 
 // WithLogWriter overrides the log output writer (default: os.Stdout).
-func WithLogWriter(w io.Writer) Option {
-	return func(a *App) {
-		a.logWriter = w
-	}
+// Kept for API compatibility; harness writes to os.Stdout.
+func WithLogWriter(_ io.Writer) Option {
+	return func(_ *App) {}
 }
 
 // App holds all wired components for the payments service.
 type App struct {
-	cfg             Config
-	logger          *slog.Logger
-	closer          *run.Closer
-	consumer        *kafka.Consumer
-	relay           *outbox.Relay
-	eventHandler    kafka.HandlerFunc
-	cancelConsumers context.CancelFunc
-	logWriter       io.Writer
+	svc *service.Service
 }
 
 // NewApp wires all service components and returns a ready-to-start App.
@@ -74,143 +57,56 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		return nil, err
 	}
 
-	a := &App{
-		cfg:       cfg,
-		logWriter: os.Stdout,
-	}
-
+	a := &App{}
 	for _, o := range opts {
 		o(a)
 	}
 
-	logger, logSync := log.New(cfg.Log, a.logWriter)
-	a.logger = logger
-	slog.SetDefault(logger)
-
-	closer := run.NewCloser()
-	closer.Add("log-sync", func(context.Context) error {
-		_ = logSync()
-		return nil
-	})
-	a.closer = closer
-
-	shutdownTel, err := telemetry.Setup(ctx, cfg.Telemetry)
+	svc, err := service.New(ctx, cfg.Config, migrations.FS, "sql")
 	if err != nil {
 		return nil, err
 	}
-	closer.Add("telemetry", func(ctx context.Context) error {
-		return shutdownTel(ctx)
-	})
+	a.svc = svc
 
-	// Postgres pool.
-	pool, err := pg.New(ctx, cfg.PG)
-	if err != nil {
-		return nil, err
-	}
-	closer.Add("pg", func(ctx context.Context) error {
-		return pool.Close(ctx)
-	})
-
-	// Run migrations at startup.
-	if err := pg.Migrate(ctx, cfg.PG.DSN, migrations.FS, "sql"); err != nil {
+	// Ensure source topic and output topic; DLT topics handled by AddConsumer.
+	if err := svc.EnsureTopics(ctx, 1, 1, cfg.EventsTopic, "payments.events"); err != nil {
 		return nil, err
 	}
 
-	// Kafka client + producer.
-	producerCfg := cfg.Kafka
-	producerCfg.GroupID = ""
-	kafkaClient, err := kafka.NewClient(producerCfg)
-	if err != nil {
-		return nil, err
-	}
-	producer := kafka.NewProducer(kafkaClient)
-	closer.Add("kafka-producer", func(ctx context.Context) error {
-		return producer.Close(ctx)
-	})
-
-	// Ensure topics exist.
-	if err := kafka.EnsureTopics(ctx, kafkaClient, 1, 1,
-		cfg.EventsTopic,
-		"payments.events",
-	); err != nil {
-		return nil, err
-	}
-
-	// Outbox repository + publisher + relay.
-	outboxRepo := outbox.NewRepository(pool)
-	publisher := outboxkafka.New(producer)
-	relay := outbox.NewRelay(pool, publisher, outbox.RelayConfig{
+	// Outbox relay + cleaner (publishes PaymentProcessed events).
+	outboxRepo := outbox.NewRepository(svc.Pool())
+	svc.AddOutboxRelay(svc.DefaultOutboxPublisher(), outbox.RelayConfig{
 		PollInterval: 200 * time.Millisecond,
 	})
-	relay.SetOnError(func(err error) {
-		logger.Error("outbox relay error", "error", err)
-	})
-	a.relay = relay
 
-	// Audit store.
-	auditStore := audit.NewPgStore(pool)
-
-	// Build and decorate the ProcessPayment handler.
-	rawHandler := app.ProcessPaymentHandler(pool, outboxRepo)
+	// Build the domain handler.
+	auditStore := audit.NewPgStore(svc.Pool())
+	rawHandler := app.ProcessPaymentHandler(svc.Pool(), outboxRepo)
 	decoratedHandler := app.DecorateProcessPaymentHandler(rawHandler, auditStore)
+	evtHandler := transport.NewEventHandler(svc.Pool(), decoratedHandler)
 
-	// Kafka consumer.
-	consumerCfg := cfg.Kafka
-	consumerCfg.GroupID = "payments"
-	consumer, err := kafka.NewConsumer(consumerCfg, cfg.EventsTopic)
-	if err != nil {
+	// Register consumer; harness wraps with WithRetry+DLT automatically.
+	if err := svc.AddConsumer(ctx, "payments", []string{cfg.EventsTopic}, evtHandler); err != nil {
 		return nil, err
 	}
-	closer.Add("kafka-consumer", func(context.Context) error {
-		consumer.Close()
-		return nil
-	})
-	a.consumer = consumer
-
-	// Wire the Kafka handler.
-	a.eventHandler = transport.NewEventHandler(pool, decoratedHandler)
 
 	return a, nil
 }
 
-// Start launches background goroutines (outbox relay + Kafka consumer).
+// Start launches background goroutines (outbox relay + cleaner + Kafka consumer).
 // Non-blocking.
 func (a *App) Start() {
-	runCtx, cancel := context.WithCancel(context.Background())
-	a.cancelConsumers = cancel
-
-	// Register the cancel as the LAST entry in the Closer so it runs FIRST
-	// during reverse-order teardown — goroutines stop before their resources
-	// (pg pool, kafka client) are closed.
-	a.closer.Add("consumers-cancel", func(context.Context) error {
-		cancel()
-		return nil
-	})
-
-	go func() {
-		if err := a.relay.Run(runCtx); err != nil && runCtx.Err() == nil {
-			a.logger.Error("relay stopped unexpectedly", "error", err)
-		}
-	}()
-
-	go func() {
-		if err := a.consumer.Run(runCtx, a.eventHandler); err != nil && runCtx.Err() == nil {
-			a.logger.Error("consumer stopped unexpectedly", "error", err)
-		}
-	}()
-
-	a.logger.Info("payments service started")
+	if err := a.svc.Start(); err != nil {
+		a.svc.Logger().Error("failed to start service", "error", err)
+	}
 }
 
 // Stop cancels consumer goroutines and closes all resources.
 func (a *App) Stop(ctx context.Context) error {
-	if a.cancelConsumers != nil {
-		a.cancelConsumers()
-	}
-	return a.closer.Close(ctx)
+	return a.svc.Stop(ctx)
 }
 
 // Closer returns the run.Closer for integration with run.Run.
 func (a *App) Closer() *run.Closer {
-	return a.closer
+	return a.svc.Closer()
 }
