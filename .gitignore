@@ -17,3 +17,10 @@ coverage.html
 .idea/
 .vscode/
 .DS_Store
+
+# stray root build artifacts
+/skeleton
+/gateway
+/orders
+/payments
+/notifications
