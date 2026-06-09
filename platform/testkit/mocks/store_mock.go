@@ -7,7 +7,7 @@ import (
 	"context"
 	"sync"
 
-	"go-boilerplate/platform/audit"
+	"go-boilerplate/platform/security/audit"
 )
 
 // Ensure, that StoreMock does implement audit.Store.

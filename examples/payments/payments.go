@@ -22,10 +22,10 @@ import (
 	"go-boilerplate/examples/payments/internal/app"
 	"go-boilerplate/examples/payments/internal/migrations"
 	"go-boilerplate/examples/payments/internal/transport"
-	"go-boilerplate/platform/audit"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/run"
+	"go-boilerplate/platform/security/audit"
 )
 
 // Config aggregates all configuration for the payments service.

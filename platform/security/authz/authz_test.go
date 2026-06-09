@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"go-boilerplate/platform/auth"
-	"go-boilerplate/platform/authz"
 	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/security/auth"
+	"go-boilerplate/platform/security/authz"
 )
 
 // ---- RBAC tests ----

@@ -3,8 +3,8 @@ package audit
 import (
 	"context"
 
-	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/security/auth"
 )
 
 // actorFrom extracts the actor identifier from the context principal.

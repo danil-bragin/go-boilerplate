@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"go-boilerplate/platform/auth"
+	"go-boilerplate/platform/security/auth"
 
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"

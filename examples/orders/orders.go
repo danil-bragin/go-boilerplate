@@ -22,10 +22,10 @@ import (
 	"go-boilerplate/examples/orders/internal/app"
 	"go-boilerplate/examples/orders/internal/migrations"
 	"go-boilerplate/examples/orders/internal/transport"
-	"go-boilerplate/platform/audit"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/run"
+	"go-boilerplate/platform/security/audit"
 )
 
 // Config aggregates all configuration for the orders service.

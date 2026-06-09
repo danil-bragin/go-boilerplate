@@ -5,12 +5,12 @@ import (
 	"fmt"
 
 	"go-boilerplate/examples/internal/service"
-	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/blob"
 	"go-boilerplate/platform/cache"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/featureflags"
 	"go-boilerplate/platform/observability/health"
+	"go-boilerplate/platform/security/auth"
 
 	"github.com/open-feature/go-sdk/openfeature/memprovider"
 )

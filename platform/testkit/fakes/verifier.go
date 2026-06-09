@@ -3,7 +3,7 @@ package fakes
 import (
 	"context"
 
-	"go-boilerplate/platform/auth"
+	"go-boilerplate/platform/security/auth"
 )
 
 // Verifier is an in-memory fake implementing auth.Verifier.

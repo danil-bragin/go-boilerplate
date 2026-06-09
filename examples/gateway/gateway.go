@@ -55,9 +55,9 @@ import (
 	"go-boilerplate/examples/gateway/internal/migrations"
 	"go-boilerplate/examples/gateway/internal/projection"
 	"go-boilerplate/examples/internal/service"
-	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/run"
+	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/web/httpserver"
 
 	gatewayapp "go-boilerplate/examples/gateway/internal/app"

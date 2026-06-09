@@ -6,9 +6,9 @@ package fixtures
 import (
 	"time"
 
-	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/outbox"
+	"go-boilerplate/platform/security/auth"
 
 	"github.com/google/uuid"
 )

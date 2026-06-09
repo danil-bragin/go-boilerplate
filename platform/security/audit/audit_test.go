@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"go-boilerplate/platform/audit"
-	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/pg/pgtest"
+	"go-boilerplate/platform/security/audit"
+	"go-boilerplate/platform/security/auth"
 
 	"github.com/stretchr/testify/require"
 )

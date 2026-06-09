@@ -5,9 +5,9 @@ import (
 
 	"go-boilerplate/examples/gateway/internal/api"
 	"go-boilerplate/examples/gateway/internal/attachments"
-	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/blob"
 	"go-boilerplate/platform/featureflags"
+	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/web/httpserver"
 
 	"github.com/go-chi/chi/v5"

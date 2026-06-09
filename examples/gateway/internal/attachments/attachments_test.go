@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"go-boilerplate/examples/gateway/internal/attachments"
-	"go-boilerplate/platform/auth"
+	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/testkit/fakes"
 
 	"github.com/go-chi/chi/v5"

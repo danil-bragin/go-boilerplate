@@ -7,7 +7,7 @@ import (
 	"context"
 	"sync"
 
-	"go-boilerplate/platform/auth"
+	"go-boilerplate/platform/security/auth"
 )
 
 // Ensure, that VerifierMock does implement auth.Verifier.

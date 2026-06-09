@@ -24,7 +24,7 @@ import (
 	gateway "go-boilerplate/examples/gateway"
 	gatewayapp "go-boilerplate/examples/gateway/internal/app"
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
-	authpkg "go-boilerplate/platform/auth"
+	authpkg "go-boilerplate/platform/security/auth"
 )
 
 // startApp starts the gateway app for testing, returning its base URL.

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"go-boilerplate/platform/auth"
+	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/testkit/mockhttp"
 
 	"github.com/stretchr/testify/assert"

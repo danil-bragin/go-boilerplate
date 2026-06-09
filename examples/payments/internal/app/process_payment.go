@@ -6,10 +6,10 @@ import (
 	"fmt"
 
 	"go-boilerplate/examples/payments/internal/store/gen"
-	"go-boilerplate/platform/audit"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/pg"
+	"go-boilerplate/platform/security/audit"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"

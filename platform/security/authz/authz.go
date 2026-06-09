@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/security/auth"
 )
 
 var (

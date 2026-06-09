@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/messaging/outbox"
+	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/testkit/fakes"
 
 	"github.com/google/uuid"

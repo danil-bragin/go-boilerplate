@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"go-boilerplate/examples/gateway/internal/attachments"
-	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/blob"
+	"go-boilerplate/platform/security/auth"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
