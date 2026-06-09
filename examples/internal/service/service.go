@@ -16,49 +16,17 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"time"
 
-	"go-boilerplate/platform/audit"
 	"go-boilerplate/platform/health"
 	"go-boilerplate/platform/httpserver"
-	"go-boilerplate/platform/inbox"
 	"go-boilerplate/platform/kafka"
 	"go-boilerplate/platform/log"
-	"go-boilerplate/platform/outbox"
-	"go-boilerplate/platform/outboxkafka"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/run"
 	"go-boilerplate/platform/telemetry"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
-
-// Config is the embeddable base config for all consumer services.
-// Services embed this and add their own topic-name fields.
-type Config struct {
-	Log       log.Config
-	Telemetry telemetry.Config
-	PG        pg.Config
-	Kafka     kafka.Config
-	AdminAddr string `env:"ADMIN_HTTP_ADDR" envDefault:":9090"`
-
-	// Inbox retention: processed inbox rows older than InboxRetention are
-	// deleted every InboxCleanupInterval. Set InboxCleanupInterval to 0 to
-	// disable inbox cleanup (e.g., when the service does not use the inbox
-	// table — in practice all example services use it, so the default is safe).
-	InboxRetention       time.Duration `env:"INBOX_RETENTION" envDefault:"168h"`
-	InboxCleanupInterval time.Duration `env:"INBOX_CLEANUP_INTERVAL" envDefault:"1h"`
-
-	// Audit log retention: audit_log rows older than AuditRetention are deleted
-	// every AuditCleanupInterval by services that call AddAuditCleanup. Set
-	// AuditCleanupInterval to 0 to disable audit cleanup for a given service.
-	//
-	// COMPLIANCE NOTE: audit logs often need long retention or archival to cold
-	// storage before deletion. The default retention (90 days) is intentionally
-	// generous. Review your compliance obligations before lowering it.
-	AuditRetention       time.Duration `env:"AUDIT_RETENTION" envDefault:"2160h"`
-	AuditCleanupInterval time.Duration `env:"AUDIT_CLEANUP_INTERVAL" envDefault:"6h"`
-}
 
 // goroutineFunc is a background goroutine registered via AddConsumer or AddOutboxRelay.
 type goroutineFunc func(ctx context.Context)
@@ -188,188 +156,6 @@ func (s *Service) Closer() *run.Closer { return s.closer }
 
 // Cfg returns the base Config.
 func (s *Service) Cfg() Config { return s.cfg }
-
-// EnsureTopics creates topics if they do not already exist (idempotent).
-func (s *Service) EnsureTopics(ctx context.Context, partitions int32, rf int16, topics ...string) error {
-	return kafka.EnsureTopics(ctx, s.kafkaClient, partitions, rf, topics...)
-}
-
-// AddConsumer wires a Kafka consumer: wraps handler with WithRetry (poison→DLT),
-// creates a consumer for the group+topics, and registers its Run goroutine.
-// DLT topics (topic+".DLT") are also created via EnsureTopics.
-// Must be called before Start.
-func (s *Service) AddConsumer(ctx context.Context, groupID string, topics []string, handler kafka.HandlerFunc) error {
-	// Ensure DLT topics exist alongside the source topics.
-	allTopics := make([]string, 0, len(topics)*2)
-	allTopics = append(allTopics, topics...)
-	for _, t := range topics {
-		allTopics = append(allTopics, t+".DLT")
-	}
-	if err := s.EnsureTopics(ctx, 1, 1, allTopics...); err != nil {
-		return err
-	}
-
-	// Wrap with retry/DLT so poison messages never block the partition.
-	wrapped := kafka.WithRetry(handler, kafka.RetryOpts{
-		MaxAttempts: 3,
-		Producer:    s.producer,
-		Backoff:     100 * time.Millisecond,
-	})
-
-	// Build consumer.
-	consumerCfg := s.cfg.Kafka
-	consumerCfg.GroupID = groupID
-	consumer, err := kafka.NewConsumer(consumerCfg, topics...)
-	if err != nil {
-		return err
-	}
-	// Register consumer Close in the closer (runs before consumers-cancel in LIFO,
-	// but consumers-cancel is registered LAST so it runs FIRST — see ordering note at top).
-	s.closer.Add("kafka-consumer-"+groupID, consumer.Close)
-
-	s.goroutines = append(s.goroutines, func(ctx context.Context) {
-		if err := consumer.Run(ctx, wrapped); err != nil && ctx.Err() == nil {
-			s.logger.Error("consumer stopped unexpectedly", "group", groupID, "error", err)
-		}
-	})
-	return nil
-}
-
-// AddAuditCleanup registers a goroutine that deletes old audit_log rows under
-// the service lifecycle. Call this after building the *audit.PgStore for a
-// service that writes audit entries (e.g., orders, payments).
-//
-// The cleanup loop runs every interval and removes rows older than retention.
-// Set interval to 0 to skip launching (useful when auditing is disabled).
-//
-// COMPLIANCE NOTE: audit_log rows record sensitive business actions. The
-// default retention (90 days) is intentionally generous. Review your compliance
-// obligations before lowering it — consider archiving rows to cold storage
-// before deletion.
-//
-// Must be called before Start.
-func (s *Service) AddAuditCleanup(store *audit.PgStore, interval, retention time.Duration) {
-	if interval <= 0 {
-		return
-	}
-	store.SetOnError(func(err error) {
-		s.logger.Error("audit cleaner error", "error", err)
-	})
-	s.goroutines = append(s.goroutines, func(ctx context.Context) {
-		if err := store.RunCleanup(ctx, interval, retention); err != nil && ctx.Err() == nil {
-			s.logger.Error("audit cleaner stopped unexpectedly", "error", err)
-		}
-	})
-}
-
-// AddOutboxRelay wires an outbox relay + cleaner. Uses the passed publisher
-// (typically outboxkafka.New(producer)). Must be called before Start.
-func (s *Service) AddOutboxRelay(publisher outbox.Publisher, cfg outbox.RelayConfig) {
-	relay := outbox.NewRelay(s.pool, publisher, cfg)
-	relay.SetOnError(func(err error) {
-		s.logger.Error("outbox relay error", "error", err)
-	})
-
-	cleaner := outbox.NewCleaner(s.pool)
-	cleaner.SetOnError(func(err error) {
-		s.logger.Error("outbox cleaner error", "error", err)
-	})
-
-	retention := cfg.RetentionAge
-	if retention == 0 {
-		retention = 24 * time.Hour
-	}
-	interval := cfg.CleanupInterval
-	if interval == 0 {
-		interval = time.Hour
-	}
-
-	s.goroutines = append(s.goroutines,
-		func(ctx context.Context) {
-			if err := relay.Run(ctx); err != nil && ctx.Err() == nil {
-				s.logger.Error("relay stopped unexpectedly", "error", err)
-			}
-		},
-		func(ctx context.Context) {
-			if err := cleaner.RunCleanup(ctx, interval, retention); err != nil && ctx.Err() == nil {
-				s.logger.Error("cleaner stopped unexpectedly", "error", err)
-			}
-		},
-	)
-}
-
-// DefaultOutboxPublisher builds the standard outboxkafka publisher backed by
-// the service's producer. Convenience helper for services using the default
-// topic-per-aggregate-type mapping.
-func (s *Service) DefaultOutboxPublisher() outbox.Publisher {
-	return outboxkafka.New(s.producer)
-}
-
-// Start starts the admin HTTP server and all registered consumer/relay/cleaner
-// goroutines. Non-blocking.
-//
-// Admin server start failure is treated as a warning (logged, not returned) since
-// the admin endpoint is observability-only and must not prevent service startup.
-// This is important in tests where multiple services share the same default port.
-//
-// Ordering guarantee: a runCtx is created and cancelRun is registered as the
-// LAST entry in the Closer (so it fires FIRST in LIFO teardown). This means
-// goroutines receive context cancellation before the pg pool and kafka client
-// are closed.
-func (s *Service) Start() error {
-	if err := s.adminServer.Start(); err != nil {
-		// Non-fatal: log and continue. The admin endpoint is observability-only;
-		// a port-bind failure (e.g. during tests with multiple services sharing
-		// the default port) must not prevent the service from consuming messages.
-		s.logger.Warn("admin server failed to start", "error", err, "addr", s.adminServer.Addr())
-	}
-
-	runCtx, cancelRun := context.WithCancel(context.Background())
-	s.runCtx = runCtx
-	s.cancelRun = cancelRun
-
-	// Launch inbox cleanup if configured (interval > 0). All services that use
-	// the harness migrate the inbox table, so this is safe to launch
-	// unconditionally. Future services with no inbox table will simply log a
-	// harmless DELETE error; set InboxCleanupInterval=0 to suppress it.
-	if s.cfg.InboxCleanupInterval > 0 {
-		retention := s.cfg.InboxRetention
-		if retention == 0 {
-			retention = 168 * time.Hour // 7d fallback
-		}
-		interval := s.cfg.InboxCleanupInterval
-		go func() {
-			if err := inbox.RunCleanupWithOnError(runCtx, s.pool, interval, retention, func(err error) {
-				s.logger.Error("inbox cleaner error", "error", err)
-			}); err != nil && runCtx.Err() == nil {
-				s.logger.Error("inbox cleaner stopped unexpectedly", "error", err)
-			}
-		}()
-	}
-
-	for _, g := range s.goroutines {
-		fn := g // capture
-		go fn(runCtx)
-	}
-
-	// Register cancelRun LAST → fires FIRST in LIFO closer, stopping goroutines
-	// before the pg pool and kafka client are released.
-	s.closer.Add("consumers-cancel", func(context.Context) error {
-		cancelRun()
-		return nil
-	})
-
-	s.logger.Info("service started", "admin_addr", s.adminServer.Addr())
-	return nil
-}
-
-// Stop cancels consumer goroutines and closes all resources via the Closer.
-func (s *Service) Stop(ctx context.Context) error {
-	if s.cancelRun != nil {
-		s.cancelRun()
-	}
-	return s.closer.Close(ctx)
-}
 
 // AdminAddr returns the actual bound admin server address (useful when :0 was used).
 func (s *Service) AdminAddr() string { return s.adminServer.Addr() }

@@ -49,49 +49,19 @@ package gateway
 
 import (
 	"context"
-	"fmt"
 	"io"
-	"net/http"
 
 	"go-boilerplate/examples/gateway/internal/api"
-	"go-boilerplate/examples/gateway/internal/attachments"
 	"go-boilerplate/examples/gateway/internal/migrations"
 	"go-boilerplate/examples/gateway/internal/projection"
 	"go-boilerplate/examples/internal/service"
 	"go-boilerplate/platform/auth"
-	"go-boilerplate/platform/blob"
-	"go-boilerplate/platform/cache"
 	"go-boilerplate/platform/config"
-	"go-boilerplate/platform/cqrs"
-	"go-boilerplate/platform/featureflags"
-	"go-boilerplate/platform/health"
 	"go-boilerplate/platform/httpserver"
 	"go-boilerplate/platform/run"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/open-feature/go-sdk/openfeature/memprovider"
-
 	gatewayapp "go-boilerplate/examples/gateway/internal/app"
 )
-
-// Config aggregates all configuration for the gateway service.
-type Config struct {
-	service.Config
-	HTTP                httpserver.Config
-	Cache               cache.Config
-	S3                  blob.Config
-	CommandsTopic       string `env:"GATEWAY_COMMANDS_TOPIC"        envDefault:"orders.commands"`
-	OrdersEventsTopic   string `env:"GATEWAY_ORDERS_EVENTS_TOPIC"   envDefault:"orders.events"`
-	PaymentsEventsTopic string `env:"GATEWAY_PAYMENTS_EVENTS_TOPIC" envDefault:"payments.events"`
-	AuthDisabled        bool   `env:"GATEWAY_AUTH_DISABLED"         envDefault:"false"`
-	JWKSUrl             string `env:"GATEWAY_JWKS_URL"              envDefault:""`
-	JWKSIssuer          string `env:"GATEWAY_JWKS_ISSUER"           envDefault:""`
-	JWKSAudience        string `env:"GATEWAY_JWKS_AUDIENCE"         envDefault:""`
-	// CORSOrigins is the list of allowed CORS origins for the public HTTP server.
-	// Use ["*"] for dev/demo. In production set explicit origins.
-	// Default "*" allows any origin (demo-safe; auth should enforce identity).
-	CORSOrigins []string `env:"GATEWAY_CORS_ORIGINS"          envSeparator:"," envDefault:"*"`
-}
 
 // Option is a functional option for [NewApp].
 type Option func(*App)
@@ -137,14 +107,9 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	// Auth: resolve the verifier EARLY — before connecting to any external
 	// services — so a misconfigured JWKS URL is caught immediately and the
 	// service refuses to start (fail closed).
-	if !cfg.AuthDisabled {
-		if a.verifier == nil {
-			v, err := auth.NewJWKSVerifier(ctx, cfg.JWKSUrl, cfg.JWKSIssuer, cfg.JWKSAudience)
-			if err != nil {
-				return nil, fmt.Errorf("gateway: building JWKS verifier (auth is enabled): %w", err)
-			}
-			a.verifier = v
-		}
+	a.verifier, err = buildVerifier(ctx, cfg, a.verifier)
+	if err != nil {
+		return nil, err
 	}
 
 	// Build the shared harness: logger, telemetry, pg+migrations, kafka, health, admin HTTP.
@@ -168,64 +133,10 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		return nil, err
 	}
 
-	// Cache (optional): try to build a Redis-backed two-tier cache.
-	// If Redis is unreachable (empty addrs, connection refused, etc.) we log a
-	// warning and continue without caching — the service degrades gracefully.
-	var appCache cqrs.Cache // nil means caching disabled
-	if len(cfg.Cache.RedisAddrs) > 0 && cfg.Cache.RedisAddrs[0] != "" {
-		c, err := cache.New(cfg.Cache)
-		if err != nil {
-			svc.Logger().Warn(
-				"gateway: cache unavailable, starting without Redis caching",
-				"error", err,
-				"redis_addrs", cfg.Cache.RedisAddrs,
-			)
-		} else {
-			appCache = c
-			svc.Closer().Add("cache", func(ctx context.Context) error {
-				return c.Close(ctx)
-			})
-			svc.Health().AddReadiness("cache", health.Check(func(ctx context.Context) error {
-				return c.HealthCheck(ctx)
-			}))
-		}
-	} else {
-		svc.Logger().Info("gateway: REDIS_ADDRS not set, starting without cache")
-	}
-
-	// Blob / object-store (optional): try to build a MinIO-backed store for order
-	// attachments. If the S3 endpoint is unreachable or the config is empty we log
-	// a warning and continue without attachment support — graceful degradation.
-	var objStore blob.ObjectStore
-	if cfg.S3.Endpoint != "" {
-		s, err := blob.New(ctx, cfg.S3)
-		if err != nil {
-			svc.Logger().Warn(
-				"gateway: blob/attachments disabled (S3 unavailable)",
-				"error", err,
-				"endpoint", cfg.S3.Endpoint,
-			)
-		} else {
-			objStore = s
-		}
-	} else {
-		svc.Logger().Info("gateway: S3_ENDPOINT not set, starting without blob/attachments")
-	}
-
-	// Feature flags (in-memory provider seeded with the order-attachments flag).
-	// In production swap NewInMemory for a flagd / LaunchDarkly provider:
-	//   _ = openfeature.SetNamedProviderAndWait("gateway", flagdProvider)
-	//   flags := featureflags.New(openfeature.NewClient("gateway"))
-	flags, err := featureflags.NewInMemory("gateway-"+cfg.HTTP.Addr, map[string]memprovider.InMemoryFlag{
-		"order-attachments-enabled": {
-			State:          memprovider.Enabled,
-			DefaultVariant: "on",
-			Variants:       map[string]any{"on": true, "off": false},
-		},
-	})
-	if err != nil {
-		svc.Logger().Warn("gateway: feature flags unavailable, attachments will be disabled", "error", err)
-	}
+	// Optional dependencies (all degrade gracefully on failure).
+	appCache := buildCache(cfg, svc)
+	objStore := buildBlob(ctx, cfg, svc)
+	flags := buildFeatureFlags(cfg, svc)
 
 	// Build the CQRS GetOrder query handler (raw → decorated).
 	rawGetOrder := gatewayapp.GetOrderHandler(svc.Pool())
@@ -248,23 +159,6 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	})
 	a.server = httpSrv
 
-	// Edge security: CORS (opt-in, configure origins via GATEWAY_CORS_ORIGINS)
-	// and a global rate limiter (100 rps, burst 200).
-	//
-	// CORS is applied only when cfg.CORSOrigins is set. For demo/local the
-	// default allows all origins. In production set GATEWAY_CORS_ORIGINS to
-	// an explicit comma-separated list and remove the "*" wildcard.
-	httpSrv.Mux().Use(httpserver.CORS(httpserver.CORSOptions{
-		AllowedOrigins: cfg.CORSOrigins,
-		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders: []string{"Content-Type", "Authorization", "X-Request-Id"},
-	}))
-	// Global edge rate limiter: 100 rps sustained, burst 200.
-	// NOTE: This is a process-local limiter. For multi-instance deployments
-	// replace with a Redis-backed distributed rate limiter (GCRA).
-	// For per-IP limiting, key the limiter by r.RemoteAddr (add an LRU map).
-	httpSrv.Mux().Use(httpserver.RateLimit(100, 200))
-
 	// Wire the API server (strict handler) with RBAC and resilience.
 	apiServer := api.NewServer(
 		svc.Pool(),
@@ -275,50 +169,10 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		cfg.AuthDisabled,
 	)
 
-	// Wrap handler errors: map authError → 403/401, others → 500.
-	strictOpts := api.StrictHTTPServerOptions{
-		RequestErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		},
-		ResponseErrorHandlerFunc: func(w http.ResponseWriter, _ *http.Request, err error) {
-			if api.WriteAuthError(w, err) {
-				return
-			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		},
-	}
-	strictHandler := api.NewStrictHandlerWithOptions(apiServer, nil, strictOpts)
-
-	// Mount routes. When auth is enabled, apply auth middleware to all routes.
-	chiOpts := api.ChiServerOptions{
-		BaseRouter: httpSrv.Mux(),
-	}
-	if !cfg.AuthDisabled {
-		authMiddleware := auth.Middleware(a.verifier)
-		chiOpts.Middlewares = []api.MiddlewareFunc{
-			func(next http.Handler) http.Handler {
-				return authMiddleware(next)
-			},
-		}
-	}
-	api.HandlerWithOptions(strictHandler, chiOpts)
-
-	// Attachment routes: mounted behind the same auth middleware so that
-	// upload/download requires a valid token (same RBAC boundary as POST /orders).
-	// When objStore is nil (S3 unavailable at startup), the routes are simply not
-	// mounted — the feature is silently absent rather than returning 500.
-	if objStore != nil && flags != nil {
-		var attachRouter chi.Router
-		if !cfg.AuthDisabled {
-			attachMiddleware := auth.Middleware(a.verifier)
-			attachRouter = httpSrv.Mux().With(func(next http.Handler) http.Handler {
-				return attachMiddleware(next)
-			})
-		} else {
-			attachRouter = httpSrv.Mux()
-		}
-		attachments.New(objStore, flags.Bool).Mount(attachRouter)
-	}
+	// Apply edge security and mount all routes.
+	applyEdgeSecurity(cfg, httpSrv.Mux())
+	mountAPIRoutes(cfg, httpSrv.Mux(), apiServer, a.verifier)
+	mountAttachmentRoutes(cfg, httpSrv, a.verifier, objStore, flags)
 
 	return a, nil
 }
