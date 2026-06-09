@@ -164,7 +164,7 @@ func consumeCreateOrderCommand(t *testing.T, broker, orderID string, timeout tim
 	}
 	consumer, err := kafka.NewConsumer(cfg, "orders.commands")
 	require.NoError(t, err)
-	t.Cleanup(func() { consumer.Close() })
+	t.Cleanup(func() { _ = consumer.Close(context.Background()) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

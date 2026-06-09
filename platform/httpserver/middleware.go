@@ -18,9 +18,14 @@ import (
 	"go-boilerplate/platform/log"
 )
 
-type ctxKey int
+// requestIDKeyType is an unexported struct used as a context key to avoid
+// collisions with keys from other packages.  Using a struct{}-based type
+// (rather than int/iota) is the standard idiom for context keys in this
+// codebase (see also platform/auth and platform/log).
+type requestIDKeyType struct{}
 
-const requestIDKey ctxKey = iota
+// requestIDKey is the singleton context key for the request ID value.
+var requestIDKey requestIDKeyType
 
 const requestIDHeader = "X-Request-Id"
 

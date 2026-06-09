@@ -92,7 +92,7 @@ func TestConsumer_GroupConsumesCommitted(t *testing.T) {
 	}
 
 	cancelRun()
-	c1.Close()
+	_ = c1.Close(ctx)
 
 	mu.Lock()
 	keys := make([]string, len(received))
@@ -132,7 +132,7 @@ func TestConsumer_GroupConsumesCommitted(t *testing.T) {
 		return nil
 	})
 
-	c2.Close()
+	_ = c2.Close(ctx)
 
 	mu2.Lock()
 	n2 := len(received2)
@@ -218,7 +218,7 @@ func TestConsumer_HandlerErrorRedeliversRecord(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("timed out waiting for first consumer to see the record")
 	}
-	c1.Close()
+	_ = c1.Close(ctx)
 
 	require.True(t, firstSawRecord.Load(), "first consumer must have received the record")
 
@@ -261,7 +261,7 @@ func TestConsumer_HandlerErrorRedeliversRecord(t *testing.T) {
 
 	cancelC2()
 	<-c2Done
-	c2.Close()
+	_ = c2.Close(context.Background())
 
 	// The second consumer must have received the record at least once,
 	// proving the broker redelivered the uncommitted offset from phase 1.
@@ -397,7 +397,7 @@ func TestConsumer_PerPartitionParallelOrdering(t *testing.T) {
 	elapsed := time.Since(*startPtr)
 
 	cancelRun()
-	consumer.Close()
+	_ = consumer.Close(ctx)
 
 	// (a) Per-partition ordering: sequences must be in ascending order.
 	mu.Lock()
@@ -526,7 +526,7 @@ func TestConsumer_OnePartitionFailureDoesNotBlockOthers(t *testing.T) {
 
 	cancelC1()
 	<-c1Done
-	c1.Close()
+	_ = c1.Close(ctx)
 
 	assert.GreaterOrEqual(t, int(healthyCount.Load()), nHealthy,
 		"healthy partition should have processed all %d records", nHealthy)
@@ -555,7 +555,7 @@ func TestConsumer_OnePartitionFailureDoesNotBlockOthers(t *testing.T) {
 		mu2.Unlock()
 		return nil
 	})
-	c2.Close()
+	_ = c2.Close(context.Background())
 
 	mu2.Lock()
 	okCount := redelivered["ok"]

@@ -206,10 +206,7 @@ func (s *Service) AddConsumer(ctx context.Context, groupID string, topics []stri
 	}
 	// Register consumer Close in the closer (runs before consumers-cancel in LIFO,
 	// but consumers-cancel is registered LAST so it runs FIRST — see ordering note at top).
-	s.closer.Add("kafka-consumer-"+groupID, func(context.Context) error {
-		consumer.Close()
-		return nil
-	})
+	s.closer.Add("kafka-consumer-"+groupID, consumer.Close)
 
 	s.goroutines = append(s.goroutines, func(ctx context.Context) {
 		if err := consumer.Run(ctx, wrapped); err != nil && ctx.Err() == nil {

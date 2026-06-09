@@ -219,6 +219,15 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
+    # Runtime resource limits — tune per workload in production.
+    # Prefer whole-number CPU limits (1.0, 2.0) to avoid CFS throttling artifacts.
+    # GOMEMLIMIT should be ~90% of mem_limit so the GC targets soft-trim before
+    # the cgroup OOM-killer fires. See docs/operations.md for rationale.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
     environment:
       # Postgres
       PG_DSN: postgres://app:app@postgres:5432/gateway?sslmode=disable
@@ -244,6 +253,9 @@ services:
       GATEWAY_COMMANDS_TOPIC: orders.commands
       GATEWAY_ORDERS_EVENTS_TOPIC: orders.events
       GATEWAY_PAYMENTS_EVENTS_TOPIC: payments.events
+      # Go runtime memory limit: ~90% of the container memory limit above.
+      # Keeps the GC soft-trim target below the cgroup hard limit, preventing OOM-kill.
+      GOMEMLIMIT: 460MiB
     depends_on:
       postgres:
         condition: service_healthy
@@ -257,6 +269,12 @@ services:
       args:
         SERVICE: orders
     restart: unless-stopped
+    # Runtime resource limits — tune per workload in production.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
     environment:
       # Postgres
       PG_DSN: postgres://app:app@postgres:5432/orders?sslmode=disable
@@ -272,6 +290,8 @@ services:
       LOG_FORMAT: json
       # Topics
       ORDERS_COMMANDS_TOPIC: orders.commands
+      # Go runtime memory limit: ~90% of the container memory limit above.
+      GOMEMLIMIT: 460MiB
     depends_on:
       postgres:
         condition: service_healthy
@@ -285,6 +305,12 @@ services:
       args:
         SERVICE: payments
     restart: unless-stopped
+    # Runtime resource limits — tune per workload in production.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
     environment:
       # Postgres
       PG_DSN: postgres://app:app@postgres:5432/payments?sslmode=disable
@@ -300,6 +326,8 @@ services:
       LOG_FORMAT: json
       # Topics
       ORDERS_EVENTS_TOPIC: orders.events
+      # Go runtime memory limit: ~90% of the container memory limit above.
+      GOMEMLIMIT: 460MiB
     depends_on:
       postgres:
         condition: service_healthy
@@ -313,6 +341,12 @@ services:
       args:
         SERVICE: notifications
     restart: unless-stopped
+    # Runtime resource limits — tune per workload in production.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
     environment:
       # Postgres
       PG_DSN: postgres://app:app@postgres:5432/notifications?sslmode=disable
@@ -328,6 +362,8 @@ services:
       LOG_FORMAT: json
       # Topics
       PAYMENTS_EVENTS_TOPIC: payments.events
+      # Go runtime memory limit: ~90% of the container memory limit above.
+      GOMEMLIMIT: 460MiB
     depends_on:
       postgres:
         condition: service_healthy

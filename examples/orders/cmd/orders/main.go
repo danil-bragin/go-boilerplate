@@ -8,6 +8,11 @@ import (
 	"os"
 	"time"
 
+	// automaxprocs sets GOMAXPROCS to match the container CPU quota at startup.
+	// Go 1.25+ also does this natively when GOMAXPROCS is unset, but automaxprocs
+	// is the belt-and-suspenders standard and works across all supported versions.
+	_ "go.uber.org/automaxprocs"
+
 	"go-boilerplate/examples/orders"
 	"go-boilerplate/platform/run"
 )

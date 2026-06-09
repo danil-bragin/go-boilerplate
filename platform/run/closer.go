@@ -9,6 +9,12 @@ import (
 )
 
 // TeardownFunc releases a resource. It should respect ctx cancellation.
+//
+// Convention: platform resources (pg.Pool, cache.Cache, kafka.Producer,
+// kafka.Consumer, …) expose a Close(ctx context.Context) error method that
+// matches this signature so they can be registered directly with Add:
+//
+//	closer.Add("kafka-consumer", consumer.Close)
 type TeardownFunc func(ctx context.Context) error
 
 type teardown struct {

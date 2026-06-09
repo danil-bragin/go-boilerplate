@@ -92,7 +92,7 @@ func TestKafkaPublisher_DrainsOutboxToKafka(t *testing.T) {
 		GroupID:  "t-grp",
 	}, "order")
 	require.NoError(t, err)
-	defer consumer.Close()
+	defer func() { _ = consumer.Close(context.Background()) }()
 
 	var (
 		mu       sync.Mutex
@@ -203,7 +203,7 @@ func TestKafkaPublisher_PublishBatch(t *testing.T) {
 		GroupID:  "t-batch-grp",
 	}, "order")
 	require.NoError(t, err)
-	defer consumer.Close()
+	defer func() { _ = consumer.Close(context.Background()) }()
 
 	var (
 		mu       sync.Mutex

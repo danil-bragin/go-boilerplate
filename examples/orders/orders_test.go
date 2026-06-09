@@ -103,7 +103,7 @@ func runConsumer(t *testing.T, broker, groupID, topic string, handler kafka.Hand
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()
-		consumer.Close()
+		_ = consumer.Close(context.Background())
 	})
 	go func() {
 		_ = consumer.Run(ctx, handler)
@@ -167,7 +167,7 @@ func consumeEvent(t *testing.T, broker, orderID string, timeout time.Duration) *
 	}
 	consumer, err := kafka.NewConsumer(cfg, "orders.events")
 	require.NoError(t, err)
-	defer consumer.Close()
+	defer func() { _ = consumer.Close(context.Background()) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

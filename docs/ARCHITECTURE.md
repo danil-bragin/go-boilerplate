@@ -121,6 +121,19 @@ DB-per-service (separate logical databases in one Postgres instance locally). Ea
 
 ---
 
+## Container runtime tuning
+
+See `docs/operations.md` for the full rationale. Summary:
+
+| Knob | Mechanism | Why |
+|---|---|---|
+| `GOMAXPROCS` | `go.uber.org/automaxprocs` blank-imported in every `cmd/*/main.go` | Reads the Linux cgroup CPU quota so the scheduler uses the correct thread count instead of the host CPU count, avoiding CFS throttling |
+| `GOMEMLIMIT` | Set in `docker-compose.yml` (and `.env.example`) per service | Instructs the Go GC to soft-trim below the cgroup limit, preventing OOM-kill |
+| CPU limit | `deploy.resources.limits.cpus` in `docker-compose.yml` | Bounds container CPU; use whole-number values to avoid fractional CFS throttling |
+| Memory limit | `deploy.resources.limits.memory` in `docker-compose.yml` | Hard cgroup limit; `GOMEMLIMIT` should be ≈90% of this value |
+
+---
+
 ## Deferred / not-yet-built
 
 The following items are documented design decisions deferred to a later iteration:

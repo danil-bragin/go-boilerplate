@@ -176,8 +176,12 @@ func (c *Consumer) Run(ctx context.Context, h HandlerFunc) error {
 }
 
 // Close closes the underlying kgo.Client, leaving the consumer group cleanly.
-func (c *Consumer) Close() {
+// The ctx parameter is accepted for interface consistency with run.TeardownFunc
+// ("resources expose Close(ctx context.Context) error to register directly as
+// a run.TeardownFunc") but is not used because kgo.Client.Close is synchronous.
+func (c *Consumer) Close(_ context.Context) error {
 	c.cl.Close()
+	return nil
 }
 
 // recordFromKGO converts a *kgo.Record to the broker-agnostic Record type.
