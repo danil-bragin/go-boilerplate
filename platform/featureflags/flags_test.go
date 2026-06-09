@@ -6,33 +6,33 @@ import (
 
 	"go-boilerplate/platform/featureflags"
 
-	"github.com/open-feature/go-sdk/openfeature/memprovider"
 	"github.com/stretchr/testify/require"
+	inmemory "go.openfeature.dev/openfeature/v2/providers/inmemory"
 )
 
 // flagMap builds the InMemoryFlag map used by most tests.
 // Bool flags: "new-checkout"=true, "off-flag"=false.
 // String flag: "greeting"="hello".
 // Int flag: "page-size"=25.
-func testFlagMap() map[string]memprovider.InMemoryFlag {
-	return map[string]memprovider.InMemoryFlag{
+func testFlagMap() map[string]inmemory.InMemoryFlag {
+	return map[string]inmemory.InMemoryFlag{
 		"new-checkout": {
-			State:          memprovider.Enabled,
+			State:          inmemory.Enabled,
 			DefaultVariant: "on",
 			Variants:       map[string]any{"on": true, "off": false},
 		},
 		"off-flag": {
-			State:          memprovider.Enabled,
+			State:          inmemory.Enabled,
 			DefaultVariant: "off",
 			Variants:       map[string]any{"on": true, "off": false},
 		},
 		"greeting": {
-			State:          memprovider.Enabled,
+			State:          inmemory.Enabled,
 			DefaultVariant: "default",
 			Variants:       map[string]any{"default": "hello"},
 		},
 		"page-size": {
-			State:          memprovider.Enabled,
+			State:          inmemory.Enabled,
 			DefaultVariant: "normal",
 			Variants:       map[string]any{"normal": int64(25)},
 		},

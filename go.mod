@@ -19,7 +19,6 @@ require (
 	github.com/lestrrat-go/jwx/v2 v2.1.6
 	github.com/maypok86/otter/v2 v2.3.0
 	github.com/oapi-codegen/runtime v1.4.1
-	github.com/open-feature/go-sdk v1.17.2
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/rueidis v1.0.75
@@ -32,6 +31,7 @@ require (
 	github.com/twmb/franz-go/pkg/kadm v1.18.0
 	github.com/twmb/franz-go/pkg/sr v1.7.0
 	github.com/twmb/franz-go/plugin/kotel v1.6.0
+	go.openfeature.dev/openfeature/v2 v2.0.0-20260407221154-e73ad4835b27
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.44.0

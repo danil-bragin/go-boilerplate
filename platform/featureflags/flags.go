@@ -3,9 +3,9 @@
 //
 // # Quick start (in-memory, tests/examples)
 //
-//	flags, err := featureflags.NewInMemory("my-app", map[string]memprovider.InMemoryFlag{
+//	flags, err := featureflags.NewInMemory("my-app", map[string]inmemory.InMemoryFlag{
 //	    "new-checkout": {
-//	        State:          memprovider.Enabled,
+//	        State:          inmemory.Enabled,
 //	        DefaultVariant: "on",
 //	        Variants:       map[string]any{"on": true, "off": false},
 //	    },
@@ -14,19 +14,19 @@
 // # Production — swap the provider
 //
 // Replace the in-memory provider with flagd, LaunchDarkly, or any compliant
-// OpenFeature provider by calling openfeature.SetNamedProvider (or the global
-// openfeature.SetProvider) before constructing the client:
+// OpenFeature provider by calling openfeature.SetProviderAndWait (optionally
+// scoped with openfeature.WithDomain) before constructing the client:
 //
-//	_ = openfeature.SetNamedProviderAndWait("my-app", flagdProvider)
-//	client := openfeature.NewClient("my-app")
+//	_ = openfeature.SetProviderAndWait(ctx, flagdProvider, openfeature.WithDomain("my-app"))
+//	client := openfeature.NewClient(openfeature.WithDomain("my-app"))
 //	flags  := featureflags.New(client)
 //
 // # Provider isolation
 //
-// This package uses the named-provider / domain API
-// (openfeature.SetNamedProvider + openfeature.NewClient(domain)) so that
-// different callers — and individual tests — can register independent
-// providers without interfering with each other or with the global default.
+// This package uses the domain API (openfeature.WithDomain on both provider
+// registration and client construction) so that different callers — and
+// individual tests — can register independent providers without interfering
+// with each other or with the global default.
 package featureflags
 
 import (
@@ -34,8 +34,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/open-feature/go-sdk/openfeature"
-	"github.com/open-feature/go-sdk/openfeature/memprovider"
+	"go.openfeature.dev/openfeature/v2"
+	"go.openfeature.dev/openfeature/v2/providers/inmemory"
 )
 
 // Flags is a thin, type-safe wrapper around an OpenFeature client.
@@ -50,26 +50,28 @@ func New(client *openfeature.Client) *Flags {
 }
 
 // NewInMemory creates a *Flags backed by an in-memory provider registered under
-// the given domain. Each call registers an independent named provider so that
-// concurrent tests do not share state.
+// the given domain. Each call registers an independent domain-scoped provider
+// so that concurrent tests do not share state.
 //
 // domain must be a non-empty string that is unique within the process (e.g. a
-// test name). The memprovider flag map keys are flag names; see
-// memprovider.InMemoryFlag for the full flag definition.
-func NewInMemory(domain string, flags map[string]memprovider.InMemoryFlag) (*Flags, error) {
+// test name). The inmemory flag map keys are flag names; see
+// inmemory.InMemoryFlag for the full flag definition.
+func NewInMemory(domain string, flags map[string]inmemory.InMemoryFlag) (*Flags, error) {
 	if domain == "" {
 		return nil, errors.New("featureflags: domain must not be empty")
 	}
 
-	p := memprovider.NewInMemoryProvider(flags)
+	p := inmemory.NewProvider(flags)
 
-	// SetNamedProviderAndWait blocks until the provider transitions out of
-	// NOT_READY, which avoids a race between registration and the first evaluation.
-	if err := openfeature.SetNamedProviderAndWait(domain, p); err != nil {
-		return nil, fmt.Errorf("featureflags: register named provider %q: %w", domain, err)
+	// SetProviderAndWait blocks until the provider transitions out of
+	// NOT_READY, which avoids a race between registration and the first
+	// evaluation. The in-memory provider initialises instantly, so a
+	// background context is sufficient here.
+	if err := openfeature.SetProviderAndWait(context.Background(), p, openfeature.WithDomain(domain)); err != nil {
+		return nil, fmt.Errorf("featureflags: register provider for domain %q: %w", domain, err)
 	}
 
-	return &Flags{client: openfeature.NewClient(domain)}, nil
+	return &Flags{client: openfeature.NewClient(openfeature.WithDomain(domain))}, nil
 }
 
 // Bool evaluates a boolean feature flag. Returns def if the flag is not found
