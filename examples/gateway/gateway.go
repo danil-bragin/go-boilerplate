@@ -37,12 +37,12 @@
 //
 // # RBAC
 //
-// POST /orders requires the "user" or "admin" role when AuthDisabled=false.
+// POST /v1/orders requires the "user" or "admin" role when AuthDisabled=false.
 // A principal without either role receives 403.
 //
 // # Resilience
 //
-// The Kafka command publish inside POST /orders is wrapped with a resilience
+// The Kafka command publish inside POST /v1/orders is wrapped with a resilience
 // policy (Retry×3 with 50 ms base back-off + 2 s timeout) so transient broker
 // hiccups are retried automatically.
 package gateway
@@ -161,9 +161,10 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	// Build the per-IP rate limiter (memory or Redis).
 	limiter := buildLimiter(cfg, svc)
 
-	// Build the CQRS GetOrder query handler (raw → decorated).
+	// Build the CQRS query handlers (raw → decorated).
 	rawGetOrder := gatewayapp.GetOrderHandler(svc.Pool())
 	decoratedGetOrder := gatewayapp.DecorateGetOrderHandler(rawGetOrder, appCache)
+	decoratedListOrders := gatewayapp.DecorateListOrdersHandler(gatewayapp.ListOrdersHandler(svc.Pool()))
 
 	// Projection consumer subscribes to both events topics.
 	var consumeOpts []consume.Option
@@ -193,6 +194,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		cfg.CommandsTopic,
 		svc.Logger(),
 		decoratedGetOrder,
+		decoratedListOrders,
 		cfg.AuthDisabled,
 	)
 	if sd := svc.Serde(); sd != nil {

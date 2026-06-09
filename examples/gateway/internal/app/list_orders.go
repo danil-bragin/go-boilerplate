@@ -1,0 +1,139 @@
+package app
+
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/storage/pg"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	storegen "go-boilerplate/examples/gateway/internal/store/gen"
+)
+
+// ErrInvalidCursor is returned when a pagination cursor cannot be decoded.
+// Maps to HTTP 400.
+var ErrInvalidCursor = errors.New("app: invalid pagination cursor")
+
+// List pagination bounds (documented in openapi.yaml).
+const (
+	DefaultPageLimit = 20
+	MaxPageLimit     = 100
+)
+
+// ListOrders is the query type for the ListOrders CQRS handler.
+type ListOrders struct {
+	// Cursor is the opaque keyset cursor from the previous page ("" = first page).
+	Cursor string
+	// Limit is the page size; 0 means DefaultPageLimit, capped at MaxPageLimit.
+	Limit int
+}
+
+// OrderPage is one cursor-paginated page of order views, newest first.
+type OrderPage struct {
+	Items []OrderView `json:"items"`
+	// NextCursor is empty when the listing is exhausted.
+	NextCursor string `json:"next_cursor,omitempty"`
+}
+
+// encodeCursor packs the keyset position (created_at, order_id) of the last
+// row of a page into an opaque URL-safe string.
+func encodeCursor(createdAt time.Time, orderID uuid.UUID) string {
+	raw := createdAt.UTC().Format(time.RFC3339Nano) + "|" + orderID.String()
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+// decodeCursor reverses encodeCursor. Returns ErrInvalidCursor on any
+// malformed input — the cursor is opaque, clients must not construct it.
+func decodeCursor(cursor string) (time.Time, uuid.UUID, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return time.Time{}, uuid.Nil, fmt.Errorf("%w: %w", ErrInvalidCursor, err)
+	}
+	ts, id, ok := strings.Cut(string(raw), "|")
+	if !ok {
+		return time.Time{}, uuid.Nil, ErrInvalidCursor
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return time.Time{}, uuid.Nil, fmt.Errorf("%w: %w", ErrInvalidCursor, err)
+	}
+	orderID, err := uuid.Parse(id)
+	if err != nil {
+		return time.Time{}, uuid.Nil, fmt.Errorf("%w: %w", ErrInvalidCursor, err)
+	}
+	return createdAt, orderID, nil
+}
+
+// ListOrdersHandler returns a raw (undecorated) CQRS query handler that pages
+// through the read-model projection with keyset pagination over
+// (created_at, order_id) descending.
+func ListOrdersHandler(pool *pg.Pool) cqrs.HandlerFunc[ListOrders, OrderPage] {
+	return func(ctx context.Context, q ListOrders) (OrderPage, error) {
+		limit := q.Limit
+		switch {
+		case limit <= 0:
+			limit = DefaultPageLimit
+		case limit > MaxPageLimit:
+			limit = MaxPageLimit
+		}
+
+		// First page: an infinite upper bound makes every row qualify in the
+		// (created_at, order_id) < (cursor) keyset predicate.
+		cursorAt := pgtype.Timestamptz{InfinityModifier: pgtype.Infinity, Valid: true}
+		cursorID := uuid.MustParse("ffffffff-ffff-ffff-ffff-ffffffffffff")
+		if q.Cursor != "" {
+			at, id, err := decodeCursor(q.Cursor)
+			if err != nil {
+				return OrderPage{}, err
+			}
+			cursorAt = pgtype.Timestamptz{Time: at, Valid: true}
+			cursorID = id
+		}
+
+		queries := storegen.New(pg.FromContextRead(ctx, pool))
+		rows, err := queries.ListOrders(ctx, storegen.ListOrdersParams{
+			CursorCreatedAt: cursorAt,
+			CursorOrderID:   cursorID,
+			PageLimit:       int32(limit), //nolint:gosec // bounded by MaxPageLimit
+		})
+		if err != nil {
+			return OrderPage{}, fmt.Errorf("app: list orders: %w", err)
+		}
+
+		page := OrderPage{Items: make([]OrderView, len(rows))}
+		for i, row := range rows {
+			page.Items[i] = OrderView{
+				OrderID:     row.OrderID.String(),
+				Status:      row.Status,
+				AmountCents: row.AmountCents,
+				Currency:    row.Currency,
+			}
+		}
+		// A full page may have more results: hand out the keyset position of
+		// the last row. A short page is definitively the end.
+		if len(rows) == limit {
+			last := rows[len(rows)-1]
+			page.NextCursor = encodeCursor(last.CreatedAt.Time, last.OrderID)
+		}
+		return page, nil
+	}
+}
+
+// DecorateListOrdersHandler applies the standard CQRS pipeline (no caching:
+// list pages are cheap keyset scans and cache invalidation for ranges is not
+// worth the staleness risk).
+func DecorateListOrdersHandler(raw cqrs.HandlerFunc[ListOrders, OrderPage]) cqrs.HandlerFunc[ListOrders, OrderPage] {
+	return cqrs.Decorate(
+		raw,
+		cqrs.Logging[ListOrders, OrderPage]("ListOrders"),
+		cqrs.Tracing[ListOrders, OrderPage]("ListOrders"),
+		cqrs.Metrics[ListOrders, OrderPage]("ListOrders"),
+	)
+}

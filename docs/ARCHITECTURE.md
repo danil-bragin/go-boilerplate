@@ -94,7 +94,7 @@ The edge service that verified the caller's JWT injects `principal-sub` and `pri
 ## Event flow (example domain)
 
 ```
-Client → Gateway (REST POST /orders)
+Client → Gateway (REST POST /v1/orders)
   └─► orders.commands  [CreateOrderCommand protobuf]
         └─► Orders service (inbox dedup → CreateOrder handler → outbox)
               └─► orders.events  [OrderCreated protobuf]

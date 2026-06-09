@@ -14,6 +14,10 @@ import (
 	strictnethttp "github.com/oapi-codegen/runtime/strictmiddleware/nethttp"
 )
 
+const (
+	BearerAuthScopes = "bearerAuth.Scopes"
+)
+
 // CreateOrderRequest Request body for creating a new order.
 type CreateOrderRequest struct {
 	// AmountCents The total order amount expressed in the smallest currency unit.
@@ -32,6 +36,14 @@ type CreateOrderResponse struct {
 	OrderId string `json:"order_id"`
 }
 
+// OrderList One cursor-paginated page of orders, newest first.
+type OrderList struct {
+	Items []OrderView `json:"items"`
+
+	// NextCursor Cursor for the next page. Absent or empty when there are no more results. Treat as opaque.
+	NextCursor *string `json:"next_cursor,omitempty"`
+}
+
 // OrderView Read model view of an order, built from event projections.
 type OrderView struct {
 	// AmountCents The total order amount expressed in the smallest currency unit.
@@ -43,8 +55,50 @@ type OrderView struct {
 	// OrderId The unique identifier of the order.
 	OrderId string `json:"order_id"`
 
-	// Status The current status of the order (e.g. "created", "paid").
+	// Status The current status of the order ("pending", "created", "paid").
 	Status string `json:"status"`
+}
+
+// Problem RFC 7807 problem details.
+type Problem struct {
+	// Detail Human-readable explanation specific to this occurrence.
+	Detail *string `json:"detail,omitempty"`
+
+	// Instance URI reference identifying this specific occurrence.
+	Instance *string `json:"instance,omitempty"`
+
+	// Status HTTP status code.
+	Status int `json:"status"`
+
+	// Title Short, human-readable summary of the problem type.
+	Title string `json:"title"`
+
+	// Type URI reference identifying the problem type.
+	Type *string `json:"type,omitempty"`
+}
+
+// BadRequest RFC 7807 problem details.
+type BadRequest = Problem
+
+// Forbidden RFC 7807 problem details.
+type Forbidden = Problem
+
+// NotFound RFC 7807 problem details.
+type NotFound = Problem
+
+// TooManyRequests RFC 7807 problem details.
+type TooManyRequests = Problem
+
+// Unauthorized RFC 7807 problem details.
+type Unauthorized = Problem
+
+// ListOrdersParams defines parameters for ListOrders.
+type ListOrdersParams struct {
+	// Cursor Opaque pagination cursor returned by a previous page.
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Page size (default 20, maximum 100).
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
 // CreateOrderParams defines parameters for CreateOrder.
@@ -61,11 +115,14 @@ type ServerInterface interface {
 	// Health check
 	// (GET /healthz)
 	HealthCheck(w http.ResponseWriter, r *http.Request)
+	// List orders
+	// (GET /v1/orders)
+	ListOrders(w http.ResponseWriter, r *http.Request, params ListOrdersParams)
 	// Create a new order
-	// (POST /orders)
+	// (POST /v1/orders)
 	CreateOrder(w http.ResponseWriter, r *http.Request, params CreateOrderParams)
 	// Get order by ID
-	// (GET /orders/{id})
+	// (GET /v1/orders/{id})
 	GetOrder(w http.ResponseWriter, r *http.Request, id string)
 }
 
@@ -79,14 +136,20 @@ func (_ Unimplemented) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// List orders
+// (GET /v1/orders)
+func (_ Unimplemented) ListOrders(w http.ResponseWriter, r *http.Request, params ListOrdersParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // Create a new order
-// (POST /orders)
+// (POST /v1/orders)
 func (_ Unimplemented) CreateOrder(w http.ResponseWriter, r *http.Request, params CreateOrderParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
 // Get order by ID
-// (GET /orders/{id})
+// (GET /v1/orders/{id})
 func (_ Unimplemented) GetOrder(w http.ResponseWriter, r *http.Request, id string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
@@ -114,10 +177,57 @@ func (siw *ServerInterfaceWrapper) HealthCheck(w http.ResponseWriter, r *http.Re
 	handler.ServeHTTP(w, r)
 }
 
+// ListOrders operation middleware
+func (siw *ServerInterfaceWrapper) ListOrders(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListOrdersParams
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "cursor", r.URL.Query(), &params.Cursor)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListOrders(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CreateOrder operation middleware
 func (siw *ServerInterfaceWrapper) CreateOrder(w http.ResponseWriter, r *http.Request) {
 
 	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
 
 	// Parameter object where we will unmarshal all parameters from the context
 	var params CreateOrderParams
@@ -167,6 +277,12 @@ func (siw *ServerInterfaceWrapper) GetOrder(w http.ResponseWriter, r *http.Reque
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
 		return
 	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetOrder(w, r, id)
@@ -296,14 +412,27 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/healthz", wrapper.HealthCheck)
 	})
 	r.Group(func(r chi.Router) {
-		r.Post(options.BaseURL+"/orders", wrapper.CreateOrder)
+		r.Get(options.BaseURL+"/v1/orders", wrapper.ListOrders)
 	})
 	r.Group(func(r chi.Router) {
-		r.Get(options.BaseURL+"/orders/{id}", wrapper.GetOrder)
+		r.Post(options.BaseURL+"/v1/orders", wrapper.CreateOrder)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/orders/{id}", wrapper.GetOrder)
 	})
 
 	return r
 }
+
+type BadRequestApplicationProblemPlusJSONResponse Problem
+
+type ForbiddenApplicationProblemPlusJSONResponse Problem
+
+type NotFoundApplicationProblemPlusJSONResponse Problem
+
+type TooManyRequestsApplicationProblemPlusJSONResponse Problem
+
+type UnauthorizedApplicationProblemPlusJSONResponse Problem
 
 type HealthCheckRequestObject struct {
 }
@@ -320,6 +449,56 @@ func (response HealthCheck200Response) VisitHealthCheckResponse(w http.ResponseW
 	return nil
 }
 
+type ListOrdersRequestObject struct {
+	Params ListOrdersParams
+}
+
+type ListOrdersResponseObject interface {
+	VisitListOrdersResponse(w http.ResponseWriter) error
+}
+
+type ListOrders200JSONResponse OrderList
+
+func (response ListOrders200JSONResponse) VisitListOrdersResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListOrders400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response ListOrders400ApplicationProblemPlusJSONResponse) VisitListOrdersResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListOrders401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ListOrders401ApplicationProblemPlusJSONResponse) VisitListOrdersResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListOrders429ApplicationProblemPlusJSONResponse struct {
+	TooManyRequestsApplicationProblemPlusJSONResponse
+}
+
+func (response ListOrders429ApplicationProblemPlusJSONResponse) VisitListOrdersResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(429)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type CreateOrderRequestObject struct {
 	Params CreateOrderParams
 	Body   *CreateOrderJSONRequestBody
@@ -329,11 +508,63 @@ type CreateOrderResponseObject interface {
 	VisitCreateOrderResponse(w http.ResponseWriter) error
 }
 
-type CreateOrder202JSONResponse CreateOrderResponse
+type CreateOrder202ResponseHeaders struct {
+	Location string
+}
+
+type CreateOrder202JSONResponse struct {
+	Body    CreateOrderResponse
+	Headers CreateOrder202ResponseHeaders
+}
 
 func (response CreateOrder202JSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Location", fmt.Sprint(response.Headers.Location))
 	w.WriteHeader(202)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type CreateOrder400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response CreateOrder400ApplicationProblemPlusJSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type CreateOrder401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response CreateOrder401ApplicationProblemPlusJSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type CreateOrder403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response CreateOrder403ApplicationProblemPlusJSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type CreateOrder429ApplicationProblemPlusJSONResponse struct {
+	TooManyRequestsApplicationProblemPlusJSONResponse
+}
+
+func (response CreateOrder429ApplicationProblemPlusJSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(429)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -355,12 +586,37 @@ func (response GetOrder200JSONResponse) VisitGetOrderResponse(w http.ResponseWri
 	return json.NewEncoder(w).Encode(response)
 }
 
-type GetOrder404Response struct {
+type GetOrder401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
 }
 
-func (response GetOrder404Response) VisitGetOrderResponse(w http.ResponseWriter) error {
+func (response GetOrder401ApplicationProblemPlusJSONResponse) VisitGetOrderResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetOrder404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response GetOrder404ApplicationProblemPlusJSONResponse) VisitGetOrderResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(404)
-	return nil
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetOrder429ApplicationProblemPlusJSONResponse struct {
+	TooManyRequestsApplicationProblemPlusJSONResponse
+}
+
+func (response GetOrder429ApplicationProblemPlusJSONResponse) VisitGetOrderResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(429)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 // StrictServerInterface represents all server handlers.
@@ -368,11 +624,14 @@ type StrictServerInterface interface {
 	// Health check
 	// (GET /healthz)
 	HealthCheck(ctx context.Context, request HealthCheckRequestObject) (HealthCheckResponseObject, error)
+	// List orders
+	// (GET /v1/orders)
+	ListOrders(ctx context.Context, request ListOrdersRequestObject) (ListOrdersResponseObject, error)
 	// Create a new order
-	// (POST /orders)
+	// (POST /v1/orders)
 	CreateOrder(ctx context.Context, request CreateOrderRequestObject) (CreateOrderResponseObject, error)
 	// Get order by ID
-	// (GET /orders/{id})
+	// (GET /v1/orders/{id})
 	GetOrder(ctx context.Context, request GetOrderRequestObject) (GetOrderResponseObject, error)
 }
 
@@ -422,6 +681,32 @@ func (sh *strictHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(HealthCheckResponseObject); ok {
 		if err := validResponse.VisitHealthCheckResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListOrders operation middleware
+func (sh *strictHandler) ListOrders(w http.ResponseWriter, r *http.Request, params ListOrdersParams) {
+	var request ListOrdersRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListOrders(ctx, request.(ListOrdersRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListOrders")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListOrdersResponseObject); ok {
+		if err := validResponse.VisitListOrdersResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

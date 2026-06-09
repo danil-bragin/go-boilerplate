@@ -8,9 +8,9 @@ package gateway_test
 // starts the gateway with auth ENABLED pointing at the live JWKS endpoint, obtains
 // a real access token for the demo/demo user, and asserts the full auth path:
 //
-//   - POST /orders with a valid Keycloak token → 202 (demo user has "user" role).
-//   - POST /orders with no Authorization header → 401.
-//   - POST /orders with a garbage token → 401.
+//   - POST /v1/orders with a valid Keycloak token → 202 (demo user has "user" role).
+//   - POST /v1/orders with no Authorization header → 401.
+//   - POST /v1/orders with a garbage token → 401.
 
 import (
 	"bytes"
@@ -130,14 +130,14 @@ func TestGateway_KeycloakRealToken(t *testing.T) {
 	bodyBytes, _ := json.Marshal(orderBody)
 
 	// ── Assertion 1: No Authorization header → 401 ──────────────────────────
-	resp, err := http.Post(appBaseURL+"/orders", "application/json", bytes.NewReader(bodyBytes))
+	resp, err := http.Post(appBaseURL+"/v1/orders", "application/json", bytes.NewReader(bodyBytes))
 	require.NoError(t, err)
 	resp.Body.Close()
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode,
-		"POST /orders without Authorization must return 401")
+		"POST /v1/orders without Authorization must return 401")
 
 	// ── Assertion 2: Garbage token → 401 ────────────────────────────────────
-	req, err := http.NewRequest(http.MethodPost, appBaseURL+"/orders", bytes.NewReader(bodyBytes))
+	req, err := http.NewRequest(http.MethodPost, appBaseURL+"/v1/orders", bytes.NewReader(bodyBytes))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer this.is.garbage")
@@ -146,10 +146,10 @@ func TestGateway_KeycloakRealToken(t *testing.T) {
 	require.NoError(t, err)
 	respGarbage.Body.Close()
 	require.Equal(t, http.StatusUnauthorized, respGarbage.StatusCode,
-		"POST /orders with garbage token must return 401")
+		"POST /v1/orders with garbage token must return 401")
 
 	// ── Assertion 3: Valid Keycloak token for demo user (role=user) → 202 ───
-	req2, err := http.NewRequest(http.MethodPost, appBaseURL+"/orders", bytes.NewReader(bodyBytes))
+	req2, err := http.NewRequest(http.MethodPost, appBaseURL+"/v1/orders", bytes.NewReader(bodyBytes))
 	require.NoError(t, err)
 	req2.Header.Set("Content-Type", "application/json")
 	req2.Header.Set("Authorization", "Bearer "+accessToken)
@@ -159,7 +159,7 @@ func TestGateway_KeycloakRealToken(t *testing.T) {
 	defer respOK.Body.Close()
 	bodyResp, _ := io.ReadAll(respOK.Body)
 	require.Equal(t, http.StatusAccepted, respOK.StatusCode,
-		"POST /orders with valid Keycloak token (demo user, role=user) must return 202; body: %s", string(bodyResp))
+		"POST /v1/orders with valid Keycloak token (demo user, role=user) must return 202; body: %s", string(bodyResp))
 }
 
 // fetchKeycloakToken obtains an access token for demo/demo via the password grant.

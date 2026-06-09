@@ -3,9 +3,9 @@
 // (one per service), starts all four apps in-process, and drives the full
 // flow:
 //
-//	POST /orders → gateway → orders.commands → orders svc → orders.events →
+//	POST /v1/orders → gateway → orders.commands → orders svc → orders.events →
 //	payments svc → payments.events → notifications svc
-//	GET /orders/{id}: created → paid
+//	GET /v1/orders/{id}: created → paid
 package e2e
 
 import (
@@ -77,11 +77,11 @@ func discardWriter() io.Writer { return io.Discard }
 // It starts four services in-process (gateway, orders, payments, notifications),
 // posts an order via the gateway HTTP API, and asserts the complete choreography:
 //
-//  1. Gateway accepts POST /orders → 202 + order_id.
+//  1. Gateway accepts POST /v1/orders → 202 + order_id.
 //  2. Orders service consumes the command, writes the order row, emits OrderCreated.
-//  3. Gateway projection picks up OrderCreated → GET /orders/{id} shows status="created" or "paid".
+//  3. Gateway projection picks up OrderCreated → GET /v1/orders/{id} shows status="created" or "paid".
 //  4. Payments service consumes OrderCreated, writes a payment row, emits PaymentProcessed.
-//  5. Gateway projection picks up PaymentProcessed → GET /orders/{id} shows status="paid".
+//  5. Gateway projection picks up PaymentProcessed → GET /v1/orders/{id} shows status="paid".
 //  6. Notifications service consumes PaymentProcessed and fires the notifier.
 func TestE2E_OrderChoreography(t *testing.T) {
 	if testing.Short() {
@@ -226,8 +226,8 @@ func TestE2E_OrderChoreography(t *testing.T) {
 		return resp.StatusCode == http.StatusOK
 	}, 30*time.Second, 300*time.Millisecond, "gateway did not become ready within timeout")
 
-	// --- Step 1: POST /orders → 202 + order_id ---
-	t.Log("Step 1: POST /orders")
+	// --- Step 1: POST /v1/orders → 202 + order_id ---
+	t.Log("Step 1: POST /v1/orders")
 	reqBody := map[string]interface{}{
 		"customer_id":  "c1",
 		"amount_cents": int64(1500),
@@ -236,10 +236,10 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	bodyBytes, err := json.Marshal(reqBody)
 	require.NoError(t, err)
 
-	resp, err := http.Post(baseURL+"/orders", "application/json", bytes.NewReader(bodyBytes))
+	resp, err := http.Post(baseURL+"/v1/orders", "application/json", bytes.NewReader(bodyBytes))
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	require.Equal(t, http.StatusAccepted, resp.StatusCode, "expected 202 from POST /orders")
+	require.Equal(t, http.StatusAccepted, resp.StatusCode, "expected 202 from POST /v1/orders")
 
 	var createResp struct {
 		OrderID string `json:"order_id"`
@@ -249,7 +249,7 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	require.NotEmpty(t, orderID, "expected non-empty order_id in response")
 	t.Logf("Step 1 OK: order_id=%s", orderID)
 
-	// --- Step 2: Poll GET /orders/{id} until the projection row appears ---
+	// --- Step 2: Poll GET /v1/orders/{id} until the projection row appears ---
 	// Proves: orders svc consumed the command, emitted OrderCreated,
 	//         gateway projection applied OrderCreated.
 	//
@@ -265,7 +265,7 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	require.True(t, ok, "order %s did not appear in the projection within timeout", orderID)
 	t.Logf("Step 2 OK: order %s is in projection (status=%s)", orderID, getOrderStatus(t, baseURL, orderID))
 
-	// --- Step 3: Poll GET /orders/{id} until status=="paid" ---
+	// --- Step 3: Poll GET /v1/orders/{id} until status=="paid" ---
 	// Proves: payments svc consumed OrderCreated, emitted PaymentProcessed,
 	//         gateway projection applied PaymentProcessed.
 	t.Log("Step 3: waiting for status=paid (payments→PaymentProcessed→gateway projection)")
@@ -290,12 +290,12 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	t.Logf("Step 4 OK: notification captured for order %s (payment_id=%s, status=%s)", orderID, inv[1], inv[2])
 }
 
-// getOrderStatus calls GET /orders/{id} and returns the status string, or "" on
+// getOrderStatus calls GET /v1/orders/{id} and returns the status string, or "" on
 // any error or non-200 response (caller retries via pollUntil).
 func getOrderStatus(t *testing.T, baseURL, orderID string) string {
 	t.Helper()
 
-	resp, err := http.Get(fmt.Sprintf("%s/orders/%s", baseURL, orderID))
+	resp, err := http.Get(fmt.Sprintf("%s/v1/orders/%s", baseURL, orderID))
 	if err != nil {
 		return ""
 	}

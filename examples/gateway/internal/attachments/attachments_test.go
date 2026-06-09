@@ -56,7 +56,7 @@ func TestUpload_StoresWhenFlagOn(t *testing.T) {
 	r := newRouter(h)
 
 	body := strings.NewReader("hello")
-	req := httptest.NewRequest(http.MethodPost, "/orders/"+validOrderID+"/attachment", body)
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+validOrderID+"/attachment", body)
 	req.Header.Set("Content-Type", "text/plain")
 	req.Header.Set("X-Filename", "doc.txt")
 	req = withUserPrincipal(req)
@@ -88,7 +88,7 @@ func TestDownload_RedirectsWhenFlagOn(t *testing.T) {
 	h := attachments.New(store, flagOn)
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodGet, "/orders/"+validOrderID+"/attachment/doc.txt", http.NoBody)
+	req := httptest.NewRequest(http.MethodGet, "/v1/orders/"+validOrderID+"/attachment/doc.txt", http.NoBody)
 	req = withUserPrincipal(req)
 	rw := httptest.NewRecorder()
 	r.ServeHTTP(rw, req)
@@ -106,7 +106,7 @@ func TestUpload_404WhenFlagOff(t *testing.T) {
 	h := attachments.New(store, flagOff)
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodPost, "/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
 	req.Header.Set("X-Filename", "file.bin")
 	req = withUserPrincipal(req)
 	rw := httptest.NewRecorder()
@@ -123,7 +123,7 @@ func TestDownload_404WhenFlagOff(t *testing.T) {
 	h := attachments.New(store, flagOff)
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodGet, "/orders/"+validOrderID+"/attachment/doc.txt", http.NoBody)
+	req := httptest.NewRequest(http.MethodGet, "/v1/orders/"+validOrderID+"/attachment/doc.txt", http.NoBody)
 	req = withUserPrincipal(req)
 	rw := httptest.NewRecorder()
 	r.ServeHTTP(rw, req)
@@ -139,7 +139,7 @@ func TestDownload_404WhenMissing(t *testing.T) {
 	h := attachments.New(store, flagOn)
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodGet, "/orders/"+validOrderID+"/attachment/nonexistent.bin", http.NoBody)
+	req := httptest.NewRequest(http.MethodGet, "/v1/orders/"+validOrderID+"/attachment/nonexistent.bin", http.NoBody)
 	req = withUserPrincipal(req)
 	rw := httptest.NewRecorder()
 	r.ServeHTTP(rw, req)
@@ -156,7 +156,7 @@ func TestUpload_FallbackFilenameWhenHeaderMissing(t *testing.T) {
 	h := attachments.New(store, flagOn)
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodPost, "/orders/"+validOrderID+"/attachment", strings.NewReader("bytes"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+validOrderID+"/attachment", strings.NewReader("bytes"))
 	// Deliberately no X-Filename header.
 	req = withUserPrincipal(req)
 	rw := httptest.NewRecorder()
@@ -182,7 +182,7 @@ func TestUpload_DefaultContentType(t *testing.T) {
 	h := attachments.New(store, flagOn)
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodPost, "/orders/"+validOrderID+"/attachment", strings.NewReader("x"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+validOrderID+"/attachment", strings.NewReader("x"))
 	req.Header.Set("X-Filename", "x.bin")
 	// Deliberately no Content-Type.
 	req = withUserPrincipal(req)
@@ -210,7 +210,7 @@ func TestUpload_RejectsPathTraversalFilename(t *testing.T) {
 	h := attachments.New(store, flagOn)
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodPost, "/orders/"+validOrderID+"/attachment", strings.NewReader("evil"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+validOrderID+"/attachment", strings.NewReader("evil"))
 	req.Header.Set("X-Filename", "../../etc/passwd")
 	req = withUserPrincipal(req)
 
@@ -235,7 +235,7 @@ func TestUpload_RejectsBadOrderID(t *testing.T) {
 	h := attachments.New(store, flagOn)
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodPost, "/orders/not-a-uuid/attachment", strings.NewReader("data"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/not-a-uuid/attachment", strings.NewReader("data"))
 	req.Header.Set("X-Filename", "file.txt")
 	req = withUserPrincipal(req)
 
@@ -257,7 +257,7 @@ func TestDownload_RejectsTraversalName(t *testing.T) {
 	// Use ".." as the literal {name} parameter.  chi decodes %2F so we pass
 	// the path directly; ".." itself is a valid path segment and chi will
 	// capture it as the {name} URL param.
-	req := httptest.NewRequest(http.MethodGet, "/orders/"+validOrderID+"/attachment/..", http.NoBody)
+	req := httptest.NewRequest(http.MethodGet, "/v1/orders/"+validOrderID+"/attachment/..", http.NoBody)
 	req = withUserPrincipal(req)
 
 	rw := httptest.NewRecorder()
@@ -277,7 +277,7 @@ func TestUpload_401WithoutPrincipal(t *testing.T) {
 	r := newRouter(h)
 
 	// No auth.Into — principal is absent from the context.
-	req := httptest.NewRequest(http.MethodPost, "/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
 	req.Header.Set("X-Filename", "file.txt")
 
 	rw := httptest.NewRecorder()
@@ -299,7 +299,7 @@ func TestUpload_403WithoutRole(t *testing.T) {
 		Subject: "guest",
 		Roles:   []string{}, // no roles
 	})
-	req := httptest.NewRequest(http.MethodPost, "/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
 	req.Header.Set("X-Filename", "file.txt")
 	req = req.WithContext(ctx)
 

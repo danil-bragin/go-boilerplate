@@ -72,7 +72,7 @@ func mountAPIRoutes(
 // auth middleware. Does nothing when objStore or flags is nil — graceful degradation.
 //
 // Attachment routes are mounted behind the same auth middleware so that
-// upload/download requires a valid token (same RBAC boundary as POST /orders).
+// upload/download requires a valid token (same RBAC boundary as POST /v1/orders).
 func mountAttachmentRoutes(
 	cfg Config,
 	httpSrv *httpserver.Server,

@@ -9,6 +9,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const getOrderView = `-- name: GetOrderView :one
@@ -17,9 +18,18 @@ from orders_read
 where order_id = $1
 `
 
-func (q *Queries) GetOrderView(ctx context.Context, orderID uuid.UUID) (OrdersRead, error) {
+type GetOrderViewRow struct {
+	OrderID     uuid.UUID
+	CustomerID  string
+	AmountCents int64
+	Currency    string
+	Status      string
+	UpdatedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) GetOrderView(ctx context.Context, orderID uuid.UUID) (GetOrderViewRow, error) {
 	row := q.db.QueryRow(ctx, getOrderView, orderID)
-	var i OrdersRead
+	var i GetOrderViewRow
 	err := row.Scan(
 		&i.OrderID,
 		&i.CustomerID,
@@ -29,6 +39,88 @@ func (q *Queries) GetOrderView(ctx context.Context, orderID uuid.UUID) (OrdersRe
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const insertPendingOrder = `-- name: InsertPendingOrder :exec
+insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)
+values ($1, $2, $3, $4, 'pending', now())
+on conflict (order_id) do nothing
+`
+
+type InsertPendingOrderParams struct {
+	OrderID     uuid.UUID
+	CustomerID  string
+	AmountCents int64
+	Currency    string
+}
+
+// Pre-inserts the read-model row at POST time with status 'pending' so an
+// immediate GET returns 200 instead of 404. ON CONFLICT DO NOTHING keeps the
+// insert upsert-safe: a racing OrderCreated/PaymentProcessed projection write
+// (or an idempotent POST retry) must never be downgraded back to 'pending'.
+func (q *Queries) InsertPendingOrder(ctx context.Context, arg InsertPendingOrderParams) error {
+	_, err := q.db.Exec(ctx, insertPendingOrder,
+		arg.OrderID,
+		arg.CustomerID,
+		arg.AmountCents,
+		arg.Currency,
+	)
+	return err
+}
+
+const listOrders = `-- name: ListOrders :many
+select order_id, customer_id, amount_cents, currency, status, created_at, updated_at
+from orders_read
+where (created_at, order_id) < ($1::timestamptz, $2::uuid)
+order by created_at desc, order_id desc
+limit $3::int
+`
+
+type ListOrdersParams struct {
+	CursorCreatedAt pgtype.Timestamptz
+	CursorOrderID   uuid.UUID
+	PageLimit       int32
+}
+
+type ListOrdersRow struct {
+	OrderID     uuid.UUID
+	CustomerID  string
+	AmountCents int64
+	Currency    string
+	Status      string
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+// Keyset pagination, newest first. The caller passes the (created_at,
+// order_id) of the last row of the previous page; the first page passes
+// (timestamptz 'infinity', max uuid) so every row qualifies.
+func (q *Queries) ListOrders(ctx context.Context, arg ListOrdersParams) ([]ListOrdersRow, error) {
+	rows, err := q.db.Query(ctx, listOrders, arg.CursorCreatedAt, arg.CursorOrderID, arg.PageLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOrdersRow
+	for rows.Next() {
+		var i ListOrdersRow
+		if err := rows.Scan(
+			&i.OrderID,
+			&i.CustomerID,
+			&i.AmountCents,
+			&i.Currency,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const markPaid = `-- name: MarkPaid :exec
