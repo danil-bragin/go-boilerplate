@@ -4,7 +4,7 @@ import (
 	"go-boilerplate/examples/internal/service"
 	"go-boilerplate/platform/blob"
 	"go-boilerplate/platform/cache"
-	"go-boilerplate/platform/httpserver"
+	"go-boilerplate/platform/web/httpserver"
 )
 
 // Config aggregates all configuration for the gateway service.

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"go-boilerplate/platform/httpx"
+	"go-boilerplate/platform/web/httpx"
 )
 
 // Middleware returns an HTTP middleware that reads a Bearer token from the

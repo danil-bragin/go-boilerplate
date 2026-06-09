@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"go-boilerplate/platform/httpserver"
 	"go-boilerplate/platform/observability/log"
+	"go-boilerplate/platform/web/httpserver"
 )
 
 // BenchmarkMiddlewareChain measures the full RequestID → AccessLog → Recover

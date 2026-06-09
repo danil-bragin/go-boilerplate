@@ -57,8 +57,8 @@ import (
 	"go-boilerplate/examples/internal/service"
 	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/config"
-	"go-boilerplate/platform/httpserver"
 	"go-boilerplate/platform/run"
+	"go-boilerplate/platform/web/httpserver"
 
 	gatewayapp "go-boilerplate/examples/gateway/internal/app"
 )

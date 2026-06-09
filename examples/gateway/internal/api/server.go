@@ -13,10 +13,10 @@ import (
 	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/authz"
 	"go-boilerplate/platform/cqrs"
-	"go-boilerplate/platform/httpx"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/resilience"
+	"go-boilerplate/platform/web/httpx"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"

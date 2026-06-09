@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"go-boilerplate/platform/httpserver"
 	"go-boilerplate/platform/observability/log"
+	"go-boilerplate/platform/web/httpserver"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"

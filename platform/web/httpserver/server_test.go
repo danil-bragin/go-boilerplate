@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"go-boilerplate/platform/httpserver"
+	"go-boilerplate/platform/web/httpserver"
 
 	"github.com/stretchr/testify/require"
 )

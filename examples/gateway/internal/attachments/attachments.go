@@ -29,7 +29,7 @@ import (
 
 	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/blob"
-	"go-boilerplate/platform/httpx"
+	"go-boilerplate/platform/web/httpx"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"

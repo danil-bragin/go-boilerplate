@@ -8,7 +8,7 @@ import (
 	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/blob"
 	"go-boilerplate/platform/featureflags"
-	"go-boilerplate/platform/httpserver"
+	"go-boilerplate/platform/web/httpserver"
 
 	"github.com/go-chi/chi/v5"
 )

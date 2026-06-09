@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"go-boilerplate/platform/httpx"
+	"go-boilerplate/platform/web/httpx"
 )
 
 func BenchmarkDecode(b *testing.B) {

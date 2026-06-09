@@ -12,12 +12,12 @@ import (
 	"time"
 
 	"go-boilerplate/platform/config"
-	"go-boilerplate/platform/httpserver"
-	"go-boilerplate/platform/httpx"
 	"go-boilerplate/platform/observability/health"
 	"go-boilerplate/platform/observability/log"
 	"go-boilerplate/platform/observability/telemetry"
 	"go-boilerplate/platform/run"
+	"go-boilerplate/platform/web/httpserver"
+	"go-boilerplate/platform/web/httpx"
 
 	// automaxprocs sets GOMAXPROCS to match the container CPU quota at startup.
 	// Go 1.25+ also does this natively when GOMAXPROCS is unset, but automaxprocs
