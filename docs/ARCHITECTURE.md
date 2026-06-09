@@ -10,7 +10,7 @@
 | `log` | `log/slog` setup; optional zap backend via `zapslog`; `FromContext`/`WithContext`; trace-id injection |
 | `run` | Signal handling (`SIGINT`/`SIGTERM`), ordered `Start`, reverse-order `Closer`, two-phase shutdown |
 | `telemetry` | OTel tracer + meter + logger providers; OTLP/gRPC exporter; `Shutdown` |
-| `httpserver` | chi server; middleware stack (recover, req-id, OTel, slog, rate-limit, auth); graceful `Shutdown` |
+| `httpserver` | chi server; middleware stack (SecurityHeaders, recover, req-id, OTel, access-log, max-bytes, timeout); CORS and RateLimit opt-in; graceful `Shutdown` |
 | `httpx` | `Decode`+validate request bodies; RFC 7807 `ProblemJSON` error responses |
 | `health` | `/livez` + `/readyz` aggregator; `Checker` interface; liveness always 200, readiness gates on registered checks |
 | `pg` | `pgxpool` factory with tuned defaults; `RunInTx`; `FromContext` (pulls tx or pool); reader/writer pool split; health check |
@@ -111,13 +111,13 @@ DB-per-service (separate logical databases in one Postgres instance locally). Ea
 
 ## Observability
 
-- **Traces:** OTel SDK → OTLP/gRPC → OTel Collector → Jaeger UI (`localhost:16686`).
-- **Metrics:** OTel SDK metrics → OTel Collector Prometheus exporter (`localhost:8889`); Prometheus scrapes the collector. Grafana visualises.
-- **Logs:** `log/slog` API with trace-id injection; JSON format in production.
+- **Traces:** OTel SDK → OTLP/gRPC → OTel Collector → Jaeger UI (`localhost:16686`). Trace IDs are injected into structured log entries via the `traceHandler` in `platform/log`, so every log line carries `trace_id` and `span_id` when a span is active.
+- **Metrics:** OTel SDK MeterProvider wired in every service via `platform/telemetry`. Two export paths:
+  1. OTLP/gRPC → OTel Collector → Prometheus exporter (`otel-collector:8889`) — batch export.
+  2. Direct Prometheus scrape endpoint `/metrics` on each service's admin HTTP server (`platform/telemetry` registers a Prometheus exporter with the MeterProvider and mounts it on the admin mux).
+- **Logs:** `log/slog` API with trace-id injection; JSON format in production. Trace correlation available in every request handler via `log.From(ctx)`.
 - **Profiling:** Pyroscope continuous profiling agent (`localhost:4040`); `pprof` endpoints behind auth guard.
-- **Health:** `/livez` (always 200 if the process is alive); `/readyz` (gates on DB pool + Kafka connection).
-
-> **Note:** Service-level `/metrics` Prometheus endpoints are a documented gap in v1. Prometheus currently scrapes the OTel Collector's own Prometheus exporter (`otel-collector:8889`) which re-exports all OTel-instrumented metrics forwarded from services. Direct `/metrics` handlers per service are a planned enhancement.
+- **Health:** `/livez` and `/readyz` endpoints are mounted on every service's admin HTTP server. Liveness always returns 200 while the process is alive; readiness gates on registered checks (DB pool ping, Kafka client connectivity). The gateway additionally registers a Redis cache readiness check when cache is configured.
 
 ---
 
@@ -134,16 +134,35 @@ See `docs/operations.md` for the full rationale. Summary:
 
 ---
 
+## Wired in current version (was "deferred")
+
+The following items were previously listed as deferred but are now implemented:
+
+| Item | Status |
+|---|---|
+| Per-service `/metrics` Prometheus endpoint | Wired via `platform/telemetry` — Prometheus exporter registered on MeterProvider; `/metrics` mounted on admin server for every service |
+| Trace ID in logs | Wired via `platform/log` traceHandler — `trace_id` + `span_id` injected into every log entry when a span is active |
+| Health endpoints | `/livez` + `/readyz` mounted on every service's admin HTTP server via `platform/health` |
+| Security headers | `SecurityHeaders` middleware in default `httpserver.New` chain; sets `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Content-Security-Policy`, `X-XSS-Protection` |
+| Edge rate limiting (global) | `RateLimit(rps, burst)` token-bucket middleware in `platform/httpserver`; wired on the gateway's public server at 100 rps / burst 200 |
+| CORS | `CORS(CORSOptions)` middleware in `platform/httpserver`; wired on the gateway's public server; opt-in elsewhere |
+| Resilience + caching + authz in gateway | Circuit-breaker retry wraps Kafka publish; CQRS caching behavior on GetOrder query; RBAC authz behavior on CreateOrder command |
+| CDC outbox relay (polling) | Polling relay (`platform/outbox`) with `FOR UPDATE SKIP LOCKED`, publish-after-commit, AT-LEAST-ONCE delivery wired in all services |
+| Image signing (cosign) | Step present in `.github/workflows/ci.yml` (commented; requires registry credentials + `id-token: write`) |
+
+---
+
 ## Deferred / not-yet-built
 
-The following items are documented design decisions deferred to a later iteration:
+The following items are genuine gaps deferred to a later iteration:
 
 | Item | Notes |
 |---|---|
-| Per-service `/metrics` Prometheus endpoint | Services emit metrics via OTel SDK → collector; direct scrape endpoint not wired |
 | Kafka EOS (`GroupTransactSession`) | Outbox+inbox is simpler and covers v1 requirements; EOS reserved for money-grade atomic consume→produce |
 | Stateless retry-topics | Framework support exists in `platform/kafka` (DLT wiring); tiered retry topic routing not yet wired per service |
-| Distributed rate limiting | `platform/resilience` has `redis_rate` GCRA integration; not wired into `httpserver` by default |
+| Distributed rate limiting (per-IP, Redis-backed) | Current edge limiter is a single global process-local token bucket. For multi-instance or per-client limiting, replace with Redis GCRA (e.g. `redis_rate` or rueidis scripted GCRA). Per-IP limiting requires an LRU map of `*rate.Limiter` keyed on `r.RemoteAddr`. |
 | Multi-tenancy | Tenant-id context + event propagation is a documented seam; not built in v1 |
-| CDC outbox relay | Debezium-based relay is the scale-out path for high-throughput outbox; the polling relay is sufficient for v1 |
+| TLS (inter-service) | All connections are plaintext (HTTP, OTLP `WithInsecure`, `sslmode=disable`, Kafka `PLAINTEXT`). In production TLS terminates at the ingress layer or service mesh. |
+| Table partitioning / age-based cleanup | Age-based cleanup (polling delete of old published outbox rows, old audit rows) is wired; range-based Postgres table partitioning for true hot/cold archival is deferred. |
 | Read replica pool routing | `pg.Pool` supports reader/writer split; replica routing not enabled in the example services |
+| Image signing activated | `cosign sign` step in CI is commented out pending a container registry |
