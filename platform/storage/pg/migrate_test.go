@@ -111,3 +111,51 @@ func TestMigrate_ConcurrentReplicasNoError(t *testing.T) {
 	require.Equal(t, 1, count,
 		"goose_db_version must have exactly one applied row for version 1; got %d", count)
 }
+
+//go:embed testdata/lockcheck/*.sql
+var lockcheckMigrations embed.FS
+
+// TestMigrate_LockAndMigrationShareSession: the advisory lock and the goose
+// migration statements MUST execute on the same Postgres session. The
+// embedded migration raises if pg_locks shows no advisory lock held by
+// pg_backend_pid() — i.e. if goose ran on a different connection than the
+// lock holder (the historical bug: lock on a dedicated conn, goose on the
+// shared *sql.DB pool).
+func TestMigrate_LockAndMigrationShareSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (postgres container)")
+	}
+	dsn := pgtest.NewDSN(t)
+	ctx := context.Background()
+
+	require.NoError(t, pg.Migrate(ctx, dsn, lockcheckMigrations, "testdata/lockcheck"),
+		"migration must run on the session holding the advisory lock")
+}
+
+// TestConfig_MigrateDSN: PG_MIGRATE_URL overrides the pool DSN for migrations
+// (required behind PgBouncer transaction pooling, where session advisory
+// locks and migrations need a direct Postgres connection).
+func TestConfig_MigrateDSN(t *testing.T) {
+	cfg := pg.Config{DSN: "postgres://pooled:5432/db"}
+	require.Equal(t, "postgres://pooled:5432/db", cfg.MigrateDSN(), "default: pool DSN")
+
+	cfg.MigrateURL = "postgres://direct:5432/db"
+	require.Equal(t, "postgres://direct:5432/db", cfg.MigrateDSN(), "PG_MIGRATE_URL wins when set")
+}
+
+// TestMigrate_MigrateURLOverrideHonored (integration): when MigrateURL is set
+// it is what Migrate should dial — proven by giving servicekit-style callers
+// a valid MigrateDSN while the pool DSN is unreachable garbage.
+func TestMigrate_MigrateURLOverrideHonored(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (postgres container)")
+	}
+	dsn := pgtest.NewDSN(t)
+	ctx := context.Background()
+
+	cfg := pg.Config{
+		DSN:        "postgres://nobody:nope@127.0.0.1:1/void", // unreachable
+		MigrateURL: dsn,
+	}
+	require.NoError(t, pg.Migrate(ctx, cfg.MigrateDSN(), testMigrations, "testdata/migrations"))
+}

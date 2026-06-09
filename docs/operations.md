@@ -203,3 +203,57 @@ The `platform/messaging/retry` package implements tiered retry routing. Topics a
 | Check lag | `kafka-consumer-groups.sh --describe --group <group>.retry` — watch lag on each retry tier |
 | DLT redrive | Messages on `<topic>.DLT` can be republished to the original topic; procedure unchanged from standard DLT redrive |
 | Tuning tiers | Edit `platform/messaging/retry` tier definitions and redeploy — each tier is a separate consumer group with its own lag metric |
+
+---
+
+## Database migrations
+
+Migrations are embedded goose SQL files (`examples/<svc>/internal/migrations/sql`)
+applied by `pg.Migrate`, which serializes replicas with a Postgres
+session-level advisory lock held on the SAME single connection that runs the
+goose statements.
+
+### Who runs them
+
+| Mode | How | When to use |
+|---|---|---|
+| On startup (default) | `MIGRATE_ON_START=true` — servicekit applies migrations in `New` | dev, tests, small single-team deploys |
+| Migrate job (prod) | `MIGRATE_ON_START=false` on app replicas; run `just migrate <svc>` / `go run ./cmd/migrate -service <svc>` as a pre-deploy job | production rollouts — replicas never race a long migration |
+
+### PgBouncer / pooled DSNs
+
+`pg.Migrate` needs a real Postgres SESSION (advisory locks are session-scoped).
+If `PG_DSN` points at PgBouncer in transaction-pooling mode, set
+`PG_MIGRATE_URL` to a direct-Postgres DSN — `Config.MigrateDSN()` (used by
+servicekit and `cmd/migrate`) prefers it automatically.
+
+### Long operations: `-- +goose NO TRANSACTION` + CONCURRENTLY
+
+goose wraps each migration in a transaction. `CREATE INDEX CONCURRENTLY`
+cannot run inside one — opt the file out:
+
+```sql
+-- +goose NO TRANSACTION
+-- +goose Up
+CREATE INDEX CONCURRENTLY IF NOT EXISTS orders_status_idx ON orders (status);
+
+-- +goose Down
+DROP INDEX CONCURRENTLY IF EXISTS orders_status_idx;
+```
+
+Rules for NO TRANSACTION files: one statement per file where possible, always
+idempotent (`IF NOT EXISTS` / `IF EXISTS`) — statements auto-commit
+individually, so a midway failure leaves earlier ones applied and goose will
+re-run the whole file. The boilerplate's own migrations use plain
+`CREATE INDEX` because they index tables created in the same change (empty at
+that point); use CONCURRENTLY for any index on a populated production table.
+
+### Linting (squawk)
+
+`just lint-sql` (and the blocking `sql-lint` CI job) runs
+[squawk](https://squawkhq.com) over `**/migrations/**/*.sql`. Repo policy in
+`.squawk.toml`: rules are evaluated as in-transaction (goose), Down-drop and
+dev-only noise rules are excluded, everything else (table rewrites,
+lock-heavy ALTERs, volatile defaults, …) is blocking. Suppress a deliberate
+violation per-statement with `-- squawk-ignore <rule>` on the line above it,
+plus a comment explaining why it is safe.

@@ -74,8 +74,13 @@ const (
 // Set StatementCacheMode to StatementCacheModeDescribeExec when connecting
 // through PgBouncer in transaction-mode pooling. See StatementCacheMode docs.
 type Config struct {
-	DSN               string        `env:"PG_DSN" envDefault:"postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"`
-	ReaderDSN         string        `env:"PG_READER_DSN" envDefault:""`
+	DSN       string `env:"PG_DSN" envDefault:"postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"`
+	ReaderDSN string `env:"PG_READER_DSN" envDefault:""`
+
+	// MigrateURL, when set, is the DSN Migrate dials instead of DSN. REQUIRED
+	// when DSN points at PgBouncer in transaction pooling mode: migrations
+	// need a direct-Postgres session for the advisory lock (see Migrate docs).
+	MigrateURL        string        `env:"PG_MIGRATE_URL" envDefault:""`
 	MaxConns          int32         `env:"PG_MAX_CONNS" envDefault:"25"`
 	MinConns          int32         `env:"PG_MIN_CONNS" envDefault:"5"`
 	MaxConnLifetime   time.Duration `env:"PG_MAX_CONN_LIFETIME" envDefault:"30m"`
@@ -163,6 +168,15 @@ func (c Config) buildSizedPoolConfig(dsn string, maxConns, minConns int32) (*pgx
 	}
 
 	return pc, nil
+}
+
+// MigrateDSN returns the DSN migrations should dial: MigrateURL when set
+// (direct Postgres behind PgBouncer), otherwise the pool DSN.
+func (c Config) MigrateDSN() string {
+	if c.MigrateURL != "" {
+		return c.MigrateURL
+	}
+	return c.DSN
 }
 
 func nonZeroDur(v, def time.Duration) time.Duration {

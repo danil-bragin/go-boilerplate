@@ -144,9 +144,11 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 		return pool.Close(ctx)
 	})
 
-	// 4. Migrations (advisory-locked; idempotent).
-	if migrations != nil && migrationsDir != "" {
-		if err := pg.Migrate(ctx, cfg.PG.DSN, migrations, migrationsDir); err != nil {
+	// 4. Migrations (advisory-locked; idempotent). MIGRATE_ON_START=false
+	// skips them (production: a dedicated migrate job owns schema changes).
+	// MigrateDSN honors PG_MIGRATE_URL — required behind PgBouncer.
+	if cfg.MigrateOnStart && migrations != nil && migrationsDir != "" {
+		if err := pg.Migrate(ctx, cfg.PG.MigrateDSN(), migrations, migrationsDir); err != nil {
 			return nil, err
 		}
 	}
