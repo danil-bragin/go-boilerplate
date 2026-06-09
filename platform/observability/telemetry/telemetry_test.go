@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"go-boilerplate/platform/observability/telemetry"
 
@@ -142,4 +143,41 @@ func TestSetup_InstallsMeterProvider(t *testing.T) {
 	body, _ := io.ReadAll(rec.Body)
 	require.Contains(t, string(body), "test_requests_total",
 		"Prometheus output must contain the recorded counter")
+}
+
+// TestSetup_TraceRatioSamplerApplied verifies TELEMETRY_TRACE_RATIO wiring:
+// ratio 0 → no root span is sampled; ratio 1 → every root span is sampled.
+// The sampler is ParentBased(TraceIDRatioBased(ratio)), so remote parent
+// decisions are still respected.
+func TestSetup_TraceRatioSamplerApplied(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		ratio   float64
+		sampled bool
+	}{
+		{name: "ratio zero drops all roots", ratio: 0, sampled: false},
+		{name: "ratio one samples all roots", ratio: 1, sampled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			shutdown, err := telemetry.Setup(ctx, telemetry.Config{
+				ServiceName:       "ratio-test",
+				OTLPEndpoint:      "localhost:1", // never reached: nothing is exported in-test
+				Enabled:           true,
+				MetricsPrometheus: false,
+				TraceRatio:        tc.ratio,
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				cctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				_ = shutdown(cctx) // flush errors expected: no collector running
+			})
+
+			_, span := otel.Tracer("ratio-test").Start(ctx, "root")
+			defer span.End()
+			require.Equal(t, tc.sampled, span.SpanContext().IsSampled(),
+				"TraceRatio=%v → sampled=%v", tc.ratio, tc.sampled)
+		})
+	}
 }

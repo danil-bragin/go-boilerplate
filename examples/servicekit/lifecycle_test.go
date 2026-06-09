@@ -17,6 +17,7 @@ import (
 
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/storage/pg/pgtest"
+	"go-boilerplate/platform/testkit/mockhttp"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -191,4 +192,56 @@ func TestStop_ReadyzServes503DuringDrain(t *testing.T) {
 	assert.True(t, saw503, "/readyz must serve 503 while Stop is draining")
 
 	require.NoError(t, <-stopDone)
+}
+
+// TestPyroscope_OptIn: with PYROSCOPE_ADDR set, the harness starts the
+// pyroscope profiler and Stop flushes profiles to the server (we point it at
+// a recording mock and assert at least one ingest upload arrived).
+func TestPyroscope_OptIn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	rec := mockhttp.Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+
+	cfg := Config{AdminAddr: "127.0.0.1:0"}
+	cfg.PG.DSN = dsn
+	cfg.Kafka.Brokers = []string{broker}
+	cfg.Telemetry.Enabled = false
+	cfg.Log.Level = "error"
+	cfg.InboxCleanupInterval = 0
+	cfg.DrainGrace = 0
+	cfg.PyroscopeAddr = rec.URL()
+
+	svc, err := New(context.Background(), cfg, nil, "")
+	require.NoError(t, err)
+	require.NoError(t, svc.Start())
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	require.NoError(t, svc.Stop(stopCtx))
+
+	reqs := rec.Requests()
+	require.NotEmpty(t, reqs, "pyroscope must have uploaded at least one profile (Stop flushes)")
+	assert.Contains(t, reqs[0].Path, "/ingest")
+}
+
+// TestPyroscope_NoopWhenUnset: PYROSCOPE_ADDR empty (the default) must start
+// no profiler — the service builds, runs, and stops exactly as before.
+func TestPyroscope_NoopWhenUnset(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	svc := newLifecycleService(t, 0) // PyroscopeAddr is empty in the helper
+	require.NoError(t, svc.Start())
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	require.NoError(t, svc.Stop(stopCtx))
 }

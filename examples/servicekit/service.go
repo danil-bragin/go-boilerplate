@@ -20,6 +20,7 @@ package servicekit
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -33,6 +34,7 @@ import (
 	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/web/httpserver"
 
+	"github.com/grafana/pyroscope-go"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -110,6 +112,26 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 	closer.Add("telemetry", func(ctx context.Context) error {
 		return shutdownTel(ctx)
 	})
+
+	// 2b. Continuous profiling (opt-in via PYROSCOPE_ADDR). No-op when unset.
+	if cfg.PyroscopeAddr != "" {
+		appName := cfg.Telemetry.ServiceName
+		if appName == "" {
+			appName = "service" // mirror the OTEL_SERVICE_NAME default
+		}
+		profiler, err := pyroscope.Start(pyroscope.Config{
+			ApplicationName: appName,
+			ServerAddress:   cfg.PyroscopeAddr,
+			Logger:          nil, // background upload errors must not spam logs
+		})
+		if err != nil {
+			return nil, fmt.Errorf("servicekit: starting pyroscope profiler: %w", err)
+		}
+		closer.Add("pyroscope", func(context.Context) error {
+			return profiler.Stop() // flushes the final profile batch
+		})
+		logger.Info("pyroscope continuous profiling enabled", "addr", cfg.PyroscopeAddr)
+	}
 
 	// 3. Postgres pool.
 	pool, err := pg.New(ctx, cfg.PG)

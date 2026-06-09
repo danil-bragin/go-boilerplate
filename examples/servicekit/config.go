@@ -18,6 +18,12 @@ type Config struct {
 	Kafka     kafka.Config
 	AdminAddr string `env:"ADMIN_HTTP_ADDR" envDefault:":9090"`
 
+	// PyroscopeAddr enables continuous profiling: when set (e.g.
+	// "http://pyroscope:4040") the harness starts the grafana/pyroscope-go
+	// profiler in New and stops it via the Closer. Empty (default) = no
+	// profiler, zero overhead. The application name is Telemetry.ServiceName.
+	PyroscopeAddr string `env:"PYROSCOPE_ADDR" envDefault:""`
+
 	// DrainGrace is how long the service keeps running AFTER flipping /readyz
 	// to 503 and BEFORE any teardown begins. This gives load balancers time to
 	// observe the not-ready state and stop routing new traffic, so in-flight
