@@ -39,7 +39,7 @@ func TestUpload_Ownership_OwnerAllowed(t *testing.T) {
 	h := attachments.New(store, flagOn, attachments.WithOwnerLookup(ownerLookupFor("alice")))
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodPost, "/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
 	req.Header.Set("X-Filename", "file.txt")
 	req = withPrincipal(req, "alice", "user")
 
@@ -56,7 +56,7 @@ func TestUpload_Ownership_NonOwnerForbidden(t *testing.T) {
 	h := attachments.New(store, flagOn, attachments.WithOwnerLookup(ownerLookupFor("alice")))
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodPost, "/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
 	req.Header.Set("X-Filename", "file.txt")
 	req = withPrincipal(req, "mallory", "user")
 
@@ -73,7 +73,7 @@ func TestUpload_Ownership_AdminBypasses(t *testing.T) {
 	h := attachments.New(store, flagOn, attachments.WithOwnerLookup(ownerLookupFor("alice")))
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodPost, "/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
 	req.Header.Set("X-Filename", "file.txt")
 	req = withPrincipal(req, "support-staff", "admin")
 
@@ -93,7 +93,7 @@ func TestDownload_Ownership_NonOwnerForbidden(t *testing.T) {
 	h := attachments.New(store, flagOn, attachments.WithOwnerLookup(ownerLookupFor("alice")))
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodGet, "/orders/"+validOrderID+"/attachment/file.txt", http.NoBody)
+	req := httptest.NewRequest(http.MethodGet, "/v1/orders/"+validOrderID+"/attachment/file.txt", http.NoBody)
 	req = withPrincipal(req, "mallory", "user")
 
 	rw := httptest.NewRecorder()
@@ -111,7 +111,7 @@ func TestDownload_Ownership_OwnerAllowed(t *testing.T) {
 	h := attachments.New(store, flagOn, attachments.WithOwnerLookup(ownerLookupFor("alice")))
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodGet, "/orders/"+validOrderID+"/attachment/file.txt", http.NoBody)
+	req := httptest.NewRequest(http.MethodGet, "/v1/orders/"+validOrderID+"/attachment/file.txt", http.NoBody)
 	req = withPrincipal(req, "alice", "user")
 
 	rw := httptest.NewRecorder()
@@ -131,7 +131,7 @@ func TestOwnership_UnknownOrder404(t *testing.T) {
 	h := attachments.New(store, flagOn, attachments.WithOwnerLookup(lookup))
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodPost, "/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
 	req = withPrincipal(req, "alice", "user")
 
 	rw := httptest.NewRecorder()
@@ -151,7 +151,7 @@ func TestOwnership_LookupError500(t *testing.T) {
 	h := attachments.New(store, flagOn, attachments.WithOwnerLookup(lookup))
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodPost, "/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
 	req = withPrincipal(req, "alice", "user")
 
 	rw := httptest.NewRecorder()

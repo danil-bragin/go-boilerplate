@@ -204,7 +204,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	// Apply edge security and mount all routes.
 	applyEdgeSecurity(cfg, httpSrv.Mux(), limiter, trustedPrefixes)
 	mountAPIRoutes(cfg, httpSrv.Mux(), apiServer, a.verifier)
-	mountAttachmentRoutes(cfg, httpSrv, a.verifier, objStore, flags)
+	mountAttachmentRoutes(cfg, httpSrv, a.verifier, objStore, flags, svc.Pool())
 
 	return a, nil
 }

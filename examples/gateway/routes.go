@@ -10,6 +10,7 @@ import (
 	"go-boilerplate/platform/observability/log"
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/storage/blob"
+	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/web/httpserver"
 	"go-boilerplate/platform/web/httpx"
 	"go-boilerplate/platform/web/ratelimit"
@@ -86,7 +87,9 @@ func mountAPIRoutes(
 	}
 	strictHandler := api.NewStrictHandlerWithOptions(apiServer, nil, strictOpts)
 
-	// Mount routes. When auth is enabled, apply auth middleware to all routes.
+	// Mount routes. When auth is enabled, apply auth middleware to all routes
+	// EXCEPT /healthz: load-balancer health probes carry no credentials, and a
+	// 401 on the health route makes every probe fail (half-dead pod).
 	chiOpts := api.ChiServerOptions{
 		BaseRouter: mux,
 	}
@@ -94,7 +97,14 @@ func mountAPIRoutes(
 		authMiddleware := auth.Middleware(verifier)
 		chiOpts.Middlewares = []api.MiddlewareFunc{
 			func(next http.Handler) http.Handler {
-				return authMiddleware(next)
+				authed := authMiddleware(next)
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/healthz" {
+						next.ServeHTTP(w, r)
+						return
+					}
+					authed.ServeHTTP(w, r)
+				})
 			},
 		}
 	}
@@ -112,6 +122,7 @@ func mountAttachmentRoutes(
 	verifier auth.Verifier,
 	objStore blob.ObjectStore,
 	flags *featureflags.Flags,
+	pool *pg.Pool,
 ) {
 	if objStore == nil || flags == nil {
 		return
@@ -125,5 +136,11 @@ func mountAttachmentRoutes(
 	} else {
 		attachRouter = httpSrv.Mux()
 	}
-	attachments.New(objStore, flags.Bool).Mount(attachRouter)
+	// Ownership: only the order's customer (or an admin) may touch its
+	// attachments. Backed by the gateway read model (orders_read.customer_id).
+	opts := []attachments.Option{}
+	if pool != nil {
+		opts = append(opts, attachments.WithOwnerLookup(attachments.StoreOwnerLookup(pool)))
+	}
+	attachments.New(objStore, flags.Bool, opts...).Mount(attachRouter)
 }
