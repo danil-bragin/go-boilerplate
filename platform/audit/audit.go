@@ -53,12 +53,19 @@ type Store interface {
 // PgStore writes audit entries to the audit_log table via pg.FromContext so
 // that the INSERT participates in the ambient command transaction (if any).
 type PgStore struct {
-	pool *pg.Pool
+	pool    *pg.Pool
+	onError func(error)
 }
 
 // NewPgStore returns a PgStore backed by pool.
 func NewPgStore(pool *pg.Pool) *PgStore {
 	return &PgStore{pool: pool}
+}
+
+// SetOnError registers a callback invoked for each Cleanup error inside
+// RunCleanup. The loop continues regardless of individual cleanup errors.
+func (s *PgStore) SetOnError(fn func(error)) {
+	s.onError = fn
 }
 
 // Record inserts an audit entry. It uses pg.FromContext so the write joins

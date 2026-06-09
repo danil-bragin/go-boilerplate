@@ -13,6 +13,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deletePublishedBefore = `-- name: DeletePublishedBefore :execrows
+delete from outbox where published_at is not null and published_at < $1
+`
+
+func (q *Queries) DeletePublishedBefore(ctx context.Context, publishedAt pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePublishedBefore, publishedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const fetchUnpublished = `-- name: FetchUnpublished :many
 select id, aggregate_type, aggregate_id, event_type, payload, headers, created_at
 from outbox

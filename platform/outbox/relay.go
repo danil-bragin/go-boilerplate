@@ -12,9 +12,17 @@ import (
 )
 
 // RelayConfig configures the polling relay.
+//
+// RetentionAge is the maximum age of a published outbox row before it is
+// eligible for deletion. CleanupInterval controls how often Cleaner.RunCleanup
+// fires. Both are used when constructing a Cleaner alongside the Relay.
+//
+// Defaults: RetentionAge 24h, CleanupInterval 1h.
 type RelayConfig struct {
-	BatchSize    int32         `env:"OUTBOX_BATCH_SIZE" envDefault:"100"`
-	PollInterval time.Duration `env:"OUTBOX_POLL_INTERVAL" envDefault:"1s"`
+	BatchSize       int32         `env:"OUTBOX_BATCH_SIZE"        envDefault:"100"`
+	PollInterval    time.Duration `env:"OUTBOX_POLL_INTERVAL"     envDefault:"1s"`
+	RetentionAge    time.Duration `env:"OUTBOX_RETENTION_AGE"    envDefault:"24h"`
+	CleanupInterval time.Duration `env:"OUTBOX_CLEANUP_INTERVAL" envDefault:"1h"`
 }
 
 // Relay polls unpublished outbox rows and publishes them via a Publisher,

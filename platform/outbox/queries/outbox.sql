@@ -15,3 +15,6 @@ update outbox set published_at = now() where id = $1;
 
 -- name: MarkPublishedBatch :exec
 update outbox set published_at = now() where id = any($1::uuid[]);
+
+-- name: DeletePublishedBefore :execrows
+delete from outbox where published_at is not null and published_at < $1;
