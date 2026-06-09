@@ -269,12 +269,12 @@ services:
       # Logging
       LOG_LEVEL: info
       LOG_FORMAT: json
-      # Auth — disabled for the local demo; to enable with Keycloak:
-      #   GATEWAY_AUTH_DISABLED: "false"
-      #   GATEWAY_JWKS_URL: http://keycloak:8080/realms/app/protocol/openid-connect/certs
-      #   GATEWAY_JWKS_ISSUER: http://localhost:8180/realms/app
-      #   GATEWAY_JWKS_AUDIENCE: gateway
-      GATEWAY_AUTH_DISABLED: "true"
+      # Auth — enabled by default; Keycloak is the IdP.
+      # To disable for local dev without Keycloak: set GATEWAY_AUTH_DISABLED=true.
+      GATEWAY_AUTH_DISABLED: "false"
+      GATEWAY_JWKS_URL: http://keycloak:8080/realms/app/protocol/openid-connect/certs
+      GATEWAY_JWKS_ISSUER: http://keycloak:8080/realms/app
+      GATEWAY_JWKS_AUDIENCE: gateway
       # Topics
       GATEWAY_COMMANDS_TOPIC: orders.commands
       GATEWAY_ORDERS_EVENTS_TOPIC: orders.events
@@ -286,6 +286,8 @@ services:
       postgres:
         condition: service_healthy
       redpanda:
+        condition: service_healthy
+      keycloak:
         condition: service_healthy
 
   orders:

@@ -93,6 +93,12 @@ tasks:
     cmds:
       - docker compose ps
 
+  # Usage: curl -H "Authorization: Bearer $(task token)" http://localhost:8080/orders/<id>
+  token:
+    desc: "Fetch a Keycloak access token (demo/demo) for manual API calls. Requires jq."
+    cmds:
+      - 'curl -s -d client_id=gateway -d username=demo -d password=demo -d grant_type=password http://localhost:8080/realms/app/protocol/openid-connect/token | jq -r .access_token'
+
   # ── Image builds ────────────────────────────────────────────────────────────
 
   build-images:
