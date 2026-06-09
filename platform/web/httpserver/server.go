@@ -37,11 +37,58 @@ type Server struct {
 	addr     string
 }
 
+// ServerOption customizes the middleware stack installed by New.
+type ServerOption func(*serverOptions)
+
+type serverOptions struct {
+	noTimeout  bool
+	noMaxBytes bool
+}
+
+// WithoutTimeout skips the server-wide Timeout (http.TimeoutHandler) so that
+// route groups can manage their own deadlines. Use this when the server hosts
+// streaming or large-transfer routes: TimeoutHandler buffers the entire
+// response in memory, which is wrong for downloads/uploads. Re-apply the
+// timeout per group via httpserver.Timeout:
+//
+//	srv := httpserver.New(cfg, httpserver.WithoutTimeout())
+//	srv.Mux().Group(func(r chi.Router) {
+//	    r.Use(httpserver.Timeout(30 * time.Second)) // JSON API group
+//	    r.Get("/v1/orders/{id}", getOrder)
+//	})
+//	srv.Mux().Group(func(r chi.Router) {
+//	    // streaming group: no TimeoutHandler — rely on the server's
+//	    // Read/WriteTimeout and context deadlines instead.
+//	    r.Get("/v1/orders/{id}/attachment/{name}", download)
+//	})
+func WithoutTimeout() ServerOption {
+	return func(o *serverOptions) { o.noTimeout = true }
+}
+
+// WithoutMaxBytes skips the server-wide request-body cap so that route groups
+// can set their own budgets via httpserver.MaxBytes — e.g. a small cap for
+// JSON routes and a larger one for uploads:
+//
+//	srv := httpserver.New(cfg, httpserver.WithoutMaxBytes())
+//	srv.Mux().Group(func(r chi.Router) {
+//	    r.Use(httpserver.MaxBytes(1 << 20)) // JSON routes: 1 MiB
+//	    ...
+//	})
+//	srv.Mux().Group(func(r chi.Router) {
+//	    r.Use(httpserver.MaxBytes(64 << 20)) // uploads: 64 MiB
+//	    ...
+//	})
+//
+// CAUTION: a group without any MaxBytes has an unbounded request body.
+func WithoutMaxBytes() ServerOption {
+	return func(o *serverOptions) { o.noMaxBytes = true }
+}
+
 // New builds a Server with the standard middleware stack preinstalled.
 //
 // Middleware order (outermost → innermost):
 //
-//	SecurityHeaders → RequestID → AccessLog → Recover → MaxBytes → Timeout
+//	SecurityHeaders → RequestID → OTel → RouteTag → AccessLog → Recover → MaxBytes → Timeout
 //
 // SecurityHeaders is outermost so defensive headers are set on every response,
 // including error responses produced by Recover.
@@ -50,8 +97,9 @@ type Server struct {
 // outside Recover so it always logs the final status (200 or 500).
 // Recover catches panics from handlers deeper in the chain; it installs its
 // own capturingWriter to detect whether headers were already committed.
-// MaxBytes + Timeout apply to the actual handler logic.
-func New(cfg Config) *Server {
+// MaxBytes + Timeout apply to the actual handler logic; both can be lifted to
+// per-route-group control via WithoutMaxBytes / WithoutTimeout.
+func New(cfg Config, opts ...ServerOption) *Server {
 	if cfg.Addr == "" {
 		cfg.Addr = ":8080"
 	}
@@ -74,14 +122,23 @@ func New(cfg Config) *Server {
 		cfg.HandlerTimeout = 30 * time.Second
 	}
 
+	var o serverOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	mux := chi.NewRouter()
 	mux.Use(SecurityHeaders)
 	mux.Use(RequestID)
 	mux.Use(OTel)
 	mux.Use(AccessLog)
 	mux.Use(Recover)
-	mux.Use(MaxBytes(cfg.MaxBodyBytes))
-	mux.Use(Timeout(cfg.HandlerTimeout))
+	if !o.noMaxBytes {
+		mux.Use(MaxBytes(cfg.MaxBodyBytes))
+	}
+	if !o.noTimeout {
+		mux.Use(Timeout(cfg.HandlerTimeout))
+	}
 
 	return &Server{
 		mux:      mux,

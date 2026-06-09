@@ -1,12 +1,15 @@
 package httpserver
 
 import (
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
 	"strconv"
 	"strings"
+	"time"
 
+	"go-boilerplate/platform/web/httpx"
 	"go-boilerplate/platform/web/ratelimit"
 
 	"golang.org/x/time/rate"
@@ -251,12 +254,18 @@ func inAny(addr netip.Addr, prefixes []netip.Prefix) bool {
 	return false
 }
 
-// RateLimitPer applies limiter l per key; denied requests receive 429 with a
-// Retry-After: 1 header. The response body matches the shape of the legacy
-// RateLimit middleware ("rate limit exceeded\n").
+// RateLimitPer applies limiter l per key.
+//
+// Every response carries the rate-limit budget headers when the limiter
+// reports them: RateLimit-Limit (bucket capacity) and RateLimit-Remaining
+// (tokens left; omitted when unknown, e.g. fail-open while Redis is down).
+//
+// Denied requests receive an RFC7807 problem+json 429 with a real Retry-After
+// header — the limiter's computed wait until the next token, rounded UP to
+// whole seconds (minimum 1, since Retry-After: 0 invites an instant retry).
 //
 // On limiter error the request is denied (fail-closed). Fail-open limiters
-// surface errors as (true, nil) so they never trigger this path.
+// surface errors as allowed results so they never trigger this path.
 //
 // If key(r) returns an empty string, r.RemoteAddr is used instead.
 func RateLimitPer(l ratelimit.Limiter, key func(*http.Request) string) func(http.Handler) http.Handler {
@@ -266,13 +275,39 @@ func RateLimitPer(l ratelimit.Limiter, key func(*http.Request) string) func(http
 			if k == "" {
 				k = r.RemoteAddr
 			}
-			allowed, err := l.Allow(r.Context(), k)
-			if err != nil || !allowed {
-				w.Header().Set("Retry-After", "1")
-				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			res, err := l.Allow(r.Context(), k)
+			setRateLimitHeaders(w, res)
+			if err != nil || !res.Allowed {
+				w.Header().Set("Retry-After", strconv.FormatInt(retryAfterSeconds(res.RetryAfter), 10))
+				httpx.WriteProblem(w, httpx.Problem{
+					Status: http.StatusTooManyRequests,
+					Title:  "Too Many Requests",
+					Detail: "rate limit exceeded",
+				})
 				return
 			}
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// setRateLimitHeaders writes the RateLimit-* budget headers from res.
+// Unknown values (Limit 0, Remaining -1) are omitted rather than lied about.
+func setRateLimitHeaders(w http.ResponseWriter, res ratelimit.Result) {
+	if res.Limit > 0 {
+		w.Header().Set("RateLimit-Limit", strconv.FormatInt(res.Limit, 10))
+	}
+	if res.Remaining >= 0 {
+		w.Header().Set("RateLimit-Remaining", strconv.FormatInt(res.Remaining, 10))
+	}
+}
+
+// retryAfterSeconds converts a wait duration to Retry-After seconds: rounded
+// up, minimum 1 (zero would invite an immediate retry storm).
+func retryAfterSeconds(d time.Duration) int64 {
+	s := int64(math.Ceil(d.Seconds()))
+	if s < 1 {
+		s = 1
+	}
+	return s
 }

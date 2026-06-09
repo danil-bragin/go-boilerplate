@@ -137,11 +137,24 @@ func MaxBytes(limit int64) func(http.Handler) http.Handler {
 	}
 }
 
-// Timeout wraps the handler with http.TimeoutHandler, writing a 503 with the
-// message "request timeout" when the handler does not complete within d.
+// timeoutProblemBody is the RFC7807-shaped body written by the Timeout
+// middleware when the handler deadline is exceeded.
+const timeoutProblemBody = `{"title":"Service Unavailable","status":503,"detail":"request timeout"}`
+
+// Timeout wraps the handler with http.TimeoutHandler, writing a 503 with a
+// problem+json-shaped body when the handler does not complete within d.
+//
+// Known http.TimeoutHandler limitations (accepted trade-offs):
+//   - the status is 503 (not 504) and cannot be changed;
+//   - the Content-Type of the timeout body is sniffed by net/http (the
+//     handler offers no way to set application/problem+json explicitly);
+//   - the ENTIRE downstream response is buffered in memory until the handler
+//     returns. Do NOT wrap streaming/large-download routes with Timeout —
+//     build the server with WithoutTimeout() and apply Timeout per route
+//     group to JSON routes only (see WithoutTimeout for the pattern).
 func Timeout(d time.Duration) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		return http.TimeoutHandler(next, d, "request timeout")
+		return http.TimeoutHandler(next, d, timeoutProblemBody)
 	}
 }
 
