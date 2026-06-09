@@ -1,0 +1,455 @@
+package retry_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"go-boilerplate/platform/messaging/kafka"
+	"go-boilerplate/platform/messaging/kafka/kafkatest"
+	"go-boilerplate/platform/messaging/retry"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/twmb/franz-go/pkg/kgo"
+)
+
+// setupIntegration creates the admin client, producer, escalator and ensures
+// topics exist for the given base topic + policy. It returns a teardown
+// function that closes the admin client.
+func setupIntegration(
+	t *testing.T,
+	broker string,
+	base string,
+	pol retry.Policy,
+) (adminCl *kgo.Client, prod *kafka.Producer, esc *retry.Escalator) {
+	t.Helper()
+
+	cl, err := kafka.NewClient(kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "retry-test-admin-" + uuid.NewString()[:8],
+	})
+	require.NoError(t, err)
+
+	topics := make([]string, 0, 2+len(pol.Tiers))
+	topics = append(topics, base, retry.DLTTopic(base))
+	for _, d := range pol.Tiers {
+		topics = append(topics, retry.TierTopic(base, d))
+	}
+
+	ctx := context.Background()
+	require.NoError(t, kafka.EnsureTopics(ctx, cl, 1, 1, topics...))
+
+	p := kafka.NewProducer(cl)
+	e := retry.NewEscalator(p, pol)
+
+	t.Cleanup(func() {
+		_ = p.Close(context.Background())
+		cl.Close()
+	})
+
+	return cl, p, e
+}
+
+// pollKGO reads up to maxRecords from topic within timeout using a raw kgo
+// consumer (no group — reads from start).
+func pollKGO(t *testing.T, broker, topic string, maxRecords int, timeout time.Duration) []*kgo.Record {
+	t.Helper()
+
+	cl, err := kgo.NewClient(
+		kgo.SeedBrokers(broker),
+		kgo.ClientID("retry-test-poller"),
+		kgo.ConsumeTopics(topic),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+	)
+	require.NoError(t, err)
+	t.Cleanup(cl.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var recs []*kgo.Record
+	for len(recs) < maxRecords {
+		fetches := cl.PollFetches(ctx)
+		if ctx.Err() != nil {
+			break
+		}
+		recs = append(recs, fetches.Records()...)
+	}
+	return recs
+}
+
+// kgoHeaderVal returns a header value by key from a raw kgo record.
+func kgoHeaderVal(rec *kgo.Record, key string) string {
+	for _, h := range rec.Headers {
+		if h.Key == key {
+			return string(h.Value)
+		}
+	}
+	return ""
+}
+
+// ---------------------------------------------------------------------------
+// Test 1: redeliver after delay
+// ---------------------------------------------------------------------------
+
+// TestRetryConsumer_RedeliversAfterDelay:
+//   - Policy: Tiers=[2s], FastAttempts=1.
+//   - Main consumer processes the message; handler fails on first call → escalates to 2s tier.
+//   - retry.Consumer waits until due-time, then redelivers; handler succeeds.
+//   - Assert: second handler call happens ≥1.5s after first.
+func TestRetryConsumer_RedeliversAfterDelay(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	pol := retry.Policy{Tiers: []time.Duration{2 * time.Second}, FastAttempts: 1}
+
+	suffix := uuid.NewString()[:8]
+	base := "rt.base-" + suffix
+	groupMain := "rt-main-" + suffix
+	groupRetry := "rt-retry-" + suffix
+
+	_, prod, esc := setupIntegration(t, broker, base, pol)
+
+	// callTimes[key] = list of times the handler was called.
+	var mu sync.Mutex
+	callTimes := map[string][]time.Time{}
+	successSeen := make(chan struct{})
+	var successOnce sync.Once
+
+	// Shared handler: fail first call for each key, succeed after.
+	handler := func(_ context.Context, r kafka.Record) error {
+		key := string(r.Key)
+		mu.Lock()
+		callTimes[key] = append(callTimes[key], time.Now())
+		n := len(callTimes[key])
+		mu.Unlock()
+
+		if n == 1 {
+			return errors.New("first-call failure")
+		}
+		// Second call: success
+		successOnce.Do(func() { close(successSeen) })
+		return nil
+	}
+
+	// Main consumer: on handler error, escalate to retry tier and commit.
+	mainHandler := func(ctx context.Context, r kafka.Record) error {
+		if err := handler(ctx, r); err != nil {
+			if _, escErr := esc.Escalate(ctx, r.Topic, r, err); escErr != nil {
+				return escErr
+			}
+			return nil // commit after escalation
+		}
+		return nil
+	}
+
+	mainCfg := kafka.Config{Brokers: []string{broker}, ClientID: "rt-main-" + suffix, GroupID: groupMain}
+	mainConsumer, err := kafka.NewConsumer(mainCfg, base)
+	require.NoError(t, err)
+
+	retryCfg := kafka.Config{Brokers: []string{broker}, ClientID: "rt-retry-" + suffix, GroupID: groupRetry}
+	retryConsumer, err := retry.NewConsumer(retryCfg, groupRetry, []string{base}, handler, esc, pol)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Start main consumer.
+	go func() { _ = mainConsumer.Run(ctx, mainHandler) }()
+	t.Cleanup(func() { _ = mainConsumer.Close(context.Background()) })
+
+	// Start retry consumer.
+	go func() { _ = retryConsumer.Run(ctx) }()
+	t.Cleanup(func() { _ = retryConsumer.Close(context.Background()) })
+
+	// Produce message K.
+	err = prod.Produce(ctx, kafka.Record{
+		Topic: base,
+		Key:   []byte("K"),
+		Value: []byte("hello"),
+	})
+	require.NoError(t, err)
+
+	// Wait for success.
+	select {
+	case <-successSeen:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for retry handler to succeed")
+	}
+
+	cancel()
+
+	mu.Lock()
+	times := callTimes["K"]
+	mu.Unlock()
+
+	require.GreaterOrEqualf(t, len(times), 2, "handler must be called at least twice; got %d calls", len(times))
+
+	gap := times[1].Sub(times[0])
+	assert.GreaterOrEqualf(t, gap, 1500*time.Millisecond,
+		"second handler call should be ≥1.5s after first (due-time honored); gap was %v", gap)
+}
+
+// ---------------------------------------------------------------------------
+// Test 2: non-blocking — other traffic flows while a record waits
+// ---------------------------------------------------------------------------
+
+// TestRetryConsumer_DoesNotBlockOtherTraffic:
+//   - Policy: Tiers=[5s].
+//   - K1 fails on main consumer → escalated to 5s retry tier.
+//   - K2 produced after K1; succeeds on main consumer.
+//   - Assert K2 succeeds (main consumer not blocked by K1's retry wait on tier topic).
+//   - Assert K1 retry succeeds ~5s later.
+//
+// The non-blocking property proven here: once K1 is escalated to the tier topic
+// the main consumer commits K1's offset and moves on to K2 immediately. The 5s
+// wait happens only on the retry.Consumer (tier topic), completely decoupled from
+// the main topic flow.
+func TestRetryConsumer_DoesNotBlockOtherTraffic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	pol := retry.Policy{Tiers: []time.Duration{5 * time.Second}, FastAttempts: 1}
+
+	suffix := uuid.NewString()[:8]
+	base := "nb.base-" + suffix
+	groupMain := "nb-main-" + suffix
+	groupRetry := "nb-retry-" + suffix
+
+	_, prod, esc := setupIntegration(t, broker, base, pol)
+
+	var mu sync.Mutex
+	callCounts := map[string]int{}
+	k2Success := make(chan time.Time, 1)
+	k1RetrySuccess := make(chan time.Time, 1)
+
+	// Handler: K1 always fails on first call (escalated by mainHandler);
+	// succeeds on retry. K2 always succeeds.
+	handler := func(_ context.Context, r kafka.Record) error {
+		key := string(r.Key)
+		mu.Lock()
+		callCounts[key]++
+		n := callCounts[key]
+		mu.Unlock()
+
+		switch key {
+		case "K1":
+			if n == 1 {
+				return errors.New("K1 transient failure")
+			}
+			// K1 retry success
+			select {
+			case k1RetrySuccess <- time.Now():
+			default:
+			}
+			return nil
+		case "K2":
+			select {
+			case k2Success <- time.Now():
+			default:
+			}
+			return nil
+		}
+		return nil
+	}
+
+	mainHandler := func(ctx context.Context, r kafka.Record) error {
+		if err := handler(ctx, r); err != nil {
+			if _, escErr := esc.Escalate(ctx, r.Topic, r, err); escErr != nil {
+				return escErr
+			}
+			return nil
+		}
+		return nil
+	}
+
+	mainCfg := kafka.Config{Brokers: []string{broker}, ClientID: "nb-main-" + suffix, GroupID: groupMain}
+	mainConsumer, err := kafka.NewConsumer(mainCfg, base)
+	require.NoError(t, err)
+
+	retryCfg := kafka.Config{Brokers: []string{broker}, ClientID: "nb-retry-" + suffix, GroupID: groupRetry}
+	retryConsumer, err := retry.NewConsumer(retryCfg, groupRetry, []string{base}, handler, esc, pol)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	go func() { _ = mainConsumer.Run(ctx, mainHandler) }()
+	t.Cleanup(func() { _ = mainConsumer.Close(context.Background()) })
+
+	go func() { _ = retryConsumer.Run(ctx) }()
+	t.Cleanup(func() { _ = retryConsumer.Close(context.Background()) })
+
+	start := time.Now()
+
+	// Produce K1 (will fail + be escalated to 5s tier).
+	require.NoError(t, prod.Produce(ctx, kafka.Record{
+		Topic: base, Key: []byte("K1"), Value: []byte("v1"),
+	}))
+
+	// Produce K2 (should succeed quickly on main consumer).
+	require.NoError(t, prod.Produce(ctx, kafka.Record{
+		Topic: base, Key: []byte("K2"), Value: []byte("v2"),
+	}))
+
+	// K2 must succeed well before K1's retry fires (which is 5s away).
+	// We give 4s for K2 — generous for container + group-join latency, but still
+	// proves K2 is NOT blocked by K1's 5s wait on the retry tier topic.
+	var k2Time time.Time
+	select {
+	case k2Time = <-k2Success:
+	case <-time.After(4 * time.Second):
+		t.Fatal("K2 was not processed within 4s — main consumer may be blocked by K1's retry")
+	}
+	// K2 must arrive strictly before K1's retry (5s from start), so the gap
+	// proves K2 is not waiting for K1's due-time.
+	assert.Less(t, k2Time.Sub(start), 5*time.Second,
+		"K2 should have been processed before K1's 5s retry fires")
+
+	// K1 retry should succeed after ~5s.
+	select {
+	case <-k1RetrySuccess:
+	case <-ctx.Done():
+		t.Fatal("K1 retry was never processed within 30s")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Test 3: poison record walks all tiers to DLT
+// ---------------------------------------------------------------------------
+
+// TestRetryConsumer_PoisonToDLT:
+//   - Policy: Tiers=[1s, 2s] — two distinct tiers to avoid duplicate topic names.
+//   - Handler always fails.
+//   - Record walks: base → tier-0 (1s) → tier-1 (2s) → DLT.
+//   - Assert: record arrives on DLT with retry-attempt header == "2".
+func TestRetryConsumer_PoisonToDLT(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	pol := retry.Policy{Tiers: []time.Duration{1 * time.Second, 2 * time.Second}, FastAttempts: 1}
+
+	suffix := uuid.NewString()[:8]
+	base := "dlt.base-" + suffix
+	groupMain := "dlt-main-" + suffix
+	groupRetry := "dlt-retry-" + suffix
+
+	_, prod, esc := setupIntegration(t, broker, base, pol)
+
+	// Handler always fails.
+	handler := func(_ context.Context, _ kafka.Record) error {
+		return errors.New("permanent failure")
+	}
+
+	mainHandler := func(ctx context.Context, r kafka.Record) error {
+		if _, escErr := esc.Escalate(ctx, r.Topic, r, errors.New("permanent failure")); escErr != nil {
+			return escErr
+		}
+		return nil
+	}
+
+	mainCfg := kafka.Config{Brokers: []string{broker}, ClientID: "dlt-main-" + suffix, GroupID: groupMain}
+	mainConsumer, err := kafka.NewConsumer(mainCfg, base)
+	require.NoError(t, err)
+
+	retryCfg := kafka.Config{Brokers: []string{broker}, ClientID: "dlt-retry-" + suffix, GroupID: groupRetry}
+	retryConsumer, err := retry.NewConsumer(retryCfg, groupRetry, []string{base}, handler, esc, pol)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	go func() { _ = mainConsumer.Run(ctx, mainHandler) }()
+	t.Cleanup(func() { _ = mainConsumer.Close(context.Background()) })
+
+	go func() { _ = retryConsumer.Run(ctx) }()
+	t.Cleanup(func() { _ = retryConsumer.Close(context.Background()) })
+
+	require.NoError(t, prod.Produce(ctx, kafka.Record{
+		Topic: base,
+		Key:   []byte("K-poison"),
+		Value: []byte("will-fail"),
+	}))
+
+	dltTopic := retry.DLTTopic(base)
+
+	// Poll the DLT for up to 20s.
+	dltRecords := pollKGO(t, broker, dltTopic, 1, 20*time.Second)
+
+	cancel()
+
+	require.Len(t, dltRecords, 1, "expected exactly 1 record on DLT")
+	dlt := dltRecords[0]
+	assert.Equal(t, []byte("K-poison"), dlt.Key)
+
+	attempt := kgoHeaderVal(dlt, retry.HeaderAttempt)
+	fmt.Printf("DLT record attempt header: %q\n", attempt)
+	// After 2 tiers: attempt should be "2" (two escalations done).
+	assert.Equal(t, "2", attempt, "DLT record should have retry-attempt=2 after two-tier walk")
+}
+
+// ---------------------------------------------------------------------------
+// Test 4: malformed record (no retry headers) goes to DLT directly
+// ---------------------------------------------------------------------------
+
+// TestRetryConsumer_MalformedRecordToDLT verifies that a record without retry
+// headers that ends up on a retry topic is escalated directly to the DLT
+// rather than crashing the consumer.
+func TestRetryConsumer_MalformedRecordToDLT(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	pol := retry.Policy{Tiers: []time.Duration{1 * time.Second}, FastAttempts: 1}
+
+	suffix := uuid.NewString()[:8]
+	base := "malf.base-" + suffix
+	groupRetry := "malf-retry-" + suffix
+
+	adminCl, prod, esc := setupIntegration(t, broker, base, pol)
+	_ = adminCl
+
+	handler := func(_ context.Context, _ kafka.Record) error { return nil }
+
+	retryCfg := kafka.Config{Brokers: []string{broker}, ClientID: "malf-retry-" + suffix, GroupID: groupRetry}
+	retryConsumer, err := retry.NewConsumer(retryCfg, groupRetry, []string{base}, handler, esc, pol)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	go func() { _ = retryConsumer.Run(ctx) }()
+	t.Cleanup(func() { _ = retryConsumer.Close(context.Background()) })
+
+	// Produce a record with NO retry headers directly to the tier topic.
+	tierTopic := retry.TierTopic(base, pol.Tiers[0])
+	require.NoError(t, prod.Produce(ctx, kafka.Record{
+		Topic: tierTopic,
+		Key:   []byte("bad"),
+		Value: []byte("no-headers"),
+		// No retry headers.
+	}))
+
+	dltTopic := retry.DLTTopic(base)
+	dltRecords := pollKGO(t, broker, dltTopic, 1, 15*time.Second)
+	cancel()
+
+	require.Len(t, dltRecords, 1, "malformed record should be moved to DLT")
+	assert.Equal(t, []byte("bad"), dltRecords[0].Key)
+}
+
+// Ensure the atomic import is used.
+var _ = atomic.Int32{}

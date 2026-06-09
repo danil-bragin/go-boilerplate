@@ -7,6 +7,7 @@ package retry
 
 import (
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -88,6 +89,35 @@ func SetRetryHeaders(rec *kafka.Record, attempt int, origTopic string, due time.
 		errStr = string(b)
 	}
 	rec.Headers[HeaderLastError] = errStr
+}
+
+// BaseTopic strips the ".retry.<dur>" suffix from a retry-topic name and
+// returns the base topic. ok is false if the input does not match the pattern.
+//
+// Examples:
+//
+//	BaseTopic("orders.commands.retry.5s")   → ("orders.commands", true)
+//	BaseTopic("orders.commands.retry.5m0s") → ("orders.commands", true)
+//	BaseTopic("orders.commands")            → ("", false)
+func BaseTopic(retryTopic string) (base string, ok bool) {
+	// Walk backwards: find the second-to-last "." to locate ".retry.<dur>".
+	// A valid retry topic is "<base>.retry.<dur>" where <dur> contains no ".".
+	// We split on ".retry." which is unambiguous because duration strings
+	// use only digits and time-unit letters (s, m, h, µ, n) — no dots.
+	const marker = ".retry."
+	idx := strings.LastIndex(retryTopic, marker)
+	if idx < 0 {
+		return "", false
+	}
+	// There must be at least one character after the marker (the duration).
+	if idx+len(marker) >= len(retryTopic) {
+		return "", false
+	}
+	// The base portion must be non-empty.
+	if idx == 0 {
+		return "", false
+	}
+	return retryTopic[:idx], true
 }
 
 // ParseRetryHeaders reads the retry headers from rec.
