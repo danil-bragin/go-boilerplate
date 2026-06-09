@@ -24,4 +24,14 @@ type Config struct {
 	// Use ["*"] for dev/demo. In production set explicit origins.
 	// Default "*" allows any origin (demo-safe; auth should enforce identity).
 	CORSOrigins []string `env:"GATEWAY_CORS_ORIGINS"          envSeparator:"," envDefault:"*"`
+	// RatelimitRPS is the sustained token refill rate (requests per second per IP).
+	RatelimitRPS float64 `env:"RATELIMIT_RPS"   envDefault:"50"`
+	// RatelimitBurst is the maximum burst depth per IP.
+	RatelimitBurst int `env:"RATELIMIT_BURST" envDefault:"100"`
+	// TrustedProxies is a comma-separated list of CIDR prefixes whose X-Forwarded-For
+	// headers are trusted for client-IP extraction. Empty = RemoteAddr only.
+	TrustedProxies []string `env:"TRUSTED_PROXIES" envSeparator:","`
+	// RatelimitRedis enables a Redis-backed distributed limiter when true.
+	// Falls back to in-memory if Redis is unavailable (graceful degradation).
+	RatelimitRedis bool `env:"RATELIMIT_REDIS" envDefault:"false"`
 }

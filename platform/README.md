@@ -9,6 +9,7 @@ Grouped by domain (≤2 levels). Package names are unqualified (import `go-boile
 ## messaging/ — event flow
 
 - **kafka** — franz-go producer + consumer group; OTel instrumentation; cooperative-sticky rebalancing; retry-topics (`<topic>.retry.N`) + DLT
+- **retry** — tiered retry-topic definitions and per-tier routing; `<topic>.retry.<dur>` naming convention; used by consumer services to route failed messages through delay tiers before the DLT
 - **serde** — protobuf ↔ Confluent Schema Registry serializer; schema registration + caching
 - **outbox** — transactional outbox table + polling relay (`FOR UPDATE SKIP LOCKED`); AT-LEAST-ONCE delivery to Kafka
 - **inbox** — idempotent-consumer dedup (`ProcessOnce`): inserts inbox row + runs fn in the same DB transaction
@@ -22,8 +23,9 @@ Grouped by domain (≤2 levels). Package names are unqualified (import `go-boile
 
 ## web/ — HTTP edge
 
-- **httpserver** — chi server; middleware stack (SecurityHeaders, recover, req-id, OTel, access-log, max-bytes, timeout); CORS and RateLimit opt-in; graceful `Shutdown`
+- **httpserver** — chi server; middleware stack (SecurityHeaders, recover, req-id, OTel, access-log, max-bytes, timeout); CORS, `RateLimitPer`+`ClientIPKey`, and legacy `RateLimit` opt-in; graceful `Shutdown`
 - **httpx** — `Decode`+validate request bodies; RFC 7807 `ProblemJSON` error responses
+- **ratelimit** — `Limiter` interface; `NewMemory` (per-key in-process token bucket with janitor eviction) and `NewRedis` (atomic Lua GCRA over rueidis, fail-open default); used by `RateLimitPer`
 
 ## security/ — authn/authz/audit
 

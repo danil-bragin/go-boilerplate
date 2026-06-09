@@ -174,3 +174,32 @@ namespace.  There is no need for per-service env-variable prefixes: the
 To run multiple services in a single process (e.g. an integration test), pass
 distinct configs explicitly via code rather than relying on env variables — see
 `examples/e2e/e2e_test.go` for the pattern.
+
+---
+
+## Per-IP rate limiting (gateway)
+
+The gateway applies a per-client-IP token-bucket rate limiter at the edge. Configure via:
+
+| Variable | Default | Description |
+|---|---|---|
+| `RATELIMIT_RPS` | `50` | Sustained token refill rate (requests per second per IP) |
+| `RATELIMIT_BURST` | `100` | Maximum burst depth per IP |
+| `RATELIMIT_REDIS` | `false` | Use Redis-backed distributed limiter (requires `REDIS_ADDRS`) |
+| `TRUSTED_PROXIES` | _(empty)_ | Comma-separated CIDRs for trusted reverse proxies (e.g. `10.0.0.0/8`). When set, `X-Forwarded-For` is consulted for client-IP extraction. |
+
+**Memory vs Redis:** The default in-memory limiter is process-local. For multi-replica deployments set `RATELIMIT_REDIS=true` so all instances share a single Redis-backed counter. If Redis is unavailable the gateway falls back to in-memory (graceful degradation, WARN logged).
+
+**Trusted proxies:** XFF is ignored unless `TRUSTED_PROXIES` is set. Invalid CIDRs cause the gateway to refuse to start (fail-fast). Use network-level trust only — never trust an IP that end-users can set.
+
+---
+
+## Retry-topics runbook (Kafka)
+
+The `platform/messaging/retry` package implements tiered retry routing. Topics are named `<base>.retry.<dur>` (e.g. `orders.commands.retry.5s`, `orders.commands.retry.30s`). The consumer group for retry topics is `<group>.retry`.
+
+| Step | Action |
+|---|---|
+| Check lag | `kafka-consumer-groups.sh --describe --group <group>.retry` — watch lag on each retry tier |
+| DLT redrive | Messages on `<topic>.DLT` can be republished to the original topic; procedure unchanged from standard DLT redrive |
+| Tuning tiers | Edit `platform/messaging/retry` tier definitions and redeploy — each tier is a separate consumer group with its own lag metric |

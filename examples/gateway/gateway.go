@@ -133,10 +133,19 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		return nil, err
 	}
 
+	// Parse trusted-proxy CIDRs (fail fast on invalid CIDR).
+	trustedPrefixes, err := ParseTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		return nil, err
+	}
+
 	// Optional dependencies (all degrade gracefully on failure).
 	appCache := buildCache(cfg, svc)
 	objStore := buildBlob(ctx, cfg, svc)
 	flags := buildFeatureFlags(cfg, svc)
+
+	// Build the per-IP rate limiter (memory or Redis).
+	limiter := buildLimiter(cfg, svc)
 
 	// Build the CQRS GetOrder query handler (raw → decorated).
 	rawGetOrder := gatewayapp.GetOrderHandler(svc.Pool())
@@ -170,7 +179,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	)
 
 	// Apply edge security and mount all routes.
-	applyEdgeSecurity(cfg, httpSrv.Mux())
+	applyEdgeSecurity(cfg, httpSrv.Mux(), limiter, trustedPrefixes)
 	mountAPIRoutes(cfg, httpSrv.Mux(), apiServer, a.verifier)
 	mountAttachmentRoutes(cfg, httpSrv, a.verifier, objStore, flags)
 

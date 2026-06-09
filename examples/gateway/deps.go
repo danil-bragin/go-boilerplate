@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"net/netip"
 
 	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/cqrs"
@@ -11,8 +12,10 @@ import (
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/storage/blob"
 	"go-boilerplate/platform/storage/cache"
+	"go-boilerplate/platform/web/ratelimit"
 
 	"github.com/open-feature/go-sdk/openfeature/memprovider"
+	"github.com/redis/rueidis"
 )
 
 // buildVerifier resolves the auth.Verifier for NewApp.
@@ -95,4 +98,66 @@ func buildFeatureFlags(cfg Config, svc *servicekit.Service) *featureflags.Flags 
 		return nil
 	}
 	return flags
+}
+
+// ParseTrustedProxies parses a slice of CIDR strings into netip.Prefix values.
+// Returns an error immediately on the first invalid CIDR (fail-fast).
+func ParseTrustedProxies(cidrs []string) ([]netip.Prefix, error) {
+	if len(cidrs) == 0 {
+		return nil, nil
+	}
+	prefixes := make([]netip.Prefix, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		if cidr == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(cidr)
+		if err != nil {
+			return nil, fmt.Errorf("gateway: invalid TRUSTED_PROXIES CIDR %q: %w", cidr, err)
+		}
+		prefixes = append(prefixes, p)
+	}
+	return prefixes, nil
+}
+
+// buildLimiter constructs the per-IP rate limiter.
+//
+// When RatelimitRedis=true and REDIS_ADDRS is configured, a Redis-backed
+// distributed limiter is created (info logged). If Redis is unavailable the
+// function warns and falls back to in-memory (graceful degradation).
+// When RatelimitRedis=false (default) an in-memory limiter is always used.
+//
+// The in-memory limiter's Close is registered with svc.Closer so the janitor
+// goroutine is stopped on shutdown. Redis limiters are stateless (no close
+// needed beyond the shared Redis connection managed separately).
+func buildLimiter(cfg Config, svc *servicekit.Service) ratelimit.Limiter {
+	if cfg.RatelimitRedis && len(cfg.Cache.RedisAddrs) > 0 && cfg.Cache.RedisAddrs[0] != "" {
+		// Build a dedicated rueidis client for rate limiting.
+		// The cache's rueidis client is encapsulated inside cache.Cache and not
+		// accessible via the cqrs.Cache interface, so we open a second connection
+		// to the same address. This is cheap: rueidis uses a single multiplexed
+		// connection per address.
+		client, err := rueidis.NewClient(rueidis.ClientOption{
+			InitAddress: cfg.Cache.RedisAddrs,
+		})
+		if err != nil {
+			svc.Logger().Warn(
+				"gateway: rate-limit Redis unavailable, falling back to in-memory limiter",
+				"error", err,
+				"redis_addrs", cfg.Cache.RedisAddrs,
+			)
+		} else {
+			svc.Logger().Info("gateway: distributed rate limit (Redis)", "addrs", cfg.Cache.RedisAddrs)
+			return ratelimit.NewRedis(client, cfg.RatelimitRPS, cfg.RatelimitBurst)
+		}
+	} else if cfg.RatelimitRedis {
+		svc.Logger().Warn("gateway: RATELIMIT_REDIS=true but REDIS_ADDRS not set, falling back to in-memory limiter")
+	}
+
+	mem := ratelimit.NewMemory(cfg.RatelimitRPS, cfg.RatelimitBurst)
+	svc.Closer().Add("ratelimit-memory", func(_ context.Context) error {
+		mem.Close()
+		return nil
+	})
+	return mem
 }

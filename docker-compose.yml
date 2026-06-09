@@ -285,6 +285,13 @@ services:
       GATEWAY_COMMANDS_TOPIC: orders.commands
       GATEWAY_ORDERS_EVENTS_TOPIC: orders.events
       GATEWAY_PAYMENTS_EVENTS_TOPIC: payments.events
+      # Per-IP rate limiting. Adjust for your traffic profile.
+      # RATELIMIT_REDIS=true uses Redis-backed distributed limiter (requires REDIS_ADDRS).
+      # TRUSTED_PROXIES: comma-separated CIDRs for trusted reverse proxies (e.g. "10.0.0.0/8").
+      RATELIMIT_RPS: "50"
+      RATELIMIT_BURST: "100"
+      RATELIMIT_REDIS: "false"
+      # TRUSTED_PROXIES: ""
       # Go runtime memory limit: ~90% of the container memory limit above.
       # Keeps the GC soft-trim target below the cgroup hard limit, preventing OOM-kill.
       GOMEMLIMIT: 460MiB

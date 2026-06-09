@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http"
+	"net/netip"
 
 	"go-boilerplate/examples/gateway/internal/api"
 	"go-boilerplate/examples/gateway/internal/attachments"
@@ -9,26 +10,26 @@ import (
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/storage/blob"
 	"go-boilerplate/platform/web/httpserver"
+	"go-boilerplate/platform/web/ratelimit"
 
 	"github.com/go-chi/chi/v5"
 )
 
-// applyEdgeSecurity adds CORS and rate-limit middleware to the mux.
+// applyEdgeSecurity adds CORS and per-IP rate-limit middleware to the mux.
 //
 // CORS is applied only when cfg.CORSOrigins is set. For demo/local the
 // default allows all origins. In production set GATEWAY_CORS_ORIGINS to
 // an explicit comma-separated list and remove the "*" wildcard.
-func applyEdgeSecurity(cfg Config, mux chi.Router) {
+//
+// The rate limiter is keyed by real client IP: RemoteAddr unless the request
+// arrives via a trusted proxy, in which case X-Forwarded-For is consulted.
+func applyEdgeSecurity(cfg Config, mux chi.Router, lim ratelimit.Limiter, trusted []netip.Prefix) {
 	mux.Use(httpserver.CORS(httpserver.CORSOptions{
 		AllowedOrigins: cfg.CORSOrigins,
 		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders: []string{"Content-Type", "Authorization", "X-Request-Id"},
 	}))
-	// Global edge rate limiter: 100 rps sustained, burst 200.
-	// NOTE: This is a process-local limiter. For multi-instance deployments
-	// replace with a Redis-backed distributed rate limiter (GCRA).
-	// For per-IP limiting, key the limiter by r.RemoteAddr (add an LRU map).
-	mux.Use(httpserver.RateLimit(100, 200))
+	mux.Use(httpserver.RateLimitPer(lim, httpserver.ClientIPKey(trusted)))
 }
 
 // mountAPIRoutes wires the strict handler with optional auth middleware.

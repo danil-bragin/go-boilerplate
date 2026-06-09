@@ -68,9 +68,9 @@ Split when a file mixes two or more responsibilities **or** exceeds ~200–250 l
 
 | Group | Packages |
 |---|---|
-| `platform/messaging/` | `kafka`, `serde`, `outbox`, `inbox`, `outboxkafka` |
+| `platform/messaging/` | `kafka`, `retry`, `serde`, `outbox`, `inbox`, `outboxkafka` |
 | `platform/observability/` | `log`, `telemetry`, `health` |
-| `platform/web/` | `httpserver`, `httpx` |
+| `platform/web/` | `httpserver`, `httpx`, `ratelimit` |
 | `platform/security/` | `auth`, `authz`, `audit` |
 | `platform/storage/` | `pg`, `cache`, `blob` |
 | standalone | `config`, `run`, `cqrs`, `resilience`, `featureflags`, `testkit` |

@@ -184,6 +184,7 @@ Pipeline: Logging → Tracing → Metrics → Validation → [Caching: queries] 
 - **O3 Command flow:** gateway validates REST → publishes command event to Kafka → owning service consumes, executes command (tx), emits domain event via outbox. Gateway projection consumes domain events.
 - **O4 Auth:** ✅ Keycloak (OIDC) in compose + pluggable auth middleware (`platform/security/auth`, RS256/JWKS). IdP swappable via interface.
 - **O10 Enterprise:** ✅ RBAC + Audit + Feature flags (OpenFeature) in v1. Multi-tenancy = documented seam, deferred.
+- **O11 Watermill evaluated → rejected:** Sarama-based (SyncProducer-only publish, per-message ack) vs our franz-go async-batch pipeline; router/outbox/CQRS batteries already built natively. Core stays 100% Kafka/franz-go.
 
 Minor (sensible defaults, adjust if desired):
 - **O5 Migrations:** `task migrate` job (goose), not on-start; on-start version-check guard only.

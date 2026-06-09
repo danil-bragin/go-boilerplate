@@ -12,7 +12,8 @@
 | `log` | `platform/observability/log` | `log/slog` setup; optional zap backend via `zapslog`; `FromContext`/`WithContext`; trace-id injection |
 | `run` | `platform/run` | Signal handling (`SIGINT`/`SIGTERM`), ordered `Start`, reverse-order `Closer`, two-phase shutdown |
 | `telemetry` | `platform/observability/telemetry` | OTel tracer + meter + logger providers; OTLP/gRPC exporter; `Shutdown` |
-| `httpserver` | `platform/web/httpserver` | chi server; middleware stack (SecurityHeaders, recover, req-id, OTel, access-log, max-bytes, timeout); CORS and RateLimit opt-in; graceful `Shutdown` |
+| `httpserver` | `platform/web/httpserver` | chi server; middleware stack (SecurityHeaders, recover, req-id, OTel, access-log, max-bytes, timeout); CORS, `RateLimitPer`+`ClientIPKey`, and legacy `RateLimit` opt-in; graceful `Shutdown` |
+| `ratelimit` | `platform/web/ratelimit` | `Limiter` interface; `NewMemory` (per-key in-process token bucket, janitor eviction) and `NewRedis` (atomic Lua GCRA, fail-open default) |
 | `httpx` | `platform/web/httpx` | `Decode`+validate request bodies; RFC 7807 `ProblemJSON` error responses |
 | `health` | `platform/observability/health` | `/livez` + `/readyz` aggregator; `Checker` interface; liveness always 200, readiness gates on registered checks |
 | `pg` | `platform/storage/pg` | `pgxpool` factory with tuned defaults; `RunInTx`; `FromContext` (pulls tx or pool); reader/writer pool split; health check |
@@ -151,6 +152,9 @@ The following items were previously listed as deferred but are now implemented:
 | Resilience + caching + authz in gateway | Circuit-breaker retry wraps Kafka publish; CQRS caching behavior on GetOrder query; RBAC authz behavior on CreateOrder command |
 | CDC outbox relay (polling) | Polling relay (`platform/messaging/outbox`) with `FOR UPDATE SKIP LOCKED`, publish-after-commit, AT-LEAST-ONCE delivery wired in all services |
 | Image signing (cosign) | Step present in `.github/workflows/ci.yml` (commented; requires registry credentials + `id-token: write`) |
+| Per-IP + distributed rate limiting | `RateLimitPer(l, ClientIPKey(trusted))` in `platform/web/httpserver`; wired in gateway replacing the global limiter. `platform/web/ratelimit` provides `NewMemory` and `NewRedis`. Gateway config: `RATELIMIT_RPS`, `RATELIMIT_BURST`, `RATELIMIT_REDIS`, `TRUSTED_PROXIES`. |
+| Kafka tiered retry-topics | `platform/messaging/retry` — tier definitions and routing for `<topic>.retry.<dur>` topics; used in the orders service |
+| Kafka EOS (`TransactConsumer`) | `platform/messaging/kafka.TransactConsumer` — atomic consume→produce via `GroupTransactSession`; see ADR-0006 |
 
 ---
 
@@ -160,9 +164,6 @@ The following items are genuine gaps deferred to a later iteration:
 
 | Item | Notes |
 |---|---|
-| Kafka EOS (`GroupTransactSession`) | Outbox+inbox is simpler and covers v1 requirements; EOS reserved for money-grade atomic consume→produce |
-| Stateless retry-topics | Framework support exists in `platform/messaging/kafka` (DLT wiring); tiered retry topic routing not yet wired per service |
-| Distributed rate limiting (per-IP, Redis-backed) | Current edge limiter is a single global process-local token bucket. For multi-instance or per-client limiting, replace with Redis GCRA (e.g. `redis_rate` or rueidis scripted GCRA). Per-IP limiting requires an LRU map of `*rate.Limiter` keyed on `r.RemoteAddr`. |
 | Multi-tenancy | Tenant-id context + event propagation is a documented seam; not built in v1 |
 | TLS (inter-service) | All connections are plaintext (HTTP, OTLP `WithInsecure`, `sslmode=disable`, Kafka `PLAINTEXT`). In production TLS terminates at the ingress layer or service mesh. |
 | Table partitioning / age-based cleanup | Age-based cleanup (polling delete of old published outbox rows, old audit rows) is wired; range-based Postgres table partitioning for true hot/cold archival is deferred. |

@@ -600,6 +600,50 @@ func (f *fakeCache) Set(_ context.Context, key string, value []byte, _ time.Dura
 	f.data[key] = value
 }
 
+// TestGateway_PerIPRateLimit verifies that the per-IP rate limiter correctly
+// returns 429 once the burst is exhausted.
+//
+// This is a focused unit-level test: it configures a tiny limiter (rps=1,
+// burst=2) via environment variables and sends 3 sequential requests from the
+// test HTTP client. The first two should succeed (burst=2 tokens available);
+// the third must receive 429 with a Retry-After header.
+//
+// Note: httptest client connections share the loopback address (127.0.0.1) so
+// all requests hit the same per-IP bucket — this is the intended behaviour for
+// the test.
+func TestGateway_PerIPRateLimit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+
+	t.Setenv("RATELIMIT_RPS", "1")
+	t.Setenv("RATELIMIT_BURST", "2")
+
+	baseURL := startApp(t, broker, dsn)
+
+	client := &http.Client{}
+
+	// First two requests should succeed (within burst).
+	for i := range 2 {
+		resp, err := client.Get(baseURL + "/orders/" + uuid.New().String())
+		require.NoError(t, err)
+		resp.Body.Close()
+		// 404 is fine — the order doesn't exist; we just need < 429.
+		require.NotEqual(t, http.StatusTooManyRequests, resp.StatusCode,
+			"request %d must not be rate-limited (within burst)", i+1)
+	}
+
+	// Third request must be rate-limited.
+	resp, err := client.Get(baseURL + "/orders/" + uuid.New().String())
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusTooManyRequests, resp.StatusCode, "third request must be rate-limited (429)")
+	require.Equal(t, "1", resp.Header.Get("Retry-After"), "429 must carry Retry-After: 1")
+}
+
 // TestGateway_AuthzForbidsWithoutRole proves that the RBAC policy on POST /orders:
 //   - Returns 403 when the principal holds no permitted role.
 //   - Returns 202 when the principal holds the "user" role.
