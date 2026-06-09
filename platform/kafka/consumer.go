@@ -49,6 +49,13 @@ func NewConsumer(cfg Config, topics ...string) (*Consumer, error) {
 		kgo.Balancers(kgo.CooperativeStickyBalancer()),
 		kgo.DisableAutoCommit(),
 		kgo.BlockRebalanceOnPoll(),
+		// A brand-new consumer group (no committed offset yet) reads from the
+		// START of its topics, so it never misses events produced during its
+		// own startup window (e.g. a command published just before the group
+		// finishes joining). Once the group has committed offsets, those take
+		// precedence and this reset no longer applies — so it does NOT cause
+		// reprocessing on restart.
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("kafka: NewConsumer: %w", err)

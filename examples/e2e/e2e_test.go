@@ -78,7 +78,7 @@ func discardWriter() io.Writer { return io.Discard }
 //
 //  1. Gateway accepts POST /orders → 202 + order_id.
 //  2. Orders service consumes the command, writes the order row, emits OrderCreated.
-//  3. Gateway projection picks up OrderCreated → GET /orders/{id} shows status="created".
+//  3. Gateway projection picks up OrderCreated → GET /orders/{id} shows status="created" or "paid".
 //  4. Payments service consumes OrderCreated, writes a payment row, emits PaymentProcessed.
 //  5. Gateway projection picks up PaymentProcessed → GET /orders/{id} shows status="paid".
 //  6. Notifications service consumes PaymentProcessed and fires the notifier.
@@ -105,10 +105,17 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	// --- Wire and start notifications service ---
 	// Start first so it is ready to consume PaymentProcessed as soon as the
 	// event appears on the broker.
+	//
+	// ADMIN_HTTP_ADDR=127.0.0.1:0 assigns a random OS port per service so that
+	// all four admin servers can bind simultaneously in-process. Without this,
+	// all four would default to :9090, only the first would succeed, and
+	// gatewayApp.AdminAddr() would return the notifications port — causing the
+	// readyz poll to check the wrong service.
 	os.Setenv("PG_DSN", notificationsDSN)
 	os.Setenv("KAFKA_BROKERS", broker)
 	os.Setenv("KAFKA_CLIENT_ID", "e2e-notifications-"+uuid.New().String())
 	os.Setenv("PAYMENTS_EVENTS_TOPIC", "payments.events")
+	os.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
 	os.Setenv("OTEL_ENABLED", "false")
 	os.Setenv("LOG_LEVEL", "error")
 
@@ -129,6 +136,7 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	os.Setenv("KAFKA_BROKERS", broker)
 	os.Setenv("KAFKA_CLIENT_ID", "e2e-payments-"+uuid.New().String())
 	os.Setenv("ORDERS_EVENTS_TOPIC", "orders.events")
+	os.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
 	os.Setenv("OTEL_ENABLED", "false")
 	os.Setenv("LOG_LEVEL", "error")
 
@@ -148,6 +156,7 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	os.Setenv("KAFKA_BROKERS", broker)
 	os.Setenv("KAFKA_CLIENT_ID", "e2e-orders-"+uuid.New().String())
 	os.Setenv("ORDERS_COMMANDS_TOPIC", "orders.commands")
+	os.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
 	os.Setenv("OTEL_ENABLED", "false")
 	os.Setenv("LOG_LEVEL", "error")
 
@@ -167,6 +176,7 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	os.Setenv("KAFKA_BROKERS", broker)
 	os.Setenv("KAFKA_CLIENT_ID", "e2e-gateway-"+uuid.New().String())
 	os.Setenv("HTTP_ADDR", "127.0.0.1:0") // random port
+	os.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
 	os.Setenv("GATEWAY_AUTH_DISABLED", "true")
 	os.Setenv("GATEWAY_COMMANDS_TOPIC", "orders.commands")
 	os.Setenv("GATEWAY_ORDERS_EVENTS_TOPIC", "orders.events")
@@ -193,11 +203,15 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	// and makes the test resilient to slow CI environments where 2 s is not
 	// enough and fast laptops where it's unnecessarily long.
 	//
-	// The readyz endpoint is served by the admin HTTP server (AdminAddr).
-	// All four consumers must have joined their groups and received partition
-	// assignments before readyz returns 200 (the pg + kafka health checks pass
-	// once the connections are up; the Kafka consumer is registered as a
-	// readiness dependency on the service harness).
+	// The readyz endpoint is served by the gateway's own admin HTTP server
+	// (AdminAddr). Each service is given a distinct random admin port via
+	// ADMIN_HTTP_ADDR=127.0.0.1:0 so that gatewayApp.AdminAddr() returns the
+	// gateway's actual bound port, not a port owned by another service.
+	//
+	// NOTE: readyz checks postgres + kafka producer connectivity; it does NOT
+	// wait for consumer-group join. kgo starts brand-new groups from offset 0
+	// (ConsumeResetOffset AtStart), so a message published just before the group
+	// joins will still be consumed.
 	require.Eventually(t, func() bool {
 		resp, err := http.Get(adminURL + "/readyz")
 		if err != nil {
@@ -230,15 +244,21 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	require.NotEmpty(t, orderID, "expected non-empty order_id in response")
 	t.Logf("Step 1 OK: order_id=%s", orderID)
 
-	// --- Step 2: Poll GET /orders/{id} until status=="created" ---
+	// --- Step 2: Poll GET /orders/{id} until the projection row appears ---
 	// Proves: orders svc consumed the command, emitted OrderCreated,
 	//         gateway projection applied OrderCreated.
-	t.Log("Step 2: waiting for status=created (orders→OrderCreated→gateway projection)")
+	//
+	// We accept either "created" or "paid" because the outbox relay + payments
+	// consumer can advance the status to "paid" before the next poll fires
+	// (relay interval 200 ms, poll interval 300 ms). Both statuses prove the
+	// full chain up through the projection ran correctly.
+	t.Log("Step 2: waiting for projection row to appear (orders→OrderCreated→gateway projection)")
 	ok := pollUntil(60*time.Second, func() bool {
-		return getOrderStatus(t, baseURL, orderID) == "created"
+		s := getOrderStatus(t, baseURL, orderID)
+		return s == "created" || s == "paid"
 	})
-	require.True(t, ok, "order %s did not reach status 'created' within timeout", orderID)
-	t.Logf("Step 2 OK: order %s is created", orderID)
+	require.True(t, ok, "order %s did not appear in the projection within timeout", orderID)
+	t.Logf("Step 2 OK: order %s is in projection (status=%s)", orderID, getOrderStatus(t, baseURL, orderID))
 
 	// --- Step 3: Poll GET /orders/{id} until status=="paid" ---
 	// Proves: payments svc consumed OrderCreated, emitted PaymentProcessed,
