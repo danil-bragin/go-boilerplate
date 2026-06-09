@@ -10,6 +10,18 @@ paths:
       summary: Create a new order
       description: Accepts an order creation request, publishes a CreateOrderCommand, and returns 202 with the assigned order ID.
       operationId: createOrder
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          description: >
+            Client-chosen key making the request retry-safe: the order id is
+            derived deterministically (UUIDv5) from this key, so retries with
+            the same key return the same order id and downstream consumers
+            deduplicate the command. Omit for a fresh id per request.
+          schema:
+            type: string
+            maxLength: 255
       requestBody:
         required: true
         content:

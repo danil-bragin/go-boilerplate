@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
+	"github.com/twmb/franz-go/pkg/kgo"
 	"google.golang.org/protobuf/proto"
 
 	gateway "go-boilerplate/examples/gateway"
@@ -735,4 +736,78 @@ func TestGateway_AuthzForbidsWithoutRole(t *testing.T) {
 	require.NoError(t, err)
 	defer resp2.Body.Close()
 	require.Equal(t, http.StatusAccepted, resp2.StatusCode, "expected 202 when principal has 'user' role")
+}
+
+// postOrderWithKey posts an order with an optional Idempotency-Key header and
+// returns the order_id from the 202 response.
+func postOrderWithKey(t *testing.T, baseURL, key string) string {
+	t.Helper()
+	body := []byte(`{"customer_id":"c1","amount_cents":1500,"currency":"USD"}`)
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/orders", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		req.Header.Set("Idempotency-Key", key)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+	var out struct {
+		OrderID string `json:"order_id"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	require.NotEmpty(t, out.OrderID)
+	return out.OrderID
+}
+
+// TestGateway_IdempotencyKey verifies that retried POSTs with the same
+// Idempotency-Key map to the SAME deterministic order id (so the command
+// message-id is identical and downstream inbox dedup collapses the retry),
+// while different keys (or no key) yield fresh ids.
+func TestGateway_IdempotencyKey(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+	baseURL := startApp(t, broker, dsn)
+
+	id1 := postOrderWithKey(t, baseURL, "retry-key-1")
+	id2 := postOrderWithKey(t, baseURL, "retry-key-1")
+	assert.Equal(t, id1, id2, "same Idempotency-Key must yield the same order id")
+
+	id3 := postOrderWithKey(t, baseURL, "retry-key-2")
+	assert.NotEqual(t, id1, id3, "different Idempotency-Key must yield a different order id")
+
+	id4 := postOrderWithKey(t, baseURL, "")
+	id5 := postOrderWithKey(t, baseURL, "")
+	assert.NotEqual(t, id4, id5, "no Idempotency-Key must yield fresh ids")
+
+	// Downstream dedup hinges on message-id == order id for BOTH deliveries.
+	cl, err := kgo.NewClient(
+		kgo.SeedBrokers(broker),
+		kgo.ConsumeTopics("orders.commands"),
+		kgo.ConsumerGroup("idem-test-"+uuid.New().String()),
+		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
+	)
+	require.NoError(t, err)
+	defer cl.Close()
+
+	seen := map[string]int{} // message-id → count
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) && seen[id1] < 2 {
+		fctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		fetches := cl.PollFetches(fctx)
+		cancel()
+		fetches.EachRecord(func(rec *kgo.Record) {
+			for _, h := range rec.Headers {
+				if h.Key == "message-id" {
+					seen[string(h.Value)]++
+				}
+			}
+		})
+	}
+	assert.Equal(t, 2, seen[id1], "both retried POSTs must produce commands with the same message-id (order id)")
 }

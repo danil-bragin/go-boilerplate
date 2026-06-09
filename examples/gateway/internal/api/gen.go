@@ -47,6 +47,12 @@ type OrderView struct {
 	Status string `json:"status"`
 }
 
+// CreateOrderParams defines parameters for CreateOrder.
+type CreateOrderParams struct {
+	// IdempotencyKey Client-chosen key making the request retry-safe: the order id is derived deterministically (UUIDv5) from this key, so retries with the same key return the same order id and downstream consumers deduplicate the command. Omit for a fresh id per request.
+	IdempotencyKey *string `json:"Idempotency-Key,omitempty"`
+}
+
 // CreateOrderJSONRequestBody defines body for CreateOrder for application/json ContentType.
 type CreateOrderJSONRequestBody = CreateOrderRequest
 
@@ -57,7 +63,7 @@ type ServerInterface interface {
 	HealthCheck(w http.ResponseWriter, r *http.Request)
 	// Create a new order
 	// (POST /orders)
-	CreateOrder(w http.ResponseWriter, r *http.Request)
+	CreateOrder(w http.ResponseWriter, r *http.Request, params CreateOrderParams)
 	// Get order by ID
 	// (GET /orders/{id})
 	GetOrder(w http.ResponseWriter, r *http.Request, id string)
@@ -75,7 +81,7 @@ func (_ Unimplemented) HealthCheck(w http.ResponseWriter, r *http.Request) {
 
 // Create a new order
 // (POST /orders)
-func (_ Unimplemented) CreateOrder(w http.ResponseWriter, r *http.Request) {
+func (_ Unimplemented) CreateOrder(w http.ResponseWriter, r *http.Request, params CreateOrderParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -111,8 +117,34 @@ func (siw *ServerInterfaceWrapper) HealthCheck(w http.ResponseWriter, r *http.Re
 // CreateOrder operation middleware
 func (siw *ServerInterfaceWrapper) CreateOrder(w http.ResponseWriter, r *http.Request) {
 
+	var err error
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CreateOrderParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = &IdempotencyKey
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.CreateOrder(w, r)
+		siw.Handler.CreateOrder(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -289,7 +321,8 @@ func (response HealthCheck200Response) VisitHealthCheckResponse(w http.ResponseW
 }
 
 type CreateOrderRequestObject struct {
-	Body *CreateOrderJSONRequestBody
+	Params CreateOrderParams
+	Body   *CreateOrderJSONRequestBody
 }
 
 type CreateOrderResponseObject interface {
@@ -397,8 +430,10 @@ func (sh *strictHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 // CreateOrder operation middleware
-func (sh *strictHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
+func (sh *strictHandler) CreateOrder(w http.ResponseWriter, r *http.Request, params CreateOrderParams) {
 	var request CreateOrderRequestObject
+
+	request.Params = params
 
 	var body CreateOrderJSONRequestBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {

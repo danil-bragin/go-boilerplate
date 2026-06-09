@@ -30,6 +30,11 @@ var rbacPolicy = authz.NewRBAC(map[string][]string{
 	"order:create": {"user", "admin"},
 })
 
+// idempotencyNS is the fixed UUIDv5 namespace for deriving deterministic
+// order ids from client-supplied Idempotency-Key values. NEVER change it:
+// a different namespace would break retry dedup across deploys.
+var idempotencyNS = uuid.MustParse("8a4f7c52-1f3b-4e09-9c2a-6d8f0b3e5a71")
+
 // Encoder frames a proto message for the wire (Confluent Schema Registry
 // format). Implemented by serde.Serde; nil means raw protobuf.
 type Encoder interface {
@@ -108,7 +113,15 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 		}
 	}
 
-	orderID := uuid.New().String()
+	// Idempotency: a client-supplied key maps deterministically (UUIDv5) to
+	// the order id, so a retried POST produces the same id and the same
+	// command message-id — downstream inbox dedup collapses the duplicate.
+	var orderID string
+	if key := request.Params.IdempotencyKey; key != nil && *key != "" {
+		orderID = uuid.NewSHA1(idempotencyNS, []byte(*key)).String()
+	} else {
+		orderID = uuid.New().String()
+	}
 
 	cmd := &ordersv1.CreateOrderCommand{
 		OrderId:     orderID,
