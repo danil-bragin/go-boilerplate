@@ -85,6 +85,10 @@ The system achieves effectively-once processing over at-least-once Kafka deliver
 
 **Net effect:** each business effect executes exactly once per message, even under Kafka rebalances and broker retries, with no Kafka EOS (Exactly-Once Semantics) overhead.
 
+### Principal propagation over Kafka
+
+The edge service that verified the caller's JWT injects `principal-sub` and `principal-roles` record headers (`auth.InjectHeaders`) when producing commands; the shared consumer pipeline (`platform/messaging/consume`) installs them back into the handler context (`auth.ExtractToContext`), so the audit behavior records the real actor instead of `anonymous`. These headers are **transport metadata, not authentication** — any client with produce rights can forge them. The trust boundary is the Kafka cluster itself: restrict produce access to command/event topics with broker ACLs and authenticate inter-service connections (mTLS/SASL). Never make authorization decisions from these headers for data that may originate outside that perimeter.
+
 ---
 
 ## Event flow (example domain)

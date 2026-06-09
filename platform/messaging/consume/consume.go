@@ -33,6 +33,7 @@ import (
 	"go-boilerplate/platform/messaging/inbox"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/serde"
+	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/storage/pg"
 
 	"google.golang.org/protobuf/proto"
@@ -153,6 +154,11 @@ func (c *Consumer) Handler(handlers ...Handler) kafka.HandlerFunc {
 	}
 
 	return func(ctx context.Context, r kafka.Record) error {
+		// Install the propagated principal (if any) so audit behaviors see
+		// the real actor. Transport metadata, not authentication — the trust
+		// boundary is the broker ACL/mTLS perimeter (see auth.ExtractToContext).
+		ctx = auth.ExtractToContext(ctx, r.Headers)
+
 		eventType := r.Headers["event-type"]
 		h, ok := byType[eventType]
 		if !ok {

@@ -127,16 +127,22 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 		return nil, fmt.Errorf("gateway: marshal command: %w", err)
 	}
 
+	// Propagate the authenticated principal so downstream audit trails record
+	// the real actor (transport metadata, not authentication — see
+	// auth.InjectHeaders for the trust-boundary note).
+	headers := map[string]string{
+		"message-id": orderID,
+		"event-type": "orders.CreateOrderCommand.v1",
+	}
+	auth.InjectHeaders(ctx, headers)
+
 	// Resilience: retry up to 3 times with exponential back-off, cancel after 2 s.
 	err = resilience.Do(ctx, func(ctx context.Context) error {
 		return s.producer.Produce(ctx, kafka.Record{
-			Topic: s.commandsTopic,
-			Key:   []byte(orderID),
-			Value: payload,
-			Headers: map[string]string{
-				"message-id": orderID,
-				"event-type": "orders.CreateOrderCommand.v1",
-			},
+			Topic:   s.commandsTopic,
+			Key:     []byte(orderID),
+			Value:   payload,
+			Headers: headers,
 		})
 	}, resilience.Retry(3, 50*time.Millisecond), resilience.Timeout(2*time.Second))
 	if err != nil {

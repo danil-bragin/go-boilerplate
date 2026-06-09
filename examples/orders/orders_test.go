@@ -14,6 +14,7 @@ import (
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/messaging/outboxkafka"
 	"go-boilerplate/platform/security/audit"
+	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/storage/pg/pgtest"
 
@@ -297,4 +298,63 @@ func TestOrders_DuplicateCommandProcessedOnce(t *testing.T) {
 	require.NoError(t, pool.Reader().QueryRow(ctx,
 		`select count(*) from orders where id = $1`, orderID).Scan(&count))
 	assert.Equal(t, 1, count, "inbox dedup must ensure exactly one order row")
+}
+
+// TestOrders_AuditRecordsPropagatedPrincipal verifies that the principal
+// propagated via Kafka headers (principal-sub / principal-roles, injected by
+// the gateway from the verified JWT) reaches the audit behavior: the
+// audit_log actor is the original subject, not "anonymous".
+func TestOrders_AuditRecordsPropagatedPrincipal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	pool := newTestPool(t)
+
+	const commandsTopic = "orders.commands"
+	handler := buildService(t, pool, broker, commandsTopic)
+	runConsumer(t, broker, "orders-svc-test-principal", commandsTopic, handler)
+
+	orderID := uuid.New().String()
+	payload, err := proto.Marshal(&ordersv1.CreateOrderCommand{
+		OrderId:     orderID,
+		CustomerId:  "c1",
+		AmountCents: 1000,
+		Currency:    "USD",
+	})
+	require.NoError(t, err)
+
+	cl, err := kafka.NewClient(kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "orders-test-principal-producer",
+	})
+	require.NoError(t, err)
+	p := kafka.NewProducer(cl)
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = p.Close(ctx)
+	}()
+
+	// Produce with principal headers, the way the gateway does after
+	// verifying the caller's JWT (auth.InjectHeaders).
+	require.NoError(t, p.Produce(context.Background(), kafka.Record{
+		Topic: commandsTopic,
+		Key:   []byte(orderID),
+		Value: payload,
+		Headers: map[string]string{
+			"message-id":              orderID,
+			"event-type":              "orders.CreateOrderCommand.v1",
+			auth.HeaderPrincipalSub:   "user-42",
+			auth.HeaderPrincipalRoles: "user",
+		},
+	}))
+
+	pollForOrder(t, pool, orderID, 15*time.Second)
+
+	var actor string
+	require.NoError(t, pool.Reader().QueryRow(context.Background(),
+		`select actor from audit_log where action = 'order:create' and subject = $1`, orderID).Scan(&actor))
+	assert.Equal(t, "user-42", actor, "audit actor must be the propagated principal subject")
 }
