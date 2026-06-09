@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	"go-boilerplate/platform/outbox/gen"
 	"go-boilerplate/platform/pg"
 )
@@ -16,17 +18,32 @@ type RelayConfig struct {
 }
 
 // Relay polls unpublished outbox rows and publishes them via a Publisher,
-// marking each published only after a successful Publish. Each batch runs in a
-// transaction using `for update skip locked`, so multiple relay instances can
-// run concurrently without double-publishing.
+// using a three-phase design that keeps the DB transaction open only for the
+// minimum time needed, dramatically reducing lock-hold time under load.
 //
-// Delivery semantics: if Publish succeeds but the surrounding transaction's
-// commit fails, the message is re-published on a later poll — delivery is
-// AT-LEAST-ONCE. Consumers must be idempotent and deduplicate by Message.ID.
+// Three-phase ProcessBatch:
 //
-// ProcessBatch holds the row-lock transaction while publishing; with a slow
-// broker this lengthens lock/connection hold time. SP3's Kafka publisher
-// should bound publish latency and batch size accordingly.
+//	Phase A (short tx): SELECT ... FOR UPDATE SKIP LOCKED fetches up to
+//	BatchSize unpublished rows into memory and immediately commits, releasing
+//	all row locks. Lock-hold time is O(one DB round-trip), not O(N·broker RTT).
+//
+//	Phase B (no tx): publish all fetched messages to the transport. If the
+//	Publisher also implements BatchPublisher, PublishBatch is used for a
+//	single broker round-trip (O(1) latency for the batch); otherwise Publish
+//	is called per-record. Publishing happens entirely outside any transaction.
+//
+//	Phase C (short tx): UPDATE outbox SET published_at=now() WHERE id=ANY($1)
+//	marks all successfully-published rows in one statement.
+//
+// Delivery semantics: AT-LEAST-ONCE. Duplicates are expected and safe:
+//   - Crash between B and C: rows re-fetched and re-published on next poll.
+//   - Two concurrent relays: after phase A commits, a second relay can claim
+//     the same rows before phase C completes → both publish → inbox deduplicates
+//     by Message.ID.
+//
+// Multiple relay goroutines/instances are safe and beneficial: SKIP LOCKED
+// ensures that within a single phase-A transaction each relay claims a
+// distinct subset of rows; duplicate publishes across relays are tolerated.
 //
 // OnError (set via SetOnError) is called for each ProcessBatch error during
 // Run. Run never stops on a batch error; it backs off and retries.
@@ -55,21 +72,31 @@ func (r *Relay) SetOnError(fn func(error)) {
 	r.onError = fn
 }
 
-// ProcessBatch fetches up to BatchSize unpublished messages (locking them),
-// publishes each, and marks them published — all in one transaction. It
-// returns the number of messages successfully published. A publish error
-// aborts the batch (transaction rolls back), leaving rows unpublished for
-// retry on the next poll — demonstrating at-least-once delivery semantics.
+// ProcessBatch runs the three-phase A/B/C cycle once:
+//
+//	A) Short tx: fetch up to BatchSize unpublished rows (FOR UPDATE SKIP LOCKED)
+//	   into memory and commit — locks released immediately.
+//	B) No tx: publish all rows to the transport (batched if possible).
+//	C) Short tx: mark all published rows in one batch UPDATE.
+//
+// Returns the number of rows successfully published. If publish (phase B)
+// fails, phase C is skipped and all rows remain unpublished for retry.
 func (r *Relay) ProcessBatch(ctx context.Context) (int, error) {
-	var published int
-	err := pg.RunInTx(ctx, r.pool, func(ctx context.Context) error {
-		q := gen.New(pg.FromContext(ctx, r.pool))
-		rows, err := q.FetchUnpublished(ctx, r.cfg.BatchSize)
+	// Phase A: short claim transaction — fetch and immediately commit.
+	// SKIP LOCKED prevents concurrent relays from fetching the same rows
+	// within the same phase-A window; once this tx commits the locks are
+	// released. A second relay may then re-claim the same rows before phase C
+	// marks them → duplicate publish → inbox deduplicates by Message.ID.
+	var msgs []Message
+	if err := pg.RunInTx(ctx, r.pool, func(txCtx context.Context) error {
+		q := gen.New(pg.FromContext(txCtx, r.pool))
+		rows, err := q.FetchUnpublished(txCtx, r.cfg.BatchSize)
 		if err != nil {
 			return fmt.Errorf("outbox: fetch: %w", err)
 		}
-		for _, row := range rows {
-			msg := Message{
+		msgs = make([]Message, len(rows))
+		for i, row := range rows {
+			msgs[i] = Message{
 				ID:            row.ID,
 				AggregateType: row.AggregateType,
 				AggregateID:   row.AggregateID,
@@ -78,20 +105,43 @@ func (r *Relay) ProcessBatch(ctx context.Context) (int, error) {
 				Headers:       []byte(row.Headers),
 				CreatedAt:     row.CreatedAt.Time,
 			}
-			if err := r.pub.Publish(ctx, msg); err != nil {
-				return fmt.Errorf("outbox: publish %s: %w", msg.ID, err)
-			}
-			if err := q.MarkPublished(ctx, msg.ID); err != nil {
-				return fmt.Errorf("outbox: mark published %s: %w", msg.ID, err)
-			}
-			published++
 		}
 		return nil
-	})
-	if err != nil {
-		return 0, err
+	}); err != nil {
+		return 0, fmt.Errorf("outbox: claim phase: %w", err)
 	}
-	return published, nil
+
+	if len(msgs) == 0 {
+		return 0, nil
+	}
+
+	// Phase B: publish outside any transaction.
+	// Use BatchPublisher if the injected Publisher also implements it —
+	// one broker round-trip (Flush) for the whole batch instead of N×ProduceSync.
+	// Fall back to per-record Publish for plain Publisher implementations.
+	if bp, ok := r.pub.(BatchPublisher); ok {
+		if err := bp.PublishBatch(ctx, msgs); err != nil {
+			return 0, fmt.Errorf("outbox: batch publish: %w", err)
+		}
+	} else {
+		for _, msg := range msgs {
+			if err := r.pub.Publish(ctx, msg); err != nil {
+				return 0, fmt.Errorf("outbox: publish %s: %w", msg.ID, err)
+			}
+		}
+	}
+
+	// Phase C: mark all successfully-published rows in one batch statement.
+	ids := make([]uuid.UUID, len(msgs))
+	for i, msg := range msgs {
+		ids[i] = msg.ID
+	}
+	q := gen.New(r.pool.Writer())
+	if err := q.MarkPublishedBatch(ctx, ids); err != nil {
+		return 0, fmt.Errorf("outbox: mark published batch: %w", err)
+	}
+
+	return len(msgs), nil
 }
 
 const (

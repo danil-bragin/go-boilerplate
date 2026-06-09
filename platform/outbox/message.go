@@ -33,3 +33,16 @@ type Message struct {
 type Publisher interface {
 	Publish(ctx context.Context, msg Message) error
 }
+
+// BatchPublisher is an optional extension of Publisher for transports that
+// support efficient batch delivery (e.g. Kafka with async enqueue + single
+// Flush). The Relay uses BatchPublisher when the injected Publisher also
+// implements this interface; otherwise it falls back to looping Publish.
+//
+// PublishBatch must deliver all msgs or return an error. Partial delivery is
+// not defined: callers treat a non-nil error as "nothing published" and leave
+// all rows unpublished for retry on the next poll cycle.
+type BatchPublisher interface {
+	Publisher
+	PublishBatch(ctx context.Context, msgs []Message) error
+}

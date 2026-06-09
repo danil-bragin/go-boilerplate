@@ -2,7 +2,9 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -40,6 +42,72 @@ func (p *Producer) Produce(ctx context.Context, rec Record) error {
 		return fmt.Errorf("kafka: produce: %w", err)
 	}
 	return nil
+}
+
+// ProduceBatch asynchronously enqueues all records via the franz-go async
+// produce API, then calls Flush to wait for all records to be acknowledged by
+// the broker in one batched round-trip.
+//
+// This is the high-throughput counterpart to Produce: instead of one broker
+// RTT per record (ProduceSync), ProduceBatch issues a single Flush that lets
+// franz-go coalesce all enqueued records into as few broker requests as
+// possible — typically one per partition for a same-topic batch.
+//
+// Error semantics: per-record errors are collected via the async promise
+// callbacks and joined into a single error after Flush returns. A non-nil
+// error means at least one record was not durably written; callers should treat
+// the entire batch as failed (at-least-once: retry the whole batch).
+func (p *Producer) ProduceBatch(ctx context.Context, records []Record) error {
+	if len(records) == 0 {
+		return nil
+	}
+
+	var (
+		mu   sync.Mutex
+		errs []error
+		wg   sync.WaitGroup
+	)
+
+	wg.Add(len(records))
+	for _, rec := range records {
+		headers := make([]kgo.RecordHeader, 0, len(rec.Headers))
+		for k, v := range rec.Headers {
+			headers = append(headers, kgo.RecordHeader{
+				Key:   k,
+				Value: []byte(v),
+			})
+		}
+
+		kr := &kgo.Record{
+			Topic:   rec.Topic,
+			Key:     rec.Key,
+			Value:   rec.Value,
+			Headers: headers,
+		}
+
+		// Enqueue asynchronously; the promise callback fires after the broker
+		// acknowledges (or rejects) the record. franz-go batches all enqueued
+		// records and sends them in the next Flush call.
+		p.cl.Produce(ctx, kr, func(_ *kgo.Record, err error) {
+			if err != nil {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("kafka: produce batch record: %w", err))
+				mu.Unlock()
+			}
+			wg.Done()
+		})
+	}
+
+	// Flush blocks until all enqueued records are sent and their promise
+	// callbacks have fired, or until ctx is cancelled.
+	if err := p.cl.Flush(ctx); err != nil {
+		return fmt.Errorf("kafka: produce batch flush: %w", err)
+	}
+
+	// Wait for all promise callbacks to complete before reading errs.
+	wg.Wait()
+
+	return errors.Join(errs...)
 }
 
 // Ping reports whether the underlying client can reach at least one broker.

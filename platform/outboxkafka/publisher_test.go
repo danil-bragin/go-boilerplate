@@ -3,6 +3,7 @@ package outboxkafka_test
 import (
 	"context"
 	"embed"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -146,6 +147,94 @@ func TestKafkaPublisher_DrainsOutboxToKafka(t *testing.T) {
 	require.NoError(t, pool.Reader().QueryRow(ctx,
 		`select count(*) from outbox where published_at is null`).Scan(&unpublished))
 	require.Equal(t, 0, unpublished, "all outbox rows must be marked published")
+}
+
+// TestKafkaPublisher_PublishBatch verifies that PublishBatch produces all
+// messages to Kafka in one batched call and they are all consumable.
+func TestKafkaPublisher_PublishBatch(t *testing.T) {
+	ctx := context.Background()
+
+	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.NewRedpanda(t)
+
+	require.NoError(t, pg.Migrate(ctx, dsn, testMigrations, "testdata/migrations"))
+
+	pool, err := pg.New(ctx, pg.Config{DSN: dsn})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pool.Close(ctx) })
+
+	cl, err := kafka.NewClient(kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "t-batch",
+	})
+	require.NoError(t, err)
+	defer cl.Close()
+
+	require.NoError(t, kafka.EnsureTopics(ctx, cl, 1, 1, "order"))
+
+	producer := kafka.NewProducer(cl)
+	defer func() { _ = producer.Close(ctx) }()
+
+	pub := outboxkafka.New(producer)
+
+	// Enqueue 3 messages.
+	repo := outbox.NewRepository(pool)
+	msgs := make([]outbox.Message, 3)
+	for i := range msgs {
+		msgs[i] = outbox.Message{
+			ID:            uuid.New(),
+			AggregateType: "order",
+			AggregateID:   fmt.Sprintf("order-%d", i),
+			EventType:     "OrderCreated",
+			Payload:       []byte(fmt.Sprintf(`{"i":%d}`, i)),
+		}
+		require.NoError(t, pg.RunInTx(ctx, pool, func(ctx context.Context) error {
+			return repo.Enqueue(ctx, msgs[i])
+		}))
+	}
+
+	// Call PublishBatch directly.
+	require.NoError(t, pub.PublishBatch(ctx, msgs))
+
+	// Consume 3 records from Kafka.
+	consumer, err := kafka.NewConsumer(kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "t-batch-consumer",
+		GroupID:  "t-batch-grp",
+	}, "order")
+	require.NoError(t, err)
+	defer consumer.Close()
+
+	var (
+		mu       sync.Mutex
+		received []kafka.Record
+		done     = make(chan struct{})
+	)
+
+	consumeCtx, cancelConsume := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelConsume()
+
+	go func() {
+		_ = consumer.Run(consumeCtx, func(_ context.Context, r kafka.Record) error {
+			mu.Lock()
+			received = append(received, r)
+			count := len(received)
+			mu.Unlock()
+			if count >= 3 {
+				cancelConsume()
+			}
+			return nil
+		})
+		close(done)
+	}()
+	<-done
+
+	mu.Lock()
+	got := make([]kafka.Record, len(received))
+	copy(got, received)
+	mu.Unlock()
+
+	require.Len(t, got, 3, "all 3 batch messages must arrive at the broker")
 }
 
 // TestKafkaPublisher_BrokerDownLeavesRowsUnpublished verifies that when the

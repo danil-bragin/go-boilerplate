@@ -94,3 +94,12 @@ func (q *Queries) MarkPublished(ctx context.Context, id uuid.UUID) error {
 	_, err := q.db.Exec(ctx, markPublished, id)
 	return err
 }
+
+const markPublishedBatch = `-- name: MarkPublishedBatch :exec
+update outbox set published_at = now() where id = any($1::uuid[])
+`
+
+func (q *Queries) MarkPublishedBatch(ctx context.Context, dollar_1 []uuid.UUID) error {
+	_, err := q.db.Exec(ctx, markPublishedBatch, dollar_1)
+	return err
+}
