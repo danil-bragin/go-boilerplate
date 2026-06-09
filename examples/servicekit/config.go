@@ -40,6 +40,13 @@ type Config struct {
 	TopicRetention  time.Duration `env:"TOPIC_RETENTION"  envDefault:"168h"`
 	EnsureTopics    bool          `env:"ENSURE_TOPICS"    envDefault:"true"`
 
+	// SerdeSRURL enables Confluent Schema Registry wire-format framing of
+	// outbox-published record values when set (e.g. "http://localhost:8081").
+	// Unset (default) keeps raw protobuf values so the boilerplate runs
+	// without a registry. Producers and consumers must agree: set it on both
+	// sides of a topic or on neither.
+	SerdeSRURL string `env:"SERDE_SR_URL" envDefault:""`
+
 	// Inbox retention: processed inbox rows older than InboxRetention are
 	// deleted every InboxCleanupInterval. Set InboxCleanupInterval to 0 to
 	// disable inbox cleanup (e.g., when the service does not use the inbox

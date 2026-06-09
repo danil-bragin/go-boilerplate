@@ -19,6 +19,7 @@ import (
 	"sync"
 
 	"go-boilerplate/platform/messaging/kafka"
+	"go-boilerplate/platform/messaging/serde"
 	"go-boilerplate/platform/observability/health"
 	"go-boilerplate/platform/observability/log"
 	"go-boilerplate/platform/observability/telemetry"
@@ -42,6 +43,7 @@ type Service struct {
 	producer    *kafka.Producer
 	h           *health.Health
 	adminServer *httpserver.Server
+	serde       *serde.Serde
 	goroutines  []goroutineFunc
 	runCtx      context.Context //nolint:containedctx
 	cancelRun   context.CancelFunc
@@ -143,6 +145,16 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 		return adminServer.Shutdown(ctx)
 	})
 
+	// 8. Optional Schema Registry serde (SERDE_SR_URL). Construction is
+	// offline; schema registration happens via RegisterSchema (fail-fast).
+	var srSerde *serde.Serde
+	if cfg.SerdeSRURL != "" {
+		srSerde, err = serde.New(cfg.SerdeSRURL)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return &Service{
 		cfg:         cfg,
 		logger:      logger,
@@ -152,6 +164,7 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 		producer:    producer,
 		h:           h,
 		adminServer: adminServer,
+		serde:       srSerde,
 	}, nil
 }
 

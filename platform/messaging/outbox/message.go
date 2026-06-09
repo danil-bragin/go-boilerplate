@@ -19,7 +19,12 @@ import (
 // Message is one outbox record to be published. Delivery is AT-LEAST-ONCE;
 // consumers must deduplicate by ID.
 type Message struct {
-	ID            uuid.UUID
+	ID uuid.UUID
+	// Topic is the destination topic for the message (e.g. "orders.events").
+	// AggregateType is the domain aggregate kind (e.g. "order") — it is NOT a
+	// topic name; publishers fall back to it for legacy rows enqueued before
+	// the topic column existed.
+	Topic         string
 	AggregateType string
 	AggregateID   string
 	EventType     string
