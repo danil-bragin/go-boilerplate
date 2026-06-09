@@ -14,8 +14,8 @@ import (
 	"go-boilerplate/platform/storage/cache"
 	"go-boilerplate/platform/web/ratelimit"
 
-	"github.com/open-feature/go-sdk/openfeature/memprovider"
 	"github.com/redis/rueidis"
+	inmemory "go.openfeature.dev/openfeature/v2/providers/inmemory"
 )
 
 // buildVerifier resolves the auth.Verifier for NewApp.
@@ -86,9 +86,9 @@ func buildBlob(ctx context.Context, cfg Config, svc *servicekit.Service) blob.Ob
 // buildFeatureFlags builds the in-memory feature-flags provider seeded with
 // the order-attachments flag. Returns nil on error (graceful degradation).
 func buildFeatureFlags(cfg Config, svc *servicekit.Service) *featureflags.Flags {
-	flags, err := featureflags.NewInMemory("gateway-"+cfg.HTTP.Addr, map[string]memprovider.InMemoryFlag{
+	flags, err := featureflags.NewInMemory("gateway-"+cfg.HTTP.Addr, map[string]inmemory.InMemoryFlag{
 		"order-attachments-enabled": {
-			State:          memprovider.Enabled,
+			State:          inmemory.Enabled,
 			DefaultVariant: "on",
 			Variants:       map[string]any{"on": true, "off": false},
 		},
