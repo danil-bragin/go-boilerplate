@@ -53,15 +53,21 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/open-feature/go-sdk/openfeature/memprovider"
+
 	"go-boilerplate/examples/gateway/internal/api"
 	gatewayapp "go-boilerplate/examples/gateway/internal/app"
+	"go-boilerplate/examples/gateway/internal/attachments"
 	"go-boilerplate/examples/gateway/internal/migrations"
 	"go-boilerplate/examples/gateway/internal/projection"
 	"go-boilerplate/examples/internal/service"
 	"go-boilerplate/platform/auth"
+	"go-boilerplate/platform/blob"
 	"go-boilerplate/platform/cache"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/featureflags"
 	"go-boilerplate/platform/health"
 	"go-boilerplate/platform/httpserver"
 	"go-boilerplate/platform/run"
@@ -72,6 +78,7 @@ type Config struct {
 	service.Config
 	HTTP                httpserver.Config
 	Cache               cache.Config
+	S3                  blob.Config
 	CommandsTopic       string `env:"GATEWAY_COMMANDS_TOPIC"        envDefault:"orders.commands"`
 	OrdersEventsTopic   string `env:"GATEWAY_ORDERS_EVENTS_TOPIC"   envDefault:"orders.events"`
 	PaymentsEventsTopic string `env:"GATEWAY_PAYMENTS_EVENTS_TOPIC" envDefault:"payments.events"`
@@ -183,6 +190,39 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		svc.Logger().Info("gateway: REDIS_ADDRS not set, starting without cache")
 	}
 
+	// Blob / object-store (optional): try to build a MinIO-backed store for order
+	// attachments. If the S3 endpoint is unreachable or the config is empty we log
+	// a warning and continue without attachment support — graceful degradation.
+	var objStore blob.ObjectStore
+	if cfg.S3.Endpoint != "" {
+		s, err := blob.New(ctx, cfg.S3)
+		if err != nil {
+			svc.Logger().Warn("gateway: blob/attachments disabled (S3 unavailable)",
+				"error", err,
+				"endpoint", cfg.S3.Endpoint,
+			)
+		} else {
+			objStore = s
+		}
+	} else {
+		svc.Logger().Info("gateway: S3_ENDPOINT not set, starting without blob/attachments")
+	}
+
+	// Feature flags (in-memory provider seeded with the order-attachments flag).
+	// In production swap NewInMemory for a flagd / LaunchDarkly provider:
+	//   _ = openfeature.SetNamedProviderAndWait("gateway", flagdProvider)
+	//   flags := featureflags.New(openfeature.NewClient("gateway"))
+	flags, err := featureflags.NewInMemory("gateway-"+cfg.HTTP.Addr, map[string]memprovider.InMemoryFlag{
+		"order-attachments-enabled": {
+			State:          memprovider.Enabled,
+			DefaultVariant: "on",
+			Variants:       map[string]any{"on": true, "off": false},
+		},
+	})
+	if err != nil {
+		svc.Logger().Warn("gateway: feature flags unavailable, attachments will be disabled", "error", err)
+	}
+
 	// Build the CQRS GetOrder query handler (raw → decorated).
 	rawGetOrder := gatewayapp.GetOrderHandler(svc.Pool())
 	decoratedGetOrder := gatewayapp.DecorateGetOrderHandler(rawGetOrder, appCache)
@@ -257,6 +297,23 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		}
 	}
 	api.HandlerWithOptions(strictHandler, chiOpts)
+
+	// Attachment routes: mounted behind the same auth middleware so that
+	// upload/download requires a valid token (same RBAC boundary as POST /orders).
+	// When objStore is nil (S3 unavailable at startup), the routes are simply not
+	// mounted — the feature is silently absent rather than returning 500.
+	if objStore != nil && flags != nil {
+		var attachRouter chi.Router
+		if !cfg.AuthDisabled {
+			attachMiddleware := auth.Middleware(a.verifier)
+			attachRouter = httpSrv.Mux().With(func(next http.Handler) http.Handler {
+				return attachMiddleware(next)
+			})
+		} else {
+			attachRouter = httpSrv.Mux()
+		}
+		attachments.New(objStore, flags.Bool).Mount(attachRouter)
+	}
 
 	return a, nil
 }
