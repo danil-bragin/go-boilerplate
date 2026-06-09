@@ -111,6 +111,15 @@ func NewTransactConsumer(
 // ProcessFn maps one input record to zero or more output records produced
 // within the same transaction. If ProcessFn returns a non-nil error the batch
 // is aborted and the input records will be redelivered.
+//
+// SERIAL PROCESSING: Run calls ProcessFn for the records of a batch one at a
+// time, in fetch order, on a single goroutine. There is no per-partition
+// parallelism in the transactional path — a slow ProcessFn directly bounds
+// pipeline throughput. This is a deliberate trade-off: a Kafka transaction is
+// a single unit, so partial-batch parallelism would not improve commit
+// latency, and serial execution keeps the abort semantics trivial. Use the
+// regular Consumer (at-least-once + idempotent handler) when per-partition
+// concurrency matters more than exactly-once output atomicity.
 type ProcessFn func(ctx context.Context, rec Record) ([]Record, error)
 
 // Run enters the transactional poll loop. For each fetched batch it:
@@ -181,7 +190,14 @@ func (t *TransactConsumer) Run(ctx context.Context, fn ProcessFn) error {
 			for _, out := range outs {
 				kRec := recordToKGO(out)
 
-				// Collect per-record produce errors via promise callbacks.
+				// Collect per-record produce errors via promise callbacks —
+				// for ERROR REPORTING ONLY (read after End, under the mutex).
+				// The commit decision does NOT inspect this slice: promises
+				// run asynchronously and may still be in flight here, so any
+				// pre-End read would race with the callbacks. Correctness is
+				// owned by sess.End below — kgo tracks produce errors
+				// internally and converts a TryCommit into an abort when any
+				// produce in the transaction failed.
 				t.sess.Produce(ctx, kRec, func(_ *kgo.Record, err error) {
 					if err != nil {
 						produceMu.Lock()
@@ -191,13 +207,6 @@ func (t *TransactConsumer) Run(ctx context.Context, fn ProcessFn) error {
 				})
 			}
 		})
-
-		// Any produce error (e.g. buffer overflow, transactional state error)
-		// must cause an abort; we cannot commit a partially-produced batch.
-		if len(produceErrs) > 0 {
-			ok = false
-			t.onError(fmt.Errorf("kafka: TransactConsumer: produce errors: %w", errors.Join(produceErrs...)))
-		}
 
 		// ── End transaction ──────────────────────────────────────────────────
 		var endTry kgo.TransactionEndTry
@@ -212,9 +221,20 @@ func (t *TransactConsumer) Run(ctx context.Context, fn ProcessFn) error {
 			// End errors are non-retryable per franz-go docs; surface and stop.
 			return fmt.Errorf("kafka: TransactConsumer: End: %w", err)
 		}
+
+		// End has flushed the producer, so every promise has completed — the
+		// slice is stable now and safe to read under the mutex. Surface any
+		// produce errors for observability (the abort already happened inside
+		// End when needed).
+		produceMu.Lock()
+		if len(produceErrs) > 0 {
+			t.onError(fmt.Errorf("kafka: TransactConsumer: produce errors: %w", errors.Join(produceErrs...)))
+		}
+		produceMu.Unlock()
+
 		if !committed {
-			// Aborted (either intentionally due to fn error, or because a
-			// rebalance occurred). The broker will redeliver the batch.
+			// Aborted (fn error, produce error detected by End, or a
+			// rebalance). The broker will redeliver the batch.
 			t.log.InfoContext(
 				ctx, "kafka: TransactConsumer: transaction aborted; batch will be redelivered",
 				"try_commit", ok,
