@@ -16,6 +16,7 @@ import (
 	tcminio "github.com/testcontainers/testcontainers-go/modules/minio"
 
 	"go-boilerplate/examples/gateway/internal/attachments"
+	"go-boilerplate/platform/auth"
 	"go-boilerplate/platform/blob"
 )
 
@@ -49,6 +50,19 @@ func newMinioStore(t *testing.T) *blob.MinioStore {
 	return store
 }
 
+// integrationOrderID is a valid UUID used as the order identifier in the
+// integration round-trip test.
+const integrationOrderID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+// withIntegrationPrincipal injects a "user"-role principal into the request context.
+func withIntegrationPrincipal(req *http.Request) *http.Request {
+	ctx := auth.Into(req.Context(), auth.Principal{
+		Subject: "integration-user",
+		Roles:   []string{"user"},
+	})
+	return req.WithContext(ctx)
+}
+
 // TestIntegration_AttachmentRoundTrip uploads a file and downloads it via the
 // presigned URL, verifying the full MinIO round-trip.
 func TestIntegration_AttachmentRoundTrip(t *testing.T) {
@@ -60,16 +74,18 @@ func TestIntegration_AttachmentRoundTrip(t *testing.T) {
 
 	// --- Upload ---
 	content := []byte("integration test content")
-	req := httptest.NewRequest(http.MethodPost, "/orders/ord-123/attachment", bytes.NewReader(content))
+	req := httptest.NewRequest(http.MethodPost, "/orders/"+integrationOrderID+"/attachment", bytes.NewReader(content))
 	req.Header.Set("Content-Type", "text/plain")
 	req.Header.Set("X-Filename", "report.txt")
+	req = withIntegrationPrincipal(req)
 
 	rw := httptest.NewRecorder()
 	r.ServeHTTP(rw, req)
 	require.Equal(t, http.StatusCreated, rw.Code, "upload should return 201")
 
 	// --- Download route → 302 redirect ---
-	req2 := httptest.NewRequest(http.MethodGet, "/orders/ord-123/attachment/report.txt", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/orders/"+integrationOrderID+"/attachment/report.txt", nil)
+	req2 = withIntegrationPrincipal(req2)
 	rw2 := httptest.NewRecorder()
 	r.ServeHTTP(rw2, req2)
 	require.Equal(t, http.StatusFound, rw2.Code, "download should return 302")
