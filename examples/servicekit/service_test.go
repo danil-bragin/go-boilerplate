@@ -1,4 +1,4 @@
-package service_test
+package servicekit_test
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"go-boilerplate/examples/internal/service"
+	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/storage/pg/pgtest"
 
@@ -26,7 +26,7 @@ func TestService_AdminEndpoints(t *testing.T) {
 	broker, _ := kafkatest.NewRedpanda(t)
 	dsn := pgtest.NewDSN(t)
 
-	cfg := service.Config{
+	cfg := servicekit.Config{
 		AdminAddr: "127.0.0.1:0", // random port avoids conflicts
 	}
 	cfg.PG.DSN = dsn
@@ -36,7 +36,7 @@ func TestService_AdminEndpoints(t *testing.T) {
 	cfg.Log.Level = "error"
 
 	ctx := context.Background()
-	svc, err := service.New(ctx, cfg, nil, "")
+	svc, err := servicekit.New(ctx, cfg, nil, "")
 	require.NoError(t, err)
 
 	err = svc.Start()

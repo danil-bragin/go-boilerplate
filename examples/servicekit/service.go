@@ -1,4 +1,4 @@
-// Package service provides a shared wiring harness for consumer services.
+// Package servicekit provides a shared wiring harness for consumer services.
 // It eliminates the per-service boilerplate of: logger, closer, pg pool,
 // kafka client+producer, health checks, admin HTTP server (/livez /readyz /metrics),
 // consumer wiring with poison-DLT, and outbox relay + cleanup.
@@ -9,7 +9,7 @@
 //	Closer runs LIFO: consumers-cancel fires FIRST (stops goroutines), then admin-server shuts down,
 //	then kafka-producer flushes+closes, then pg pool closes, then telemetry shuts down, then log syncs.
 //	This ensures goroutines stop before the resources they use are torn down.
-package service
+package servicekit
 
 import (
 	"context"

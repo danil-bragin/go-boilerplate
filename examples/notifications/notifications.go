@@ -19,16 +19,16 @@ import (
 	"context"
 	"io"
 
-	"go-boilerplate/examples/internal/service"
 	"go-boilerplate/examples/notifications/internal/migrations"
 	"go-boilerplate/examples/notifications/internal/transport"
+	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/run"
 )
 
 // Config aggregates all configuration for the notifications service.
 type Config struct {
-	service.Config
+	servicekit.Config
 	PaymentsEventsTopic string `env:"PAYMENTS_EVENTS_TOPIC" envDefault:"payments.events"`
 }
 
@@ -57,7 +57,7 @@ func WithLogWriter(_ io.Writer) Option {
 
 // App holds all wired components for the notifications service.
 type App struct {
-	svc *service.Service
+	svc *servicekit.Service
 }
 
 // NewApp wires all service components and returns a ready-to-start App.
@@ -74,7 +74,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		o(nOpts)
 	}
 
-	svc, err := service.New(ctx, cfg.Config, migrations.FS, "sql")
+	svc, err := servicekit.New(ctx, cfg.Config, migrations.FS, "sql")
 	if err != nil {
 		return nil, err
 	}

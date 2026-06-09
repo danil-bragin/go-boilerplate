@@ -1,7 +1,7 @@
 package gateway
 
 import (
-	"go-boilerplate/examples/internal/service"
+	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/storage/blob"
 	"go-boilerplate/platform/storage/cache"
 	"go-boilerplate/platform/web/httpserver"
@@ -9,7 +9,7 @@ import (
 
 // Config aggregates all configuration for the gateway service.
 type Config struct {
-	service.Config
+	servicekit.Config
 	HTTP                httpserver.Config
 	Cache               cache.Config
 	S3                  blob.Config

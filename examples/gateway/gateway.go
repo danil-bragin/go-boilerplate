@@ -4,7 +4,7 @@
 //
 // # Harness
 //
-// Gateway is built on the shared service.Service harness (examples/internal/service)
+// Gateway is built on the shared servicekit.Service harness (examples/servicekit)
 // which handles the common wiring: logger, telemetry+metrics, pg pool+migrations,
 // kafka client+producer, health checks, admin HTTP server (/livez /readyz /metrics).
 // The gateway adds its own public REST server on cfg.HTTP.Addr.
@@ -54,7 +54,7 @@ import (
 	"go-boilerplate/examples/gateway/internal/api"
 	"go-boilerplate/examples/gateway/internal/migrations"
 	"go-boilerplate/examples/gateway/internal/projection"
-	"go-boilerplate/examples/internal/service"
+	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/run"
 	"go-boilerplate/platform/security/auth"
@@ -83,7 +83,7 @@ func WithLogWriter(_ io.Writer) Option {
 
 // App holds all wired components for the gateway service.
 type App struct {
-	svc      *service.Service
+	svc      *servicekit.Service
 	server   *httpserver.Server
 	verifier auth.Verifier
 }
@@ -113,7 +113,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	}
 
 	// Build the shared harness: logger, telemetry, pg+migrations, kafka, health, admin HTTP.
-	svc, err := service.New(ctx, cfg.Config, migrations.FS, "sql")
+	svc, err := servicekit.New(ctx, cfg.Config, migrations.FS, "sql")
 	if err != nil {
 		return nil, err
 	}

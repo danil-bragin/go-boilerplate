@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"go-boilerplate/examples/internal/service"
+	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/featureflags"
 	"go-boilerplate/platform/observability/health"
@@ -38,7 +38,7 @@ func buildVerifier(ctx context.Context, cfg Config, override auth.Verifier) (aut
 
 // buildCache tries to build a Redis-backed two-tier cache.
 // Returns nil when Redis is unconfigured or unreachable — graceful degradation.
-func buildCache(cfg Config, svc *service.Service) cqrs.Cache {
+func buildCache(cfg Config, svc *servicekit.Service) cqrs.Cache {
 	if len(cfg.Cache.RedisAddrs) == 0 || cfg.Cache.RedisAddrs[0] == "" {
 		svc.Logger().Info("gateway: REDIS_ADDRS not set, starting without cache")
 		return nil
@@ -63,7 +63,7 @@ func buildCache(cfg Config, svc *service.Service) cqrs.Cache {
 
 // buildBlob tries to build a MinIO-backed object store for order attachments.
 // Returns nil when the S3 endpoint is unconfigured or unreachable — graceful degradation.
-func buildBlob(ctx context.Context, cfg Config, svc *service.Service) blob.ObjectStore {
+func buildBlob(ctx context.Context, cfg Config, svc *servicekit.Service) blob.ObjectStore {
 	if cfg.S3.Endpoint == "" {
 		svc.Logger().Info("gateway: S3_ENDPOINT not set, starting without blob/attachments")
 		return nil
@@ -82,7 +82,7 @@ func buildBlob(ctx context.Context, cfg Config, svc *service.Service) blob.Objec
 
 // buildFeatureFlags builds the in-memory feature-flags provider seeded with
 // the order-attachments flag. Returns nil on error (graceful degradation).
-func buildFeatureFlags(cfg Config, svc *service.Service) *featureflags.Flags {
+func buildFeatureFlags(cfg Config, svc *servicekit.Service) *featureflags.Flags {
 	flags, err := featureflags.NewInMemory("gateway-"+cfg.HTTP.Addr, map[string]memprovider.InMemoryFlag{
 		"order-attachments-enabled": {
 			State:          memprovider.Enabled,

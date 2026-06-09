@@ -18,10 +18,10 @@ import (
 	"io"
 	"time"
 
-	"go-boilerplate/examples/internal/service"
 	"go-boilerplate/examples/orders/internal/app"
 	"go-boilerplate/examples/orders/internal/migrations"
 	"go-boilerplate/examples/orders/internal/transport"
+	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/run"
@@ -30,7 +30,7 @@ import (
 
 // Config aggregates all configuration for the orders service.
 type Config struct {
-	service.Config
+	servicekit.Config
 	CommandsTopic string `env:"ORDERS_COMMANDS_TOPIC" envDefault:"orders.commands"`
 }
 
@@ -46,7 +46,7 @@ func WithLogWriter(_ io.Writer) Option {
 
 // App holds all wired components for the orders service.
 type App struct {
-	svc *service.Service
+	svc *servicekit.Service
 }
 
 // NewApp wires all service components and returns a ready-to-start App.
@@ -63,7 +63,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		o(a)
 	}
 
-	svc, err := service.New(ctx, cfg.Config, migrations.FS, "sql")
+	svc, err := servicekit.New(ctx, cfg.Config, migrations.FS, "sql")
 	if err != nil {
 		return nil, err
 	}
