@@ -111,6 +111,33 @@ jobs:
       - name: go test
         run: go test -race -timeout 10m ./...
 
+  # ── gofumpt format gate ───────────────────────────────────────────────────
+  # Fails if any non-generated Go file is not formatted with gofumpt.
+  # Generated files (gen/, *.pb.go, *_mock.go) are excluded.
+  # Uses `go run` to avoid a separate install step — no pinned binary needed.
+  format:
+    name: Format (gofumpt)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Check gofumpt formatting
+        run: |
+          unformatted=$(go run mvdan.cc/gofumpt@latest -l \
+            $(git ls-files '*.go' | grep -vE 'gen/|\.pb\.go|_mock\.go'))
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not formatted with gofumpt:"
+            echo "$unformatted"
+            echo ""
+            echo "Run: go run mvdan.cc/gofumpt@latest -w <files>"
+            exit 1
+          fi
+
   # ── Image builds + SBOM + vuln scan ──────────────────────────────────────
   build-images:
     name: Build image (${{ matrix.service }})

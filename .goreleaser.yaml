@@ -1,0 +1,125 @@
+# goreleaser v2 configuration for go-boilerplate.
+#
+# Approach: produces binaries + archives + checksums + SBOM + cosign signatures.
+# Container images are built and pushed by the existing CI `build-images` job
+# (see .github/workflows/ci.yml), which uses the parametric Dockerfile with
+# `--build-arg SERVICE=<svc>`. Image building via goreleaser can be added later
+# once a registry destination is configured.
+#
+# This workflow is dormant until a GitHub remote is added and a `v*` tag is
+# pushed (see .github/workflows/release.yml).
+
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: gateway
+    main: ./examples/gateway/cmd/gateway
+    binary: gateway
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+  - id: orders
+    main: ./examples/orders/cmd/orders
+    binary: orders
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+  - id: payments
+    main: ./examples/payments/cmd/payments
+    binary: payments
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+  - id: notifications
+    main: ./examples/notifications/cmd/notifications
+    binary: notifications
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+  - id: skeleton
+    main: ./cmd/skeleton
+    binary: skeleton
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+
+checksum:
+  name_template: "checksums.txt"
+
+sboms:
+  - artifacts: archive
+    args: ["$artifact", "--output", "cyclonedx-json=$document"]
+    documents:
+      - "${artifact}.cdx.json"
+
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+release:
+  prerelease: auto

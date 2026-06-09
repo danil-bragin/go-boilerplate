@@ -1,0 +1,55 @@
+# Release workflow — triggered on `v*` tags.
+#
+# DORMANT until a GitHub remote is configured and a tag is pushed:
+#   git remote add origin https://github.com/<owner>/go-boilerplate.git
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# What this workflow does:
+#   - Builds binaries for all 5 services (linux/amd64, linux/arm64).
+#   - Produces .tar.gz archives + checksums.txt.
+#   - Generates CycloneDX SBOMs via syft.
+#   - Signs the checksum file with cosign (keyless / OIDC — no key material needed).
+#   - Creates a GitHub Release with all artifacts attached.
+#   - Container images are NOT built here; they are built by the `build-images`
+#     job in ci.yml (parametric Dockerfile, distroless runtime). Image publishing
+#     to a registry can be added to ci.yml or wired into goreleaser `dockers` once
+#     a registry destination is established.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # create GitHub Release + upload assets
+  packages: write   # push to GHCR when image publishing is wired in
+  id-token: write   # cosign keyless signing via OIDC
+
+jobs:
+  goreleaser:
+    name: GoReleaser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history required for goreleaser changelog
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      # cosign keyless signing (OIDC) — signs the checksums.txt artifact.
+      - uses: sigstore/cosign-installer@v3
+
+      # syft generates CycloneDX SBOMs for each archive.
+      - uses: anchore/sbom-action/download-syft@v0
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
