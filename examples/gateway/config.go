@@ -44,4 +44,12 @@ type Config struct {
 	// RatelimitRedis enables a Redis-backed distributed limiter when true.
 	// Falls back to in-memory if Redis is unavailable (graceful degradation).
 	RatelimitRedis bool `env:"RATELIMIT_REDIS" envDefault:"false"`
+	// EmbeddedProjection controls whether this gateway process runs the
+	// read-model projection consumer (default true — single-binary demo
+	// topology). Set false when the projection runs as its own deployment
+	// (examples/gateway/cmd/projection): the gateway then serves HTTP only
+	// and the standalone binary owns the consumer group. Both modes share the
+	// same consumer group ("gateway-projection") and inbox table, so a
+	// rolling migration between modes is safe.
+	EmbeddedProjection bool `env:"GATEWAY_EMBEDDED_PROJECTION" envDefault:"true"`
 }
