@@ -1,5 +1,7 @@
 package blob
 
+import "go-boilerplate/platform/config"
+
 // Config holds connection parameters for an S3-compatible object store.
 // Tags are compatible with github.com/caarlos0/env/v11.
 type Config struct {
@@ -8,8 +10,9 @@ type Config struct {
 	Endpoint string `env:"S3_ENDPOINT" envDefault:"localhost:8333"`
 	// AccessKey is the access-key ID.
 	AccessKey string `env:"S3_ACCESS_KEY"`
-	// SecretKey is the secret access key.
-	SecretKey string `env:"S3_SECRET_KEY"`
+	// SecretKey is the secret access key. config.Secret redacts it from every
+	// print/log path; the s3 client constructor calls Reveal() explicitly.
+	SecretKey config.Secret `env:"S3_SECRET_KEY"`
 	// Bucket is the bucket that this store operates on.
 	Bucket string `env:"S3_BUCKET" envDefault:"app"`
 	// UseSSL controls whether TLS is used for the connection.

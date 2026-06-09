@@ -2,7 +2,9 @@ package pg_test
 
 import (
 	"testing"
+	"time"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/storage/pg"
 
 	"github.com/jackc/pgx/v5"
@@ -73,4 +75,52 @@ func TestConfig_StatementCacheMode_Default(t *testing.T) {
 	// Default pgx mode is CacheStatement (0); must not be overridden.
 	require.Equal(t, pgx.QueryExecModeCacheStatement, pc.ConnConfig.DefaultQueryExecMode,
 		"omitting StatementCacheMode must leave pgx default CacheStatement")
+}
+
+// TestConfig_ConnectTimeoutApplied: PG_CONNECT_TIMEOUT lands on
+// ConnConfig.ConnectTimeout; zero falls back to the 5s default.
+func TestConfig_ConnectTimeoutApplied(t *testing.T) {
+	cfg := pg.Config{DSN: "postgres://u:p@localhost:5432/db", ConnectTimeout: 3 * time.Second}
+	pc, err := cfg.BuildPoolConfig()
+	require.NoError(t, err)
+	require.Equal(t, 3*time.Second, pc.ConnConfig.ConnectTimeout)
+
+	cfg.ConnectTimeout = 0
+	pc, err = cfg.BuildPoolConfig()
+	require.NoError(t, err)
+	require.Equal(t, 5*time.Second, pc.ConnConfig.ConnectTimeout, "zero must default to 5s")
+}
+
+// TestConfig_StatementTimeoutRuntimeParam: a positive StatementTimeout becomes
+// a statement_timeout RuntimeParam (milliseconds); zero disables it.
+func TestConfig_StatementTimeoutRuntimeParam(t *testing.T) {
+	cfg := pg.Config{DSN: "postgres://u:p@localhost:5432/db", StatementTimeout: 10 * time.Second}
+	pc, err := cfg.BuildPoolConfig()
+	require.NoError(t, err)
+	require.Equal(t, "10000", pc.ConnConfig.RuntimeParams["statement_timeout"])
+
+	cfg.StatementTimeout = 0
+	pc, err = cfg.BuildPoolConfig()
+	require.NoError(t, err)
+	_, set := pc.ConnConfig.RuntimeParams["statement_timeout"]
+	require.False(t, set, "zero StatementTimeout must not set the runtime param")
+}
+
+// TestConfig_EnvDefaults: the env tags carry the documented defaults —
+// statement timeout 30s, connect timeout 5s, reader sizing 0 (= writer values).
+func TestConfig_EnvDefaults(t *testing.T) {
+	t.Setenv("PG_DSN", "postgres://u:p@localhost:5432/db")
+	cfg, err := config.Load[pg.Config]()
+	require.NoError(t, err)
+	require.Equal(t, 30*time.Second, cfg.StatementTimeout)
+	require.Equal(t, 5*time.Second, cfg.ConnectTimeout)
+	require.Zero(t, cfg.ReaderMaxConns)
+	require.Zero(t, cfg.ReaderMinConns)
+
+	t.Setenv("PG_READER_MAX_CONNS", "7")
+	t.Setenv("PG_READER_MIN_CONNS", "2")
+	cfg, err = config.Load[pg.Config]()
+	require.NoError(t, err)
+	require.Equal(t, int32(7), cfg.ReaderMaxConns)
+	require.Equal(t, int32(2), cfg.ReaderMinConns)
 }

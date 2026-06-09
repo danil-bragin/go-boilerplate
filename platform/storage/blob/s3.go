@@ -31,7 +31,7 @@ func New(ctx context.Context, cfg Config) (*S3Store, error) {
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
 		awsconfig.WithRegion(cfg.Region),
 		awsconfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
+			credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey.Reveal(), ""),
 		),
 	)
 	if err != nil {

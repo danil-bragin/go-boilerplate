@@ -32,7 +32,7 @@ func New(ctx context.Context, cfg Config) (*Pool, error) {
 	p := &Pool{writer: writer, reader: writer}
 
 	if cfg.ReaderDSN != "" {
-		rc, err := cfg.buildPoolConfig(cfg.ReaderDSN)
+		rc, err := cfg.buildReaderPoolConfig(cfg.ReaderDSN)
 		if err != nil {
 			writer.Close()
 			return nil, err

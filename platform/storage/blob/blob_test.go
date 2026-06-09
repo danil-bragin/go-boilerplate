@@ -76,7 +76,7 @@ func createTestBucket(ctx context.Context, t *testing.T, cfg blob.Config) {
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
 		awsconfig.WithRegion(cfg.Region),
 		awsconfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
+			credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey.Reveal(), ""),
 		),
 	)
 	require.NoError(t, err)

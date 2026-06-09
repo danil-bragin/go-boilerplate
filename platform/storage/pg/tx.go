@@ -24,6 +24,19 @@ type txCtxKey struct{}
 // WRITER when no transaction is active. Use this for write handlers and
 // read-your-writes. For query-side handlers that may target a read replica,
 // use FromContextRead instead.
+//
+// # Writer-fallback hazard (design note)
+//
+// The no-transaction fallback is deliberate — it lets the same repository
+// code run inside AND outside RunInTx — but it is also a foot-gun: a command
+// handler whose pipeline forgot the Transaction behavior does NOT fail; its
+// writes silently execute as independent auto-commit statements on the writer
+// pool. Atomicity (e.g. "domain write + outbox enqueue commit together") is
+// then quietly lost. There is no reliable way to detect this here without
+// banning legitimate non-transactional writes, so the invariant is enforced
+// by convention: every COMMAND handler must be decorated with
+// cqrs.Transaction / Pipeline.WithTransaction, and integration tests should
+// assert outbox atomicity (see outbox tests for the pattern).
 func FromContext(ctx context.Context, p *Pool) DBTX {
 	if tx, ok := ctx.Value(txCtxKey{}).(pgx.Tx); ok && tx != nil {
 		return tx
