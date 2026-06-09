@@ -56,11 +56,19 @@ type JWKSVerifier struct {
 	requiredAZP    string
 }
 
+// jwksInitTimeout bounds the initial JWKS fetch in NewJWKSVerifier. jwx v3's
+// cache.Register blocks until the resource is ready; without this bound an
+// unreachable IdP would hang service startup forever instead of failing
+// closed with an error.
+const jwksInitTimeout = 10 * time.Second
+
 // NewJWKSVerifier creates a JWKSVerifier that fetches the JWKS from jwksURL
 // and validates the given issuer and audience on every token.
 //
 // ctx is used to drive the background cache refresh goroutine; it should be
-// the application lifetime context.
+// the application lifetime context. The INITIAL fetch is additionally bounded
+// by jwksInitTimeout so a misconfigured or unreachable JWKS URL surfaces as a
+// startup error (fail closed), never a hang.
 //
 // JWKS keys MUST carry an "alg" field (e.g. "alg":"RS256"). The verifier pins
 // the algorithm from the key, not from the incoming token header — this is the
@@ -77,16 +85,25 @@ func NewJWKSVerifier(ctx context.Context, jwksURL, issuer, audience string, opts
 		o(v)
 	}
 
+	if jwksURL == "" {
+		return nil, fmt.Errorf("%w: JWKS URL must not be empty", ErrInvalidToken)
+	}
+
 	cache, err := jwk.NewCache(ctx, httprc.NewClient())
 	if err != nil {
 		return nil, fmt.Errorf("auth: creating JWKS cache: %w", err)
 	}
-	if err := cache.Register(ctx, jwksURL); err != nil {
+
+	// Register blocks until the first fetch succeeds (or initCtx expires) —
+	// bound it so an unreachable IdP fails startup instead of hanging it.
+	initCtx, cancel := context.WithTimeout(ctx, jwksInitTimeout)
+	defer cancel()
+	if err := cache.Register(initCtx, jwksURL); err != nil {
 		return nil, fmt.Errorf("auth: registering JWKS URL: %w", err)
 	}
 
-	// Perform an initial fetch so that any configuration error is caught early.
-	if _, err := cache.Lookup(ctx, jwksURL); err != nil {
+	// Confirm the keyset is readable so any configuration error is caught early.
+	if _, err := cache.Lookup(initCtx, jwksURL); err != nil {
 		return nil, fmt.Errorf("auth: initial JWKS fetch from %s: %w", jwksURL, err)
 	}
 
