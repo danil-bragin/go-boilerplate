@@ -88,7 +88,7 @@ func TestDownload_RedirectsWhenFlagOn(t *testing.T) {
 	h := attachments.New(store, flagOn)
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodGet, "/orders/"+validOrderID+"/attachment/doc.txt", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orders/"+validOrderID+"/attachment/doc.txt", http.NoBody)
 	req = withUserPrincipal(req)
 	rw := httptest.NewRecorder()
 	r.ServeHTTP(rw, req)
@@ -123,7 +123,7 @@ func TestDownload_404WhenFlagOff(t *testing.T) {
 	h := attachments.New(store, flagOff)
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodGet, "/orders/"+validOrderID+"/attachment/doc.txt", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orders/"+validOrderID+"/attachment/doc.txt", http.NoBody)
 	req = withUserPrincipal(req)
 	rw := httptest.NewRecorder()
 	r.ServeHTTP(rw, req)
@@ -139,7 +139,7 @@ func TestDownload_404WhenMissing(t *testing.T) {
 	h := attachments.New(store, flagOn)
 	r := newRouter(h)
 
-	req := httptest.NewRequest(http.MethodGet, "/orders/"+validOrderID+"/attachment/nonexistent.bin", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orders/"+validOrderID+"/attachment/nonexistent.bin", http.NoBody)
 	req = withUserPrincipal(req)
 	rw := httptest.NewRecorder()
 	r.ServeHTTP(rw, req)
@@ -257,7 +257,7 @@ func TestDownload_RejectsTraversalName(t *testing.T) {
 	// Use ".." as the literal {name} parameter.  chi decodes %2F so we pass
 	// the path directly; ".." itself is a valid path segment and chi will
 	// capture it as the {name} URL param.
-	req := httptest.NewRequest(http.MethodGet, "/orders/"+validOrderID+"/attachment/..", nil)
+	req := httptest.NewRequest(http.MethodGet, "/orders/"+validOrderID+"/attachment/..", http.NoBody)
 	req = withUserPrincipal(req)
 
 	rw := httptest.NewRecorder()

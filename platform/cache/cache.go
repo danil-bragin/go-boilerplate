@@ -89,7 +89,7 @@ func (c *Cache) JitteredTTL(ttl time.Duration) time.Duration {
 		return ttl
 	}
 	// delta ∈ [-jitter*ttl, +jitter*ttl]
-	delta := time.Duration(float64(ttl) * jitter * (2*rand.Float64() - 1))
+	delta := time.Duration(float64(ttl) * jitter * (2*rand.Float64() - 1)) //nolint:gosec // G404: math/rand is fine for cache TTL jitter, not a security context
 	result := ttl + delta
 	if result <= 0 {
 		result = ttl

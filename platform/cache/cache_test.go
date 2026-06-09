@@ -115,7 +115,6 @@ func TestCache_GetOrLoadCollapsesConcurrentMisses(t *testing.T) {
 	results := make([][]byte, goroutines)
 
 	for i := range goroutines {
-		i := i
 		eg.Go(func() error {
 			v, err := c.GetOrLoad(egCtx, "hot", time.Minute, loader)
 			if err != nil {

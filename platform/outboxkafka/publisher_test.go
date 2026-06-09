@@ -71,7 +71,6 @@ func TestKafkaPublisher_DrainsOutboxToKafka(t *testing.T) {
 		{id: uuid.New(), aggregateID: "order-3", payload: []byte(`{"order":"3"}`)},
 	}
 	for _, m := range messages {
-		m := m
 		require.NoError(t, pg.RunInTx(ctx, pool, func(ctx context.Context) error {
 			return repo.Enqueue(ctx, outbox.Message{
 				ID:            m.id,

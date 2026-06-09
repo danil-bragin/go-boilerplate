@@ -40,7 +40,7 @@ func TestE2E_PingReturnsJSONWithRequestID(t *testing.T) {
 	client := newClient()
 
 	ctx := context.Background()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/ping", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/ping", http.NoBody)
 	require.NoError(t, err)
 
 	resp, err := client.Do(req)
@@ -64,7 +64,7 @@ func TestE2E_RequestIDPropagatedFromClient(t *testing.T) {
 	client := newClient()
 
 	ctx := context.Background()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/ping", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/ping", http.NoBody)
 	require.NoError(t, err)
 	req.Header.Set("X-Request-Id", "e2e-test-id-123")
 
@@ -88,7 +88,7 @@ func TestE2E_RequestIDSanitizedOnTheWire(t *testing.T) {
 	oversized := strings.Repeat("A", 200)
 
 	ctx := context.Background()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/ping", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/ping", http.NoBody)
 	require.NoError(t, err)
 	req.Header.Set("X-Request-Id", oversized)
 
@@ -110,7 +110,7 @@ func TestE2E_PanicReturns500ProblemJSON(t *testing.T) {
 	client := newClient()
 
 	ctx := context.Background()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/boom", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/boom", http.NoBody)
 	require.NoError(t, err)
 
 	resp, err := client.Do(req)
@@ -136,7 +136,7 @@ func TestE2E_ReadyzJSONAndLivez(t *testing.T) {
 	ctx := context.Background()
 
 	// --- /readyz ---
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/readyz", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/readyz", http.NoBody)
 	require.NoError(t, err)
 
 	resp, err := client.Do(req)
@@ -157,7 +157,7 @@ func TestE2E_ReadyzJSONAndLivez(t *testing.T) {
 	assert.Equal(t, "ok", readyz.Checks["self"])
 
 	// --- /livez ---
-	req2, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/livez", nil)
+	req2, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/livez", http.NoBody)
 	require.NoError(t, err)
 
 	resp2, err := client.Do(req2)
@@ -178,7 +178,7 @@ func TestE2E_ReadyzFlipsTo503OnShutdownStart(t *testing.T) {
 	ctx := context.Background()
 
 	// Confirm still ready.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/readyz", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/readyz", http.NoBody)
 	require.NoError(t, err)
 	resp, err := client.Do(req)
 	require.NoError(t, err)
@@ -188,7 +188,7 @@ func TestE2E_ReadyzFlipsTo503OnShutdownStart(t *testing.T) {
 	// Simulate shutdown start.
 	a.health.SetNotReady()
 
-	req2, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/readyz", nil)
+	req2, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/readyz", http.NoBody)
 	require.NoError(t, err)
 	resp2, err := client.Do(req2)
 	require.NoError(t, err)
@@ -220,7 +220,7 @@ func TestE2E_GracefulDrainCompletesInflightRequest(t *testing.T) {
 		// Use a generous timeout so the in-flight request outlasts shutdown.
 		client := &http.Client{Timeout: 5 * time.Second}
 		ctx := context.Background()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/slow", nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/slow", http.NoBody)
 		if err != nil {
 			inflightDone <- 0
 			return
@@ -253,7 +253,7 @@ func TestE2E_GracefulDrainCompletesInflightRequest(t *testing.T) {
 	// (b) After stop, new connections must fail.
 	newClient2 := &http.Client{Timeout: 500 * time.Millisecond}
 	ctx2 := context.Background()
-	req, err := http.NewRequestWithContext(ctx2, http.MethodGet, base+"/ping", nil)
+	req, err := http.NewRequestWithContext(ctx2, http.MethodGet, base+"/ping", http.NoBody)
 	require.NoError(t, err)
 	resp2, err := newClient2.Do(req)
 	if resp2 != nil {

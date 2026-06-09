@@ -284,16 +284,18 @@ func (s *Service) AddOutboxRelay(publisher outbox.Publisher, cfg outbox.RelayCon
 		interval = time.Hour
 	}
 
-	s.goroutines = append(s.goroutines, func(ctx context.Context) {
-		if err := relay.Run(ctx); err != nil && ctx.Err() == nil {
-			s.logger.Error("relay stopped unexpectedly", "error", err)
-		}
-	})
-	s.goroutines = append(s.goroutines, func(ctx context.Context) {
-		if err := cleaner.RunCleanup(ctx, interval, retention); err != nil && ctx.Err() == nil {
-			s.logger.Error("cleaner stopped unexpectedly", "error", err)
-		}
-	})
+	s.goroutines = append(s.goroutines,
+		func(ctx context.Context) {
+			if err := relay.Run(ctx); err != nil && ctx.Err() == nil {
+				s.logger.Error("relay stopped unexpectedly", "error", err)
+			}
+		},
+		func(ctx context.Context) {
+			if err := cleaner.RunCleanup(ctx, interval, retention); err != nil && ctx.Err() == nil {
+				s.logger.Error("cleaner stopped unexpectedly", "error", err)
+			}
+		},
+	)
 }
 
 // DefaultOutboxPublisher builds the standard outboxkafka publisher backed by

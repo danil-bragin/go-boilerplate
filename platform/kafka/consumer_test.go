@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -47,7 +48,7 @@ func TestConsumer_GroupConsumesCommitted(t *testing.T) {
 	for i := 0; i < n; i++ {
 		err = prod.Produce(ctx, kafka.Record{
 			Topic: topic,
-			Key:   []byte(fmt.Sprintf("%d", i)),
+			Key:   []byte(strconv.Itoa(i)),
 			Value: []byte(fmt.Sprintf("v%d", i)),
 		})
 		require.NoError(t, err)
@@ -104,7 +105,7 @@ func TestConsumer_GroupConsumesCommitted(t *testing.T) {
 
 	require.Len(t, keys, n)
 	for i := 0; i < n; i++ {
-		assert.Contains(t, keys, fmt.Sprintf("%d", i), "missing key %d", i)
+		assert.Contains(t, keys, strconv.Itoa(i), "missing key %d", i)
 	}
 
 	// ── Second consumer in the SAME group: should see zero records ───────────
@@ -329,7 +330,7 @@ func TestConsumer_PerPartitionParallelOrdering(t *testing.T) {
 				Topic:     topic,
 				Partition: p,
 				Key:       []byte(fmt.Sprintf("p%d", p)),
-				Value:     []byte(fmt.Sprintf("%d", seq)),
+				Value:     []byte(strconv.Itoa(seq)),
 			}
 			if err := rawCl.ProduceSync(ctx, rec).FirstErr(); err != nil {
 				t.Fatalf("produce to partition %d seq %d: %v", p, seq, err)

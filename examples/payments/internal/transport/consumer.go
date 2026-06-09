@@ -3,6 +3,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"go-boilerplate/examples/payments/internal/app"
@@ -43,7 +44,7 @@ func NewEventHandler(
 			msgID = evt.GetOrderId()
 		}
 		if msgID == "" {
-			return fmt.Errorf("payments consumer: cannot derive message id: no message-id header and order_id is empty")
+			return errors.New("payments consumer: cannot derive message id: no message-id header and order_id is empty")
 		}
 
 		_, err := inbox.ProcessOnce(ctx, pool, "payments", msgID, func(ctx context.Context) error {

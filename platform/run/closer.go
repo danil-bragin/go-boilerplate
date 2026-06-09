@@ -64,16 +64,16 @@ func (c *Closer) Close(ctx context.Context) error {
 	var errs []error
 	for i := len(items) - 1; i >= 0; i-- {
 		if err := items[i].fn(ctx); err != nil {
-			errs = append(errs, errClose{name: items[i].name, err: err})
+			errs = append(errs, closeError{name: items[i].name, err: err})
 		}
 	}
 	return errors.Join(errs...)
 }
 
-type errClose struct {
+type closeError struct {
 	name string
 	err  error
 }
 
-func (e errClose) Error() string { return e.name + ": " + e.err.Error() }
-func (e errClose) Unwrap() error { return e.err }
+func (e closeError) Error() string { return e.name + ": " + e.err.Error() }
+func (e closeError) Unwrap() error { return e.err }

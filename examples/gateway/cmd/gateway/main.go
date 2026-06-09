@@ -19,19 +19,21 @@ import (
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	a, err := gateway.NewApp(ctx)
 	if err != nil {
+		cancel()
 		slog.Error("startup failed", "error", err)
 		os.Exit(1)
 	}
 	a.Start()
 
 	if err := run.Run(ctx, run.Options{ShutdownTimeout: 15 * time.Second}, a.Closer()); err != nil {
+		cancel()
 		slog.Error("shutdown completed with errors", "error", err)
 		os.Exit(1)
 	}
+	cancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	_ = a.Stop(shutdownCtx)

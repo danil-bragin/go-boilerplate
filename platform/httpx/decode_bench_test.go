@@ -2,6 +2,7 @@ package httpx_test
 
 import (
 	"bytes"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -13,7 +14,7 @@ func BenchmarkDecode(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		r := httptest.NewRequest("POST", "/", bytes.NewReader(body))
+		r := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 		r.Header.Set("Content-Type", "application/json")
 		_, _ = httpx.Decode[benchReq](r)
 	}

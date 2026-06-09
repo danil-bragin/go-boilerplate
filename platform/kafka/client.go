@@ -17,11 +17,12 @@ func NewClient(cfg Config, extra ...kgo.Opt) (*kgo.Client, error) {
 		kotel.WithTracer(kotel.NewTracer()),
 	)
 
-	opts := []kgo.Opt{
+	opts := make([]kgo.Opt, 0, 3+len(extra))
+	opts = append(opts,
 		kgo.SeedBrokers(cfg.Brokers...),
 		kgo.ClientID(cfg.ClientID),
 		kgo.WithHooks(kt.Hooks()...),
-	}
+	)
 	opts = append(opts, extra...)
 
 	return kgo.NewClient(opts...)

@@ -178,7 +178,7 @@ func consumePaymentEvent(t *testing.T, broker, orderID string, timeout time.Dura
 		_ = consumer.Run(ctx, func(_ context.Context, r kafka.Record) error {
 			var evt ordersv1.PaymentProcessed
 			if err := proto.Unmarshal(r.Value, &evt); err != nil {
-				return nil // skip non-PaymentProcessed messages
+				return nil //nolint:nilerr // intentionally skip messages that don't unmarshal as PaymentProcessed
 			}
 			if evt.OrderId == orderID {
 				select {

@@ -175,7 +175,7 @@ func consumeCreateOrderCommand(t *testing.T, broker, orderID string, timeout tim
 		_ = consumer.Run(ctx, func(_ context.Context, r kafka.Record) error {
 			var cmd ordersv1.CreateOrderCommand
 			if err := proto.Unmarshal(r.Value, &cmd); err != nil {
-				return nil
+				return nil //nolint:nilerr // intentionally skip messages that don't unmarshal as this type
 			}
 			if cmd.GetOrderId() == orderID {
 				select {

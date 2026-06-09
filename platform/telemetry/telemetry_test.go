@@ -135,7 +135,7 @@ func TestSetup_InstallsMeterProvider(t *testing.T) {
 
 	// Scrape the Prometheus handler and assert the metric appears.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := httptest.NewRequest(http.MethodGet, "/metrics", http.NoBody)
 	handler.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)

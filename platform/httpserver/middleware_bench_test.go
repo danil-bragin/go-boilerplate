@@ -31,7 +31,7 @@ func BenchmarkMiddlewareChain(b *testing.B) {
 	b.ResetTimer()
 
 	for b.Loop() {
-		req := httptest.NewRequest(http.MethodGet, "/bench", nil)
+		req := httptest.NewRequest(http.MethodGet, "/bench", http.NoBody)
 		req = req.WithContext(log.Into(req.Context(), logger))
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)

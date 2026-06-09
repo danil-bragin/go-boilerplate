@@ -3,6 +3,7 @@ package kafka_test
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -43,7 +44,7 @@ func TestProducer_ProduceBatch(t *testing.T) {
 			Topic:   topic,
 			Key:     []byte(fmt.Sprintf("key-%d", i)),
 			Value:   []byte(fmt.Sprintf("val-%d", i)),
-			Headers: map[string]string{"idx": fmt.Sprintf("%d", i)},
+			Headers: map[string]string{"idx": strconv.Itoa(i)},
 		}
 	}
 

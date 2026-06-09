@@ -27,11 +27,11 @@ func TestRequestID_AddsHeaderAndContext(t *testing.T) {
 	var seen string
 	h := httpserver.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = httpserver.RequestIDFromContext(r.Context())
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 	}))
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", http.NoBody))
 
 	require.NotEmpty(t, seen)
 	require.Equal(t, seen, rec.Header().Get("X-Request-Id"))
@@ -42,10 +42,10 @@ func TestRequestID_ReusesIncomingHeader(t *testing.T) {
 	var seen string
 	h := httpserver.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = httpserver.RequestIDFromContext(r.Context())
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	req.Header.Set("X-Request-Id", incoming)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -60,10 +60,10 @@ func TestRequestID_RejectsCRLF(t *testing.T) {
 	var seen string
 	h := httpserver.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = httpserver.RequestIDFromContext(r.Context())
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	req.Header.Set("X-Request-Id", malicious)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -79,10 +79,10 @@ func TestRequestID_RejectsOversize(t *testing.T) {
 	var seen string
 	h := httpserver.RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = httpserver.RequestIDFromContext(r.Context())
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	req.Header.Set("X-Request-Id", oversize)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -101,7 +101,7 @@ func TestRecover_TurnsPanicInto500Problem(t *testing.T) {
 	}))
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", http.NoBody))
 
 	require.Equal(t, 500, rec.Code)
 	require.Equal(t, "application/problem+json", rec.Header().Get("Content-Type"))
@@ -114,7 +114,7 @@ func TestRecover_RepanicsErrAbortHandler(t *testing.T) {
 	}))
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 
 	require.PanicsWithValue(t, http.ErrAbortHandler, func() {
 		h.ServeHTTP(rec, req)
@@ -124,13 +124,13 @@ func TestRecover_RepanicsErrAbortHandler(t *testing.T) {
 // A2 – do not write after headers are committed
 func TestRecover_DoesNotWriteAfterCommit(t *testing.T) {
 	h := httpserver.Recover(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("partial"))
 		panic("too late")
 	}))
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", http.NoBody))
 
 	require.Equal(t, 200, rec.Code)
 	require.Equal(t, "partial", rec.Body.String())
@@ -153,7 +153,7 @@ func TestAccessLog_LogsRequest(t *testing.T) {
 	// Chain: RequestID → AccessLog → inner so request-id is in context
 	h := httpserver.RequestID(httpserver.AccessLog(inner))
 
-	req := httptest.NewRequest("GET", "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/health", http.NoBody)
 	// Inject logger into request context
 	req = req.WithContext(log.Into(req.Context(), logger))
 
@@ -183,7 +183,7 @@ func TestMaxBytes_LimitsBody(t *testing.T) {
 	h := httpserver.MaxBytes(limit)(inner)
 
 	body := strings.Repeat("x", 100)
-	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -203,7 +203,7 @@ func TestTimeout_Returns503OnSlowHandler(t *testing.T) {
 
 	h := httpserver.Timeout(20 * time.Millisecond)(inner)
 
-	req := httptest.NewRequest("GET", "/slow", nil)
+	req := httptest.NewRequest(http.MethodGet, "/slow", http.NoBody)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -238,7 +238,7 @@ func TestOTelMiddleware_CreatesServerSpan(t *testing.T) {
 
 	h := httpserver.OTel(inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/health", http.NoBody)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 

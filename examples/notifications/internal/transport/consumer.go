@@ -3,6 +3,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"go-boilerplate/platform/inbox"
@@ -39,7 +40,7 @@ func NewEventHandler(pool *pg.Pool, notifier Notifier) kafka.HandlerFunc {
 		msgID := r.Headers["message-id"]
 		if msgID == "" {
 			if evt.GetOrderId() == "" || evt.GetPaymentId() == "" {
-				return fmt.Errorf("notifications consumer: cannot derive message id: no message-id header and order_id/payment_id are empty")
+				return errors.New("notifications consumer: cannot derive message id: no message-id header and order_id/payment_id are empty")
 			}
 			msgID = evt.GetOrderId() + "-" + evt.GetPaymentId()
 		}

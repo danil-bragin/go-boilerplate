@@ -250,7 +250,7 @@ func TestMiddleware_ValidBearerSetsPrincipal(t *testing.T) {
 
 	handler := auth.Middleware(v)(echoSubjectHandler())
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	req.Header.Set("Authorization", "Bearer "+string(signed))
 	rec := httptest.NewRecorder()
 
@@ -268,7 +268,7 @@ func TestMiddleware_MissingHeader_Returns401(t *testing.T) {
 
 	handler := auth.Middleware(v)(echoSubjectHandler())
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil) // no Authorization header
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody) // no Authorization header
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -287,7 +287,7 @@ func TestMiddleware_InvalidToken_Returns401(t *testing.T) {
 
 	handler := auth.Middleware(v)(echoSubjectHandler())
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	req.Header.Set("Authorization", "Bearer not.a.real.jwt")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -303,7 +303,7 @@ func TestMiddleware_MalformedBearer_Returns401(t *testing.T) {
 
 	handler := auth.Middleware(v)(echoSubjectHandler())
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	req.Header.Set("Authorization", "Basic user:pass") // wrong scheme
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -319,7 +319,7 @@ func TestRequireRole_AllowsMatchingRole(t *testing.T) {
 	})
 	handler := auth.RequireRole("admin")(inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	ctx := auth.Into(req.Context(), auth.Principal{
 		Subject: "u1",
 		Roles:   []string{"admin", "user"},
@@ -337,7 +337,7 @@ func TestRequireRole_ForbiddenOnMissingRole(t *testing.T) {
 	})
 	handler := auth.RequireRole("superadmin")(inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 	ctx := auth.Into(req.Context(), auth.Principal{
 		Subject: "u1",
 		Roles:   []string{"user"},
@@ -355,7 +355,7 @@ func TestRequireRole_UnauthorizedOnNoPrincipal(t *testing.T) {
 	})
 	handler := auth.RequireRole("admin")(inner)
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil) // no principal in ctx
+	req := httptest.NewRequest(http.MethodGet, "/", http.NoBody) // no principal in ctx
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

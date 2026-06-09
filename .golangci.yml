@@ -13,11 +13,42 @@ linters:
     - revive
     - bodyclose
     - errorlint
+    # SP9 T2: expanded linter set
+    - gosec
+    - gocritic
+    - misspell
+    - unconvert
+    - prealloc
+    - perfsprint
+    - errname
+    - nilerr
+    - nilnil
+    - wastedassign
+    - usestdlibvars
+    - copyloopvar
+  settings:
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - paramTypeCombine
+        - whyNoLint
+        - hugeParam
+        - rangeValCopy
+        - commentedOutCode
+        - unnamedResult
+        - commentFormatting
   exclusions:
     rules:
       - path: _test\.go
         linters:
           - errcheck
+          - gosec
+      - path: platform/testkit/
+        linters:
+          - gosec
 
 formatters:
   enable:

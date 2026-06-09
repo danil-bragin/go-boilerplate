@@ -31,6 +31,7 @@ package featureflags
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/open-feature/go-sdk/openfeature"
@@ -57,7 +58,7 @@ func New(client *openfeature.Client) *Flags {
 // memprovider.InMemoryFlag for the full flag definition.
 func NewInMemory(domain string, flags map[string]memprovider.InMemoryFlag) (*Flags, error) {
 	if domain == "" {
-		return nil, fmt.Errorf("featureflags: domain must not be empty")
+		return nil, errors.New("featureflags: domain must not be empty")
 	}
 
 	p := memprovider.NewInMemoryProvider(flags)

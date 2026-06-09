@@ -3,6 +3,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"go-boilerplate/examples/orders/internal/app"
@@ -43,7 +44,7 @@ func NewCommandHandler(
 			msgID = cmd.GetOrderId()
 		}
 		if msgID == "" {
-			return fmt.Errorf("orders consumer: cannot derive message id: no message-id header and order_id is empty")
+			return errors.New("orders consumer: cannot derive message id: no message-id header and order_id is empty")
 		}
 
 		_, err := inbox.ProcessOnce(ctx, pool, "orders", msgID, func(ctx context.Context) error {

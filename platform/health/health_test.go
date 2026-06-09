@@ -20,7 +20,7 @@ func TestReadyz_AllPassReturns200(t *testing.T) {
 	h.AddReadiness("db", func(context.Context) error { return nil })
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/readyz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
 	h.ReadyzHandler().ServeHTTP(rec, req)
 
 	require.Equal(t, 200, rec.Code)
@@ -31,7 +31,7 @@ func TestReadyz_OneFailureReturns503(t *testing.T) {
 	h.AddReadiness("db", func(context.Context) error { return errors.New("down") })
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/readyz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
 	h.ReadyzHandler().ServeHTTP(rec, req)
 
 	require.Equal(t, 503, rec.Code)
@@ -41,12 +41,12 @@ func TestLivez_AlwaysOK_UnlessNotLive(t *testing.T) {
 	h := health.New()
 
 	rec := httptest.NewRecorder()
-	h.LivezHandler().ServeHTTP(rec, httptest.NewRequest("GET", "/livez", nil))
+	h.LivezHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/livez", http.NoBody))
 	require.Equal(t, 200, rec.Code)
 
 	h.SetNotLive() // shutdown flips liveness
 	rec2 := httptest.NewRecorder()
-	h.LivezHandler().ServeHTTP(rec2, httptest.NewRequest("GET", "/livez", nil))
+	h.LivezHandler().ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/livez", http.NoBody))
 	require.Equal(t, 503, rec2.Code)
 }
 
@@ -62,7 +62,7 @@ func TestReadyz_BodyListsAllCheckStatuses(t *testing.T) {
 	h.AddReadiness("cache", func(context.Context) error { return errors.New("connection refused") })
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/readyz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
 	h.ReadyzHandler().ServeHTTP(rec, req)
 
 	require.Equal(t, 503, rec.Code)
@@ -82,7 +82,7 @@ func TestReadyz_AllPassBodyAndStatus(t *testing.T) {
 	h.AddReadiness("db", func(context.Context) error { return nil })
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/readyz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
 	h.ReadyzHandler().ServeHTTP(rec, req)
 
 	require.Equal(t, 200, rec.Code)
@@ -106,7 +106,7 @@ func TestReadyz_ChecksRunConcurrently(t *testing.T) {
 	h.AddReadiness("c", sleep200)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/readyz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
 
 	start := time.Now()
 	h.ReadyzHandler().ServeHTTP(rec, req)
@@ -126,7 +126,7 @@ func TestReadyz_PanicInCheckIsFailureNotCrash(t *testing.T) {
 	})
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/readyz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
 
 	// This must not panic the test process.
 	require.NotPanics(t, func() {
@@ -149,7 +149,7 @@ func TestReadyz_NotReadyShortCircuits(t *testing.T) {
 	h.SetNotReady()
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/readyz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
 	h.ReadyzHandler().ServeHTTP(rec, req)
 
 	require.Equal(t, 503, rec.Code)
@@ -171,7 +171,7 @@ func TestHealth_MountRegistersEndpoints(t *testing.T) {
 		health.Mount(mux, h)
 
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/livez", nil)
+		req := httptest.NewRequest(http.MethodGet, "/livez", http.NoBody)
 		mux.ServeHTTP(rec, req)
 
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -183,7 +183,7 @@ func TestHealth_MountRegistersEndpoints(t *testing.T) {
 		health.Mount(mux, h)
 
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+		req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
 		mux.ServeHTTP(rec, req)
 
 		require.Equal(t, http.StatusOK, rec.Code)
@@ -198,7 +198,7 @@ func TestHealth_MountRegistersEndpoints(t *testing.T) {
 		health.Mount(mux, h)
 
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+		req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
 		mux.ServeHTTP(rec, req)
 
 		require.Equal(t, http.StatusServiceUnavailable, rec.Code)
@@ -250,7 +250,7 @@ func TestReadyz_HandlerReturnsAtDeadlineEvenIfCheckIgnoresCtx(t *testing.T) {
 	h.SetCheckTimeout(50 * time.Millisecond)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/readyz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody)
 
 	start := time.Now()
 	h.ReadyzHandler().ServeHTTP(rec, req)

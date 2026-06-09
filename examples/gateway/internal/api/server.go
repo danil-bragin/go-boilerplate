@@ -80,7 +80,7 @@ func (s *Server) HealthCheck(_ context.Context, _ HealthCheckRequestObject) (Hea
 func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObject) (CreateOrderResponseObject, error) {
 	body := request.Body
 	if body == nil {
-		return nil, fmt.Errorf("missing request body")
+		return nil, errors.New("missing request body")
 	}
 
 	// RBAC authorization: skip when auth is disabled (e.g. in e2e / dev).

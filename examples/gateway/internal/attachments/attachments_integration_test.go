@@ -84,7 +84,7 @@ func TestIntegration_AttachmentRoundTrip(t *testing.T) {
 	require.Equal(t, http.StatusCreated, rw.Code, "upload should return 201")
 
 	// --- Download route → 302 redirect ---
-	req2 := httptest.NewRequest(http.MethodGet, "/orders/"+integrationOrderID+"/attachment/report.txt", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/orders/"+integrationOrderID+"/attachment/report.txt", http.NoBody)
 	req2 = withIntegrationPrincipal(req2)
 	rw2 := httptest.NewRecorder()
 	r.ServeHTTP(rw2, req2)

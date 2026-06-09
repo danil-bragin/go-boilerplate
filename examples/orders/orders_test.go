@@ -178,7 +178,7 @@ func consumeEvent(t *testing.T, broker, orderID string, timeout time.Duration) *
 		_ = consumer.Run(ctx, func(_ context.Context, r kafka.Record) error {
 			var evt ordersv1.OrderCreated
 			if err := proto.Unmarshal(r.Value, &evt); err != nil {
-				return nil // skip non-OrderCreated messages
+				return nil //nolint:nilerr // intentionally skip messages that don't unmarshal as OrderCreated
 			}
 			if evt.OrderId == orderID {
 				select {

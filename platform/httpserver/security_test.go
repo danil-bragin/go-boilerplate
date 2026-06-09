@@ -21,7 +21,7 @@ func TestSecurityHeaders_SetsHeaders(t *testing.T) {
 	h := httpserver.SecurityHeaders(inner)
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", http.NoBody))
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"), "X-Content-Type-Options must be nosniff")
@@ -50,7 +50,7 @@ func TestCORS_PreflightAndAllowOrigin(t *testing.T) {
 	h := corsMiddleware(inner)
 
 	t.Run("preflight from allowed origin", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodOptions, "/orders", nil)
+		req := httptest.NewRequest(http.MethodOptions, "/orders", http.NoBody)
 		req.Header.Set("Origin", "https://example.com")
 		req.Header.Set("Access-Control-Request-Method", "POST")
 
@@ -65,7 +65,7 @@ func TestCORS_PreflightAndAllowOrigin(t *testing.T) {
 	})
 
 	t.Run("preflight from disallowed origin", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodOptions, "/orders", nil)
+		req := httptest.NewRequest(http.MethodOptions, "/orders", http.NoBody)
 		req.Header.Set("Origin", "https://evil.com")
 
 		rec := httptest.NewRecorder()
@@ -76,7 +76,7 @@ func TestCORS_PreflightAndAllowOrigin(t *testing.T) {
 	})
 
 	t.Run("actual request from allowed origin gets ACAO header", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/orders", nil)
+		req := httptest.NewRequest(http.MethodGet, "/orders", http.NoBody)
 		req.Header.Set("Origin", "https://example.com")
 
 		rec := httptest.NewRecorder()
@@ -87,7 +87,7 @@ func TestCORS_PreflightAndAllowOrigin(t *testing.T) {
 	})
 
 	t.Run("non-CORS request passes through unchanged", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/orders", nil)
+		req := httptest.NewRequest(http.MethodGet, "/orders", http.NoBody)
 		// No Origin header → not a CORS request.
 
 		rec := httptest.NewRecorder()
@@ -114,11 +114,11 @@ func TestRateLimit_429WhenExceeded(t *testing.T) {
 
 	// First request: should consume the single token and succeed.
 	rec1 := httptest.NewRecorder()
-	h.ServeHTTP(rec1, httptest.NewRequest(http.MethodGet, "/", nil))
+	h.ServeHTTP(rec1, httptest.NewRequest(http.MethodGet, "/", http.NoBody))
 	require.Equal(t, http.StatusOK, rec1.Code, "first request within burst must succeed")
 
 	// Second immediate request: bucket empty, must be rate-limited.
 	rec2 := httptest.NewRecorder()
-	h.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/", nil))
+	h.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/", http.NoBody))
 	require.Equal(t, http.StatusTooManyRequests, rec2.Code, "second immediate request must be rate-limited (429)")
 }

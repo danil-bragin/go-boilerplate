@@ -49,7 +49,7 @@ func Decode[T any](r *http.Request) (T, error) {
 
 	// FIX 1 — guard nil / empty body before touching it.
 	if r.Body == nil || r.Body == http.NoBody {
-		return v, fmt.Errorf("httpx: decode json: empty request body")
+		return v, errors.New("httpx: decode json: empty request body")
 	}
 
 	// FIX 4 — Content-Type enforcement (lenient when header is absent).
@@ -70,7 +70,7 @@ func Decode[T any](r *http.Request) (T, error) {
 
 	// FIX 2 — reject trailing data after the JSON value.
 	if dec.More() {
-		return v, fmt.Errorf("httpx: decode json: unexpected trailing data after JSON value")
+		return v, errors.New("httpx: decode json: unexpected trailing data after JSON value")
 	}
 
 	if err := validate.Struct(v); err != nil {

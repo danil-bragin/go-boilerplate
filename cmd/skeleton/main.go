@@ -122,14 +122,15 @@ func (a *app) stop(ctx context.Context) error {
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	a, err := newApp(ctx)
 	if err != nil {
+		cancel()
 		slog.Error("startup failed", "error", err)
 		os.Exit(1)
 	}
 	if err := a.start(); err != nil {
+		cancel()
 		slog.Error("start failed", "error", err)
 		os.Exit(1)
 	}
@@ -146,8 +147,10 @@ func main() {
 	// Block until SIGINT/SIGTERM or a fatal serve error, then close
 	// resources (reverse order).
 	if err := run.Run(ctx, run.Options{ShutdownTimeout: 15 * time.Second}, a.closer); err != nil {
+		cancel()
 		a.logger.Error("shutdown completed with errors", "error", err)
 		os.Exit(1)
 	}
+	cancel()
 	a.logger.Info("shutdown complete")
 }
