@@ -42,7 +42,7 @@ func TestConsumer_GroupConsumesCommitted(t *testing.T) {
 	require.NoError(t, err)
 	defer adminCl.Close()
 
-	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, 1, 1, topic))
+	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, topic))
 
 	prod := kafka.NewProducer(adminCl)
 	for i := 0; i < n; i++ {
@@ -185,7 +185,7 @@ func TestConsumer_HandlerErrorRedeliversRecord(t *testing.T) {
 	require.NoError(t, err)
 	defer adminCl.Close()
 
-	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, 1, 1, topic))
+	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, topic))
 
 	prod := kafka.NewProducer(adminCl)
 	require.NoError(t, prod.Produce(ctx, kafka.Record{
@@ -312,7 +312,7 @@ func TestConsumer_PerPartitionParallelOrdering(t *testing.T) {
 	require.NoError(t, err)
 	defer adminCl.Close()
 
-	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, nPartitions, 1, topic))
+	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, kafka.TopicSpec{Partitions: nPartitions, ReplicationFactor: 1}, topic))
 
 	// Produce nPerPartition records to each partition with explicit partition
 	// assignment. Key encodes "p<partition>-<seq>" for later validation.
@@ -467,7 +467,7 @@ func TestConsumer_OnePartitionFailureDoesNotBlockOthers(t *testing.T) {
 	require.NoError(t, err)
 	defer adminCl.Close()
 
-	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, 2, 1, topic))
+	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, kafka.TopicSpec{Partitions: 2, ReplicationFactor: 1}, topic))
 
 	// Produce to specific partitions.
 	rawCl, err := kgo.NewClient(

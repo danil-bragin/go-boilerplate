@@ -77,7 +77,7 @@ func TestWithRetry_RoutesToDLTAfterMaxAttempts(t *testing.T) {
 	require.NoError(t, err)
 	defer cl.Close()
 
-	require.NoError(t, kafka.EnsureTopics(ctx, cl, 1, 1, topic, dltTopic))
+	require.NoError(t, kafka.EnsureTopics(ctx, cl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, topic, dltTopic))
 
 	producer := kafka.NewProducer(cl)
 
@@ -140,7 +140,7 @@ func TestWithRetry_SucceedsWithinAttempts(t *testing.T) {
 	require.NoError(t, err)
 	defer cl.Close()
 
-	require.NoError(t, kafka.EnsureTopics(ctx, cl, 1, 1, topic, dltTopic))
+	require.NoError(t, kafka.EnsureTopics(ctx, cl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, topic, dltTopic))
 
 	producer := kafka.NewProducer(cl)
 
@@ -191,7 +191,7 @@ func TestWithRetry_CtxCancelStopsRetry(t *testing.T) {
 	defer cl.Close()
 
 	setupCtx := context.Background()
-	require.NoError(t, kafka.EnsureTopics(setupCtx, cl, 1, 1, topic, dltTopic))
+	require.NoError(t, kafka.EnsureTopics(setupCtx, cl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, topic, dltTopic))
 
 	producer := kafka.NewProducer(cl)
 

@@ -80,7 +80,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	}
 
 	// Ensure the input topic exists; DLT topic handled by AddConsumer.
-	if err := svc.EnsureTopics(ctx, 1, 1, cfg.PaymentsEventsTopic); err != nil {
+	if err := svc.EnsureTopics(ctx, cfg.PaymentsEventsTopic); err != nil {
 		return nil, err
 	}
 

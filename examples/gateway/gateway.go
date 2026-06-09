@@ -125,7 +125,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 
 	// Ensure Kafka topics exist.
 	if err := svc.EnsureTopics(
-		ctx, 1, 1,
+		ctx,
 		cfg.CommandsTopic,
 		cfg.OrdersEventsTopic,
 		cfg.PaymentsEventsTopic,

@@ -2,6 +2,7 @@ package servicekit
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"go-boilerplate/platform/messaging/kafka"
@@ -9,8 +10,24 @@ import (
 )
 
 // EnsureTopics creates topics if they do not already exist (idempotent).
-func (s *Service) EnsureTopics(ctx context.Context, partitions int32, rf int16, topics ...string) error {
-	return kafka.EnsureTopics(ctx, s.kafkaClient, partitions, rf, topics...)
+// The topic spec (partitions, replication factor, retention.ms) comes from
+// the service config (TOPIC_PARTITIONS / TOPIC_RF / TOPIC_RETENTION). When
+// ENSURE_TOPICS=false this is a no-op — production topologies should manage
+// topics as IaC instead of creating them from application startup.
+func (s *Service) EnsureTopics(ctx context.Context, topics ...string) error {
+	if !s.cfg.EnsureTopics {
+		return nil
+	}
+	spec := kafka.TopicSpec{
+		Partitions:        s.cfg.TopicPartitions,
+		ReplicationFactor: s.cfg.TopicRF,
+	}
+	if s.cfg.TopicRetention > 0 {
+		spec.Configs = map[string]string{
+			"retention.ms": strconv.FormatInt(s.cfg.TopicRetention.Milliseconds(), 10),
+		}
+	}
+	return kafka.EnsureTopics(ctx, s.kafkaClient, spec, topics...)
 }
 
 // AddConsumer wires a Kafka consumer: wraps handler with WithRetry (poison→DLT),
@@ -24,7 +41,7 @@ func (s *Service) AddConsumer(ctx context.Context, groupID string, topics []stri
 	for _, t := range topics {
 		allTopics = append(allTopics, t+".DLT")
 	}
-	if err := s.EnsureTopics(ctx, 1, 1, allTopics...); err != nil {
+	if err := s.EnsureTopics(ctx, allTopics...); err != nil {
 		return err
 	}
 
@@ -71,7 +88,7 @@ func (s *Service) AddConsumerWithRetry(ctx context.Context, groupID string, topi
 		}
 		allTopics = append(allTopics, retry.DLTTopic(base))
 	}
-	if err := s.EnsureTopics(ctx, 1, 1, allTopics...); err != nil {
+	if err := s.EnsureTopics(ctx, allTopics...); err != nil {
 		return err
 	}
 

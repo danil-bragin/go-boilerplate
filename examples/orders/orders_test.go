@@ -57,7 +57,7 @@ func buildService(t *testing.T, pool *pg.Pool, broker string, commandsTopic stri
 
 	// Ensure topics exist.
 	ctx := context.Background()
-	require.NoError(t, kafka.EnsureTopics(ctx, producerClient, 1, 1, commandsTopic, "orders.events"))
+	require.NoError(t, kafka.EnsureTopics(ctx, producerClient, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, commandsTopic, "orders.events"))
 
 	// Outbox repo + relay.
 	outboxRepo := outbox.NewRepository(pool)

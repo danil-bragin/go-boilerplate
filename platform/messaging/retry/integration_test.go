@@ -45,7 +45,7 @@ func setupIntegration(
 	}
 
 	ctx := context.Background()
-	require.NoError(t, kafka.EnsureTopics(ctx, cl, 1, 1, topics...))
+	require.NoError(t, kafka.EnsureTopics(ctx, cl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, topics...))
 
 	p := kafka.NewProducer(cl)
 	e := retry.NewEscalator(p, pol)

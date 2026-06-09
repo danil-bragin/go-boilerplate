@@ -44,7 +44,7 @@ func TestRedeliveryOnHandlerFailure(t *testing.T) {
 	adminCl, err := kafka.NewClient(kafka.Config{Brokers: []string{broker}, ClientID: "admin"})
 	require.NoError(t, err)
 	defer adminCl.Close()
-	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, 1, 1, topic))
+	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, topic))
 
 	produceManual(t, broker,
 		&kgo.Record{Topic: topic, Partition: 0, Key: []byte("r1"), Value: []byte("v1")},
@@ -114,7 +114,7 @@ func TestNoCommitPastFailure(t *testing.T) {
 	adminCl, err := kafka.NewClient(kafka.Config{Brokers: []string{broker}, ClientID: "admin"})
 	require.NoError(t, err)
 	defer adminCl.Close()
-	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, 1, 1, topic))
+	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, topic))
 
 	produceManual(t, broker,
 		&kgo.Record{Topic: topic, Partition: 0, Key: []byte("r1"), Value: []byte("v1")},
@@ -205,7 +205,7 @@ func TestFailureIsolatedPerPartition(t *testing.T) {
 	adminCl, err := kafka.NewClient(kafka.Config{Brokers: []string{broker}, ClientID: "admin"})
 	require.NoError(t, err)
 	defer adminCl.Close()
-	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, 2, 1, topic))
+	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, kafka.TopicSpec{Partitions: 2, ReplicationFactor: 1}, topic))
 
 	recs := []*kgo.Record{
 		{Topic: topic, Partition: 0, Key: []byte("poison"), Value: []byte("p")},

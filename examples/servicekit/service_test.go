@@ -34,6 +34,7 @@ func TestService_AdminEndpoints(t *testing.T) {
 	cfg := servicekit.Config{
 		AdminAddr: "127.0.0.1:0", // random port avoids conflicts
 	}
+	cfg.EnsureTopics = true
 	cfg.PG.DSN = dsn
 	cfg.Kafka.Brokers = []string{broker}
 	cfg.Telemetry.Enabled = false
@@ -110,6 +111,7 @@ func TestService_AddConsumerWithRetry(t *testing.T) {
 	cfg := servicekit.Config{
 		AdminAddr: "127.0.0.1:0",
 	}
+	cfg.EnsureTopics = true
 	cfg.PG.DSN = dsn
 	cfg.Kafka.Brokers = []string{broker}
 	cfg.Telemetry.Enabled = false
@@ -170,7 +172,7 @@ func TestService_AddConsumerWithRetry(t *testing.T) {
 
 	checkCtx, checkCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer checkCancel()
-	require.NoError(t, kafka.EnsureTopics(checkCtx, adminCl, 1, 1, tierTopic, dltTopic),
+	require.NoError(t, kafka.EnsureTopics(checkCtx, adminCl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, tierTopic, dltTopic),
 		"tier and DLT topics should already exist (created by AddConsumerWithRetry)")
 
 	// Produce a message to the base topic.

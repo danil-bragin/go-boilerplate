@@ -34,7 +34,7 @@ func TestProducer_ProduceBatch(t *testing.T) {
 	defer producerCl.Close()
 
 	const topic = "test-batch-topic"
-	require.NoError(t, kafka.EnsureTopics(ctx, producerCl, 1, 1, topic))
+	require.NoError(t, kafka.EnsureTopics(ctx, producerCl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, topic))
 
 	prod := kafka.NewProducer(producerCl)
 
@@ -102,7 +102,7 @@ func TestProducer_ProduceAndConsumeRoundTrip(t *testing.T) {
 	const topic = "test-topic"
 
 	// Ensure the topic exists before producing.
-	require.NoError(t, kafka.EnsureTopics(ctx, producerCl, 1, 1, topic))
+	require.NoError(t, kafka.EnsureTopics(ctx, producerCl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, topic))
 
 	prod := kafka.NewProducer(producerCl)
 	require.NoError(t, prod.Ping(ctx))

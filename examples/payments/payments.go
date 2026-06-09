@@ -69,7 +69,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	a.svc = svc
 
 	// Ensure source topic and output topic; DLT topics handled by AddConsumer.
-	if err := svc.EnsureTopics(ctx, 1, 1, cfg.EventsTopic, "payments.events"); err != nil {
+	if err := svc.EnsureTopics(ctx, cfg.EventsTopic, "payments.events"); err != nil {
 		return nil, err
 	}
 
