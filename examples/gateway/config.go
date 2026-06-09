@@ -2,8 +2,8 @@ package gateway
 
 import (
 	"go-boilerplate/examples/internal/service"
-	"go-boilerplate/platform/blob"
-	"go-boilerplate/platform/cache"
+	"go-boilerplate/platform/storage/blob"
+	"go-boilerplate/platform/storage/cache"
 	"go-boilerplate/platform/web/httpserver"
 )
 

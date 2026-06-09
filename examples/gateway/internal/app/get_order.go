@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"go-boilerplate/platform/cqrs"
-	"go-boilerplate/platform/pg"
+	"go-boilerplate/platform/storage/pg"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"

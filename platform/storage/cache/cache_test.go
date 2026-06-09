@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"go-boilerplate/platform/cache"
+	"go-boilerplate/platform/storage/cache"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

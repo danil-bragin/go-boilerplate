@@ -13,7 +13,7 @@ import (
 
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
-	"go-boilerplate/platform/pg/pgtest"
+	"go-boilerplate/platform/storage/pg/pgtest"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"

@@ -9,7 +9,7 @@ import (
 
 	"go-boilerplate/examples/internal/service"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
-	"go-boilerplate/platform/pg/pgtest"
+	"go-boilerplate/platform/storage/pg/pgtest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -13,9 +13,9 @@ import (
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/messaging/outboxkafka"
-	"go-boilerplate/platform/pg"
-	"go-boilerplate/platform/pg/pgtest"
 	"go-boilerplate/platform/security/audit"
+	"go-boilerplate/platform/storage/pg"
+	"go-boilerplate/platform/storage/pg/pgtest"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"

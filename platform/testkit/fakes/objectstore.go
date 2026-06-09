@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"go-boilerplate/platform/blob"
+	"go-boilerplate/platform/storage/blob"
 )
 
 // ObjectStore is an in-memory fake implementing blob.ObjectStore.

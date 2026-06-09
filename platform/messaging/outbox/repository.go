@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"go-boilerplate/platform/messaging/outbox/gen"
-	"go-boilerplate/platform/pg"
+	"go-boilerplate/platform/storage/pg"
 )
 
 // Repository persists outbox messages using the transaction bound to the

@@ -3,7 +3,7 @@ package pg_test
 import (
 	"testing"
 
-	"go-boilerplate/platform/pg"
+	"go-boilerplate/platform/storage/pg"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"

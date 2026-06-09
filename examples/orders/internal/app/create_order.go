@@ -8,8 +8,8 @@ import (
 	"go-boilerplate/examples/orders/internal/store/gen"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/messaging/outbox"
-	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/security/audit"
+	"go-boilerplate/platform/storage/pg"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"

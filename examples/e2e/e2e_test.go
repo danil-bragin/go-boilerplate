@@ -24,7 +24,7 @@ import (
 	"go-boilerplate/examples/orders"
 	"go-boilerplate/examples/payments"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
-	"go-boilerplate/platform/pg/pgtest"
+	"go-boilerplate/platform/storage/pg/pgtest"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"

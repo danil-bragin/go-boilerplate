@@ -8,7 +8,7 @@ import (
 
 	"go-boilerplate/platform/messaging/inbox"
 	"go-boilerplate/platform/messaging/kafka"
-	"go-boilerplate/platform/pg"
+	"go-boilerplate/platform/storage/pg"
 
 	"google.golang.org/protobuf/proto"
 

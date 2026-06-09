@@ -21,8 +21,8 @@ import (
 	"go-boilerplate/platform/observability/health"
 	"go-boilerplate/platform/observability/log"
 	"go-boilerplate/platform/observability/telemetry"
-	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/run"
+	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/web/httpserver"
 
 	"github.com/twmb/franz-go/pkg/kgo"

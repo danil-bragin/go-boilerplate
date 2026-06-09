@@ -8,7 +8,7 @@ import (
 	"context"
 	"fmt"
 
-	"go-boilerplate/platform/pg"
+	"go-boilerplate/platform/storage/pg"
 )
 
 // ProcessOnce runs fn exactly once per (consumer, messageID) pair.

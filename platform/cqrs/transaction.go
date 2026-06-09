@@ -3,7 +3,7 @@ package cqrs
 import (
 	"context"
 
-	"go-boilerplate/platform/pg"
+	"go-boilerplate/platform/storage/pg"
 )
 
 // Transaction wraps a command handler so it executes inside a database

@@ -10,7 +10,7 @@ import (
 
 	"go-boilerplate/platform/messaging/inbox"
 	"go-boilerplate/platform/messaging/kafka"
-	"go-boilerplate/platform/pg"
+	"go-boilerplate/platform/storage/pg"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"

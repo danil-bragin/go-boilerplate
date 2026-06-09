@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"go-boilerplate/platform/pg"
-	"go-boilerplate/platform/pg/pgtest"
+	"go-boilerplate/platform/storage/pg"
+	"go-boilerplate/platform/storage/pg/pgtest"
 
 	"github.com/stretchr/testify/require"
 )

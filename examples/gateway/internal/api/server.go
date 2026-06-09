@@ -12,10 +12,10 @@ import (
 	"go-boilerplate/examples/gateway/internal/app"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/messaging/kafka"
-	"go-boilerplate/platform/pg"
 	"go-boilerplate/platform/resilience"
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/security/authz"
+	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/web/httpx"
 
 	"github.com/google/uuid"

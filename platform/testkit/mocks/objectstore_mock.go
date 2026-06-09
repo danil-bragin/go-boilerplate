@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"go-boilerplate/platform/blob"
+	"go-boilerplate/platform/storage/blob"
 )
 
 // Ensure, that ObjectStoreMock does implement blob.ObjectStore.

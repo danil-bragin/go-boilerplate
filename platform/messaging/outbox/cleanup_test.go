@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"go-boilerplate/platform/messaging/outbox"
-	"go-boilerplate/platform/pg"
+	"go-boilerplate/platform/storage/pg"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"

@@ -6,7 +6,7 @@ import (
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/observability/log"
 	"go-boilerplate/platform/observability/telemetry"
-	"go-boilerplate/platform/pg"
+	"go-boilerplate/platform/storage/pg"
 )
 
 // Config is the embeddable base config for all consumer services.

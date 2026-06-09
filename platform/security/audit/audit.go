@@ -31,7 +31,7 @@ import (
 	"fmt"
 	"time"
 
-	"go-boilerplate/platform/pg"
+	"go-boilerplate/platform/storage/pg"
 )
 
 // Entry is a single audit-log record.

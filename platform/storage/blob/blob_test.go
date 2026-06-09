@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"go-boilerplate/platform/blob"
+	"go-boilerplate/platform/storage/blob"
 
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"

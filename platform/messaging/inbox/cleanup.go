@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"time"
 
-	"go-boilerplate/platform/pg"
+	"go-boilerplate/platform/storage/pg"
 )
 
 // Cleanup deletes inbox rows whose processed_at is older than olderThan from
