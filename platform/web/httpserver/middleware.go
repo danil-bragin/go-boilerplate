@@ -103,20 +103,27 @@ func Recover(next http.Handler) http.Handler {
 }
 
 // AccessLog logs one structured line per request after it completes:
-// method, path, status, bytes, duration_ms, and request_id.
+// method, path, route (chi pattern, low-cardinality), status, bytes,
+// duration_ms, and request_id.
+//
 // It should be placed after RequestID in the middleware chain so the id is
-// available in the context.
+// available in the context. The route field is supplied by the RouteTag
+// middleware (mounted innermost) through a race-safe holder; without RouteTag
+// in the chain — or when http.TimeoutHandler abandoned the request before the
+// handler finished — the field reads "unmatched".
 func AccessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		cw := &capturingWriter{ResponseWriter: w}
-		next.ServeHTTP(cw, r)
+		ctx, holder := withRouteHolder(r.Context())
+		next.ServeHTTP(cw, r.WithContext(ctx))
 		elapsed := time.Since(start)
-		ctx := r.Context()
-		log.From(ctx).Info(
+		log.From(ctx).InfoContext(
+			ctx,
 			"http request",
 			"method", r.Method,
 			"path", r.URL.Path,
+			"route", holder.get(),
 			"status", cw.Status(),
 			"bytes", cw.BytesWritten(),
 			"duration_ms", elapsed.Milliseconds(),
@@ -160,15 +167,31 @@ func Timeout(d time.Duration) func(http.Handler) http.Handler {
 
 // OTel wraps next with an OpenTelemetry server span for every request.
 // It is chi-compatible and can be used as a middleware or applied to individual
-// routes. The operation name "http.server" is used for the root span; individual
-// route patterns are set as the span name by otelhttp when chi route data is
-// available.
+// routes.
+//
+// Span naming: chi (≥5.1) populates r.Pattern with the matched route pattern;
+// otelhttp re-evaluates the span name formatter AFTER the inner chain returns,
+// so the exported span is named "METHOD /route/{pattern}" (low-cardinality).
+// Requests that match no route keep the generic "http.server" name. The
+// http.route attribute and the per-route duration histogram are added by the
+// RouteTag middleware, which must sit INSIDE OTel.
 //
 // Wire it into the server's middleware chain so that downstream handlers (and
 // the AccessLog, which calls log.From(ctx)) benefit from trace correlation in
 // logs via the traceHandler injected in platform/log.New.
 func OTel(next http.Handler) http.Handler {
-	return otelhttp.NewHandler(next, "http.server")
+	return otelhttp.NewHandler(next, "http.server",
+		otelhttp.WithSpanNameFormatter(spanNameFromPattern))
+}
+
+// spanNameFromPattern names the server span "METHOD pattern" once the router
+// has populated r.Pattern, and falls back to the operation name before
+// routing (span start) or when no route matched.
+func spanNameFromPattern(operation string, r *http.Request) string {
+	if r.Pattern != "" {
+		return r.Method + " " + r.Pattern
+	}
+	return operation
 }
 
 // newID returns a random 32-character lowercase hex string. On crypto/rand

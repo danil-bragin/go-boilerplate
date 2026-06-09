@@ -88,7 +88,7 @@ func WithoutMaxBytes() ServerOption {
 //
 // Middleware order (outermost → innermost):
 //
-//	SecurityHeaders → RequestID → OTel → RouteTag → AccessLog → Recover → MaxBytes → Timeout
+//	SecurityHeaders → RequestID → OTel → AccessLog → Recover → MaxBytes → Timeout → RouteTag
 //
 // SecurityHeaders is outermost so defensive headers are set on every response,
 // including error responses produced by Recover.
@@ -139,6 +139,10 @@ func New(cfg Config, opts ...ServerOption) *Server {
 	if !o.noTimeout {
 		mux.Use(Timeout(cfg.HandlerTimeout))
 	}
+	// RouteTag is INNERMOST: it reads the chi route pattern on the
+	// request-serving goroutine (race-free even when TimeoutHandler abandons
+	// a request) and publishes it to AccessLog via a guarded holder.
+	mux.Use(RouteTag())
 
 	return &Server{
 		mux:      mux,
