@@ -80,7 +80,7 @@ just test-cover         # unit tests + coverage summary
 
 ## File organisation conventions
 
-See [`docs/conventions.md`](docs/conventions.md) for the file-organisation and naming conventions followed in this repo (package structure, layer boundaries, naming rules, import order). That document will be created as part of the project setup.
+See [`docs/conventions.md`](docs/conventions.md) for the file-organisation and naming conventions followed in this repo (package structure, layer boundaries, naming rules, import order, tooling map).
 
 ## Useful `just` recipes
 

@@ -1,5 +1,7 @@
 # Architecture
 
+> **File organisation, package boundaries, and tooling:** see [`docs/conventions.md`](conventions.md).
+
 ## Platform packages
 
 `platform/` is the reusable boilerplate layer. It has zero business logic and zero imports from `examples/`. Each package is independently usable.

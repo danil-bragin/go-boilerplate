@@ -306,7 +306,7 @@ func TestReserveItem_Integration(t *testing.T) {
 Run with:
 
 ```bash
-task test    # go test -race ./...  (Docker required)
+just test-integration   # go test ./...  (Docker required)
 ```
 
 ---
