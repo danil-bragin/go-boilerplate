@@ -600,6 +600,23 @@ func (f *fakeCache) Set(_ context.Context, key string, value []byte, _ time.Dura
 	f.data[key] = value
 }
 
+func (f *fakeCache) Delete(_ context.Context, key string) error {
+	delete(f.data, key)
+	return nil
+}
+
+func (f *fakeCache) GetOrLoad(ctx context.Context, key string, ttl time.Duration, load func(ctx context.Context) ([]byte, error)) ([]byte, error) {
+	if v, ok := f.Get(ctx, key); ok {
+		return v, nil
+	}
+	v, err := load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	f.Set(ctx, key, v, ttl)
+	return v, nil
+}
+
 // TestGateway_PerIPRateLimit verifies that the per-IP rate limiter correctly
 // returns 429 once the burst is exhausted.
 //

@@ -25,6 +25,16 @@ type GetOrder struct {
 	OrderID string
 }
 
+// OrderCacheKey returns the cache key for an order view. The read path
+// (Caching behavior) and the write path (projection cache-bust on upsert)
+// MUST use this same helper, or invalidation silently misses.
+//
+// Keys follow the versioned convention "<svc>:v<N>:<entity>:<id>"
+// (see docs/conventions.md). Bump the version segment whenever OrderView's
+// shape changes so stale entries become unreachable instead of unmarshalling
+// into the new shape.
+func OrderCacheKey(orderID string) string { return "gw:v1:order:" + orderID }
+
 // OrderView is the read-model view returned by the GetOrder handler.
 // Field names match the OpenAPI spec (JSON tags).
 type OrderView struct {
@@ -65,7 +75,7 @@ func GetOrderHandler(pool *pg.Pool) cqrs.HandlerFunc[GetOrder, OrderView] {
 
 // DecorateGetOrderHandler applies the standard CQRS pipeline to the raw handler.
 // When cache is non-nil, the Caching behavior is also applied (order views are
-// cached for 30 s under the key "order:<orderID>").
+// cached for 30 s under the key "gw:v1:order:<orderID>").
 // When cache is nil (Redis unavailable at startup), the handler is still
 // decorated with Logging / Tracing / Metrics but without Caching.
 func DecorateGetOrderHandler(raw cqrs.HandlerFunc[GetOrder, OrderView], cache cqrs.Cache) cqrs.HandlerFunc[GetOrder, OrderView] {
@@ -79,7 +89,7 @@ func DecorateGetOrderHandler(raw cqrs.HandlerFunc[GetOrder, OrderView], cache cq
 			behaviors,
 			cqrs.CachingJSON[GetOrder, OrderView](
 				cache,
-				func(q GetOrder) string { return "order:" + q.OrderID },
+				func(q GetOrder) string { return OrderCacheKey(q.OrderID) },
 				30*time.Second,
 			),
 		)

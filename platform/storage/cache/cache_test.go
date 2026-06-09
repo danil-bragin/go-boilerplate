@@ -2,21 +2,29 @@ package cache_test
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"net/netip"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"go-boilerplate/platform/storage/cache"
 
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
+	"go.uber.org/goleak"
 	"golang.org/x/sync/errgroup"
 )
 
-// newCache starts a Redis testcontainer and returns a configured *Cache.
-// The container and cache are both cleaned up via t.Cleanup.
-func newCache(t *testing.T) *cache.Cache {
+// newRedisContainer starts a Redis testcontainer and returns its address in
+// "host:port" form. The container is cleaned up via t.Cleanup.
+func newRedisContainer(t *testing.T) string {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redis container)")
@@ -33,8 +41,13 @@ func newCache(t *testing.T) *cache.Cache {
 	require.NoError(t, err)
 	// ConnectionString returns "redis://host:port" — strip the scheme.
 	// rueidis wants "host:port".
-	addr = stripRedisScheme(addr)
+	return stripRedisScheme(addr)
+}
 
+// newCacheAt builds a *Cache against the given Redis address, cleaned up via
+// t.Cleanup.
+func newCacheAt(t *testing.T, addr string) *cache.Cache {
+	t.Helper()
 	cfg := cache.Config{
 		RedisAddrs: []string{addr},
 		L1Capacity: 1000,
@@ -47,6 +60,24 @@ func newCache(t *testing.T) *cache.Cache {
 		_ = c.Close(context.Background())
 	})
 	return c
+}
+
+// newCache starts a Redis testcontainer and returns a configured *Cache.
+// The container and cache are both cleaned up via t.Cleanup.
+func newCache(t *testing.T) *cache.Cache {
+	t.Helper()
+	return newCacheAt(t, newRedisContainer(t))
+}
+
+// freeLocalPort grabs a free TCP port from the kernel and releases it.
+// Tiny reuse race is acceptable in tests.
+func freeLocalPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := l.Addr().(*net.TCPAddr).Port //nolint:forcetypeassert
+	require.NoError(t, l.Close())
+	return port
 }
 
 // stripRedisScheme removes "redis://" prefix if present.
@@ -136,6 +167,64 @@ func TestCache_GetOrLoadCollapsesConcurrentMisses(t *testing.T) {
 	assert.Equal(t, int64(1), calls.Load(), "loader should be called exactly once")
 }
 
+// TestCache_GetOrLoad_LoaderSurvivesCallerCancellation verifies that the
+// loader runs on a context detached from the first caller: cancelling the
+// leader's ctx mid-load neither cancels the loader nor fails the collapsed
+// waiters.
+func TestCache_GetOrLoad_LoaderSurvivesCallerCancellation(t *testing.T) {
+	c := newCache(t)
+
+	var (
+		calls        atomic.Int64
+		loaderCtxErr atomic.Value // error observed by the loader at completion
+	)
+	loaderStarted := make(chan struct{})
+
+	loader := func(lctx context.Context) ([]byte, error) {
+		calls.Add(1)
+		close(loaderStarted)
+		time.Sleep(200 * time.Millisecond)
+		if err := lctx.Err(); err != nil {
+			loaderCtxErr.Store(err)
+			return nil, err
+		}
+		return []byte("X"), nil
+	}
+
+	// Leader with a cancellable ctx.
+	leaderCtx, cancel := context.WithCancel(context.Background())
+	leaderDone := make(chan struct{})
+	go func() {
+		defer close(leaderDone)
+		_, _ = c.GetOrLoad(leaderCtx, "hot", time.Minute, loader)
+	}()
+
+	// Wait for the loader to be in flight, then cancel the leader.
+	<-loaderStarted
+	cancel()
+
+	// Collapsed waiters with healthy ctx must still receive the value.
+	const waiters = 5
+	eg := errgroup.Group{}
+	for range waiters {
+		eg.Go(func() error {
+			v, err := c.GetOrLoad(context.Background(), "hot", time.Minute, loader)
+			if err != nil {
+				return err
+			}
+			if string(v) != "X" {
+				return fmt.Errorf("unexpected value %q", v)
+			}
+			return nil
+		})
+	}
+	require.NoError(t, eg.Wait(), "collapsed waiters must get the value despite leader cancellation")
+	<-leaderDone
+
+	assert.Equal(t, int64(1), calls.Load(), "loader must run exactly once")
+	assert.Nil(t, loaderCtxErr.Load(), "loader ctx must not be cancelled by the leader's cancellation")
+}
+
 // TestCache_TTLJitterWithinBounds verifies that JitteredTTL always falls
 // within the expected ±jitter% band.
 func TestCache_TTLJitterWithinBounds(t *testing.T) {
@@ -213,4 +302,188 @@ func TestCache_ReturnedBytesAreCopy_NoAliasing(t *testing.T) {
 	v3, ok3 := c.Get(ctx, "k2")
 	require.True(t, ok3)
 	assert.Equal(t, []byte("world"), v3, "mutating the Set input slice corrupted the cache (aliasing bug)")
+}
+
+// TestCache_DeleteEvictsLocally verifies that Delete removes the key from both
+// tiers on the deleting instance itself.
+func TestCache_DeleteEvictsLocally(t *testing.T) {
+	c := newCache(t)
+	ctx := context.Background()
+
+	c.Set(ctx, "k", []byte("v"), time.Minute)
+	_, ok := c.Get(ctx, "k")
+	require.True(t, ok)
+
+	require.NoError(t, c.Delete(ctx, "k"))
+
+	_, ok = c.Get(ctx, "k")
+	assert.False(t, ok, "key must be gone after Delete")
+}
+
+// TestCache_CrossInstanceInvalidation_Delete verifies that a Delete on
+// instance A evicts the warm L1 entry on instance B via the Redis pub/sub
+// invalidation broadcast.
+func TestCache_CrossInstanceInvalidation_Delete(t *testing.T) {
+	addr := newRedisContainer(t)
+	a := newCacheAt(t, addr)
+	b := newCacheAt(t, addr)
+	ctx := context.Background()
+
+	a.Set(ctx, "k", []byte("v1"), time.Minute)
+
+	// Warm B's L1 from L2.
+	v, ok := b.Get(ctx, "k")
+	require.True(t, ok)
+	require.Equal(t, []byte("v1"), v)
+
+	require.NoError(t, a.Delete(ctx, "k"))
+
+	// B's L1 must be evicted within 500ms; subsequent Get is a miss
+	// (L2 was DELed and L1 dropped via broadcast).
+	assert.Eventually(t, func() bool {
+		_, ok := b.Get(ctx, "k")
+		return !ok
+	}, 500*time.Millisecond, 10*time.Millisecond, "B still serves stale L1 after A.Delete")
+}
+
+// TestCache_CrossInstanceInvalidation_SetBroadcast verifies that a Set on
+// instance A invalidates the stale L1 entry on instance B, so B observes the
+// new value within 500ms.
+func TestCache_CrossInstanceInvalidation_SetBroadcast(t *testing.T) {
+	addr := newRedisContainer(t)
+	a := newCacheAt(t, addr)
+	b := newCacheAt(t, addr)
+	ctx := context.Background()
+
+	a.Set(ctx, "k", []byte("v1"), time.Minute)
+
+	// Warm B's L1 with v1.
+	v, ok := b.Get(ctx, "k")
+	require.True(t, ok)
+	require.Equal(t, []byte("v1"), v)
+
+	a.Set(ctx, "k", []byte("v2"), time.Minute)
+
+	assert.Eventually(t, func() bool {
+		v, ok := b.Get(ctx, "k")
+		return ok && string(v) == "v2"
+	}, 500*time.Millisecond, 10*time.Millisecond, "B still serves stale v1 after A.Set(v2)")
+}
+
+// TestCache_SetBroadcastKeepsOwnL1 verifies that the setting instance does not
+// drop its own freshly written L1 entry when its own broadcast loops back.
+func TestCache_SetBroadcastKeepsOwnL1(t *testing.T) {
+	c := newCache(t)
+	ctx := context.Background()
+
+	c.Set(ctx, "k", []byte("v"), time.Minute)
+
+	// Give the loopback pub/sub message time to arrive; the entry must survive.
+	time.Sleep(200 * time.Millisecond)
+	v, ok := c.Get(ctx, "k")
+	require.True(t, ok)
+	assert.Equal(t, []byte("v"), v)
+}
+
+// TestCache_L2Breaker_RedisDownNoLatencyCliff verifies that a Redis outage
+// does not turn every cache operation into a per-request connection wait:
+// after a few failures the L2 circuit breaker opens and Gets are served from
+// L1 (or miss) fast. After Redis comes back the breaker closes again
+// (half-open probe) within 30s.
+func TestCache_L2Breaker_RedisDownNoLatencyCliff(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redis container)")
+	}
+	ctx := context.Background()
+
+	// Bind Redis to a FIXED host port: Docker re-allocates random host ports
+	// on container restart, but a real outage+recovery happens at a stable
+	// address — which is exactly what the breaker's half-open probe needs.
+	hostPort := freeLocalPort(t)
+	rc, err := tcredis.Run(ctx, "redis:7-alpine",
+		testcontainers.CustomizeRequest(testcontainers.GenericContainerRequest{
+			ContainerRequest: testcontainers.ContainerRequest{
+				HostConfigModifier: func(hc *container.HostConfig) {
+					hc.PortBindings = network.PortMap{
+						network.MustParsePort("6379/tcp"): []network.PortBinding{
+							{HostIP: netip.IPv4Unspecified(), HostPort: strconv.Itoa(hostPort)},
+						},
+					}
+				},
+			},
+		}),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_ = rc.Terminate(context.Background())
+	})
+	addr := "127.0.0.1:" + strconv.Itoa(hostPort)
+
+	c := newCacheAt(t, addr)
+
+	// Warm an L1 entry so we can prove L1 keeps serving during the outage.
+	c.Set(ctx, "warm", []byte("v"), time.Minute)
+
+	// Kill Redis.
+	stopTimeout := 2 * time.Second
+	require.NoError(t, rc.Stop(ctx, &stopTimeout))
+
+	// Trip the breaker: a handful of sacrificial L2 misses (untimed — the
+	// first few may pay a dial error each).
+	for i := range 10 {
+		_, _ = c.Get(ctx, fmt.Sprintf("trip-%d", i))
+	}
+
+	// With the breaker open, 100 distinct-key Gets (all L2-path misses) must
+	// each complete fast — no per-op connection wait.
+	for i := range 100 {
+		start := time.Now()
+		_, ok := c.Get(ctx, fmt.Sprintf("down-%d", i))
+		elapsed := time.Since(start)
+		assert.False(t, ok)
+		require.Less(t, elapsed, 50*time.Millisecond, "Get %d took %v with Redis down (breaker not open?)", i, elapsed)
+	}
+
+	// L1 keeps serving the warm entry.
+	v, ok := c.Get(ctx, "warm")
+	require.True(t, ok, "L1 must keep serving during the outage")
+	require.Equal(t, []byte("v"), v)
+
+	// Bring Redis back (same container keeps its mapped port).
+	require.NoError(t, rc.Start(ctx))
+
+	// The breaker must close again (half-open probe succeeds) and L2 must be
+	// written through once more: a second instance observes the Set.
+	b := newCacheAt(t, addr)
+	i := 0
+	require.Eventually(t, func() bool {
+		i++
+		key := fmt.Sprintf("recovered-%d", i)
+		c.Set(ctx, key, []byte("back"), time.Minute)
+		_, ok := b.Get(ctx, key)
+		return ok
+	}, 30*time.Second, 1*time.Second, "breaker did not recover within 30s of Redis restart")
+}
+
+// TestCache_Close_NoSubscriberLeak verifies the pub/sub subscriber goroutine
+// exits on Close (goleak).
+func TestCache_Close_NoSubscriberLeak(t *testing.T) {
+	addr := newRedisContainer(t)
+
+	// Snapshot goroutines AFTER the container infra is up so testcontainers'
+	// own background goroutines are excluded from the leak check.
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	cfg := cache.Config{
+		RedisAddrs: []string{addr},
+		L1Capacity: 10,
+		DefaultTTL: time.Minute,
+	}
+	c, err := cache.New(cfg)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	c.Set(ctx, "k", []byte("v"), time.Minute)
+	require.NoError(t, c.Delete(ctx, "k"))
+	require.NoError(t, c.Close(ctx))
 }

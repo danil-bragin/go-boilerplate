@@ -1,17 +1,27 @@
 // Package cache provides a two-tier cache: L1 in-process (otter v2) and L2
 // distributed (rueidis/Redis). Concurrent misses for the same key are
 // collapsed via singleflight. TTLs are jittered to spread expiry load.
+//
+// # Key convention
+//
+// Cache keys follow "<svc>:v<N>:<entity>:<id>" (e.g. "gw:v1:order:1234").
+// The version segment is bumped whenever the cached value's shape changes —
+// old entries become unreachable and simply expire, instead of unmarshalling
+// stale bytes into the new shape. See docs/conventions.md for the full rule.
 package cache
 
 import (
 	"context"
 	"math/rand/v2"
+	"sync"
 	"time"
 
 	"go-boilerplate/platform/cqrs"
 
+	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 	"github.com/maypok86/otter/v2"
 	"github.com/redis/rueidis"
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -23,9 +33,11 @@ var _ cqrs.Cache = (*Cache)(nil)
 //
 // Coherence notes:
 //
-//   - L1 is per-process with no cross-instance invalidation. A write on another
-//     instance leaves this instance's L1 stale until the entry's TTL expires.
-//     This is eventual consistency; keep TTLs modest to bound staleness.
+//   - Cross-instance L1 coherence is maintained via a Redis pub/sub broadcast:
+//     every Set and Delete publishes the key on "cache:inv:<prefix>" and other
+//     instances drop the key from their L1 (L2 stays authoritative). Delivery
+//     is best-effort — a dropped broadcast (Redis hiccup, resubscribe window)
+//     degrades to TTL-bounded staleness, so keep TTLs modest as the floor.
 //
 //   - An L2 (Redis) error on read is treated as a cache miss (availability over
 //     strictness). Such errors are currently unlogged.
@@ -35,6 +47,16 @@ type Cache struct {
 	l2  rueidis.Client
 	sf  singleflight.Group
 	cfg Config
+
+	// L2 circuit breaker (see breaker.go): a Redis outage degrades to
+	// L1-only instead of a per-request connection wait.
+	l2cb      circuitbreaker.CircuitBreaker[any]
+	l2cbGauge metric.Int64Gauge
+
+	// Pub/sub invalidation broadcast state (see invalidation.go).
+	instanceID string
+	subCancel  context.CancelFunc
+	subWG      sync.WaitGroup
 }
 
 // New constructs a Cache from cfg.
@@ -61,7 +83,10 @@ func New(cfg Config) (*Cache, error) {
 		return nil, err
 	}
 
-	return &Cache{l1: l1, l2: l2, cfg: cfg}, nil
+	c := &Cache{l1: l1, l2: l2, cfg: cfg}
+	c.l2cb, c.l2cbGauge = newL2Breaker()
+	c.startInvalidationSubscriber()
+	return c, nil
 }
 
 // JitteredTTL returns ttl adjusted by a random ±TTLJitter fraction.
@@ -96,15 +121,21 @@ func (c *Cache) Get(ctx context.Context, key string) ([]byte, bool) {
 		return out, true
 	}
 
-	// L2 path — use client-side caching with a short client-side TTL to
-	// benefit from rueidis's built-in invalidation protocol.
-	res := c.l2.DoCache(ctx, c.l2.B().Get().Key(key).Cache(), c.cfg.DefaultTTL)
+	// L2 path — skipped entirely while the breaker is open (L1-only mode).
+	if !c.l2Allowed(ctx) {
+		return nil, false
+	}
+
+	// Use client-side caching with a short client-side TTL to benefit from
+	// rueidis's built-in invalidation protocol.
+	opCtx, opCancel := c.l2ctx(ctx)
+	res := c.l2.DoCache(opCtx, c.l2.B().Get().Key(key).Cache(), c.cfg.DefaultTTL)
+	opCancel()
 	b, err := res.AsBytes()
+	c.l2Done(ctx, err)
 	if err != nil {
-		if rueidis.IsRedisNil(err) {
-			return nil, false
-		}
-		// Network / protocol error — treat as miss.
+		// Redis nil → genuine miss; network / protocol error → treat as
+		// miss too (the breaker absorbs repeated failures).
 		return nil, false
 	}
 
@@ -124,10 +155,21 @@ func (c *Cache) Get(ctx context.Context, key string) ([]byte, bool) {
 func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Duration) {
 	jttl := c.JitteredTTL(ttl)
 
-	// Write to L2 first so that other nodes can benefit immediately.
+	// Write to L2 first so that other nodes can benefit immediately
+	// (skipped while the breaker is open — L1-only mode).
 	// rueidis SET key val EX <seconds>
-	_ = c.l2.Do(ctx, c.l2.B().Set().Key(key).Value(rueidis.BinaryString(val)).Ex(jttl).Build()).Error()
-	// TODO(obs): log L2 error.
+	if c.l2Allowed(ctx) {
+		opCtx, opCancel := c.l2ctx(ctx)
+		err := c.l2.Do(opCtx, c.l2.B().Set().Key(key).Value(rueidis.BinaryString(val)).Ex(jttl).Build()).Error()
+		opCancel()
+		c.l2Done(ctx, err)
+		// TODO(obs): log L2 error.
+
+		// Broadcast so other instances drop their (now stale) L1 entry and
+		// re-read the new value from L2. The receiver skips this instance
+		// by id.
+		c.publishInvalidation(ctx, key)
+	}
 
 	// Write a copy to L1 so that a caller mutating val after Set
 	// does not corrupt the shared in-process entry.
@@ -137,9 +179,33 @@ func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Durati
 	c.l1.SetExpiresAfter(key, jttl)
 }
 
+// Delete removes key from L1 and L2 and broadcasts the eviction so every
+// other instance drops its L1 entry too. The L2 DEL error is returned (the
+// caller may want to know the authoritative tier still holds the key); the
+// broadcast itself is best-effort. While the L2 breaker is open the local L1
+// eviction still happens but ErrL2Unavailable is returned.
+func (c *Cache) Delete(ctx context.Context, key string) error {
+	c.l1.Invalidate(key)
+
+	if !c.l2Allowed(ctx) {
+		return ErrL2Unavailable
+	}
+	opCtx, opCancel := c.l2ctx(ctx)
+	err := c.l2.Do(opCtx, c.l2.B().Del().Key(key).Build()).Error()
+	opCancel()
+	c.l2Done(ctx, err)
+
+	c.publishInvalidation(ctx, key)
+	return err
+}
+
 // GetOrLoad returns the cached value for key, loading it with loader on a
 // miss. Concurrent misses for the same key are collapsed via singleflight so
 // loader is called at most once per key across all goroutines.
+//
+// The loader runs on a context DETACHED from the first caller
+// (context.WithoutCancel) bounded by Config.LoaderTimeout: collapsed waiters
+// share one load, so the leader's cancellation must not fail everyone else.
 func (c *Cache) GetOrLoad(ctx context.Context, key string, ttl time.Duration, loader func(ctx context.Context) ([]byte, error)) ([]byte, error) {
 	if v, ok := c.Get(ctx, key); ok {
 		return v, nil
@@ -150,11 +216,20 @@ func (c *Cache) GetOrLoad(ctx context.Context, key string, ttl time.Duration, lo
 		if v, ok := c.Get(ctx, key); ok {
 			return v, nil
 		}
-		val, err := loader(ctx)
+		// Detach from the leader's cancellation; bound with our own timeout
+		// so a hung loader cannot wedge the singleflight slot forever.
+		timeout := c.cfg.LoaderTimeout
+		if timeout <= 0 {
+			timeout = defaultLoaderTimeout
+		}
+		lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+		defer cancel()
+
+		val, err := loader(lctx)
 		if err != nil {
 			return nil, err
 		}
-		c.Set(ctx, key, val, ttl)
+		c.Set(lctx, key, val, ttl)
 		return val, nil
 	})
 	if err != nil {
@@ -168,8 +243,11 @@ func (c *Cache) HealthCheck(ctx context.Context) error {
 	return c.l2.Do(ctx, c.l2.B().Ping().Build()).Error()
 }
 
-// Close releases the rueidis connection pool.
+// Close stops the invalidation subscriber, stops otter's background
+// goroutines and releases the rueidis connection pool.
 func (c *Cache) Close(_ context.Context) error {
+	c.stopInvalidationSubscriber()
+	c.l1.StopAllGoroutines()
 	c.l2.Close()
 	return nil
 }

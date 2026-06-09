@@ -43,3 +43,27 @@ func (c *Cache) Set(_ context.Context, key string, value []byte, _ time.Duration
 	c.data[key] = cp
 	c.mu.Unlock()
 }
+
+// Delete removes key. It never fails.
+func (c *Cache) Delete(_ context.Context, key string) error {
+	c.mu.Lock()
+	delete(c.data, key)
+	c.mu.Unlock()
+	return nil
+}
+
+// GetOrLoad returns the cached value or loads, stores and returns it on a
+// miss. Unlike the real cache it performs NO singleflight collapsing —
+// concurrent misses may each invoke load. Fine for tests; do not assert
+// collapse behaviour against this fake.
+func (c *Cache) GetOrLoad(ctx context.Context, key string, ttl time.Duration, load func(ctx context.Context) ([]byte, error)) ([]byte, error) {
+	if v, ok := c.Get(ctx, key); ok {
+		return v, nil
+	}
+	v, err := load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	c.Set(ctx, key, v, ttl)
+	return v, nil
+}
