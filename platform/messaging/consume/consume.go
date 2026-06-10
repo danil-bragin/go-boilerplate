@@ -43,10 +43,11 @@ import (
 // Consumer builds kafka.HandlerFuncs that share a pool, inbox consumer-group
 // name, decoder, and logger.
 type Consumer struct {
-	pool   *pg.Pool
-	group  string
-	dec    serde.Deserializer // nil → raw proto.Unmarshal
-	logger *slog.Logger
+	pool    *pg.Pool
+	group   string
+	dec     serde.Deserializer // nil → raw proto.Unmarshal
+	logger  *slog.Logger
+	noInbox bool // test-only: skip inbox.ProcessOnce (see WithoutInbox)
 }
 
 // Option configures a Consumer.
@@ -62,6 +63,17 @@ func WithSerde(d serde.Deserializer) Option {
 // WithLogger sets the logger used for skip lines (default slog.Default()).
 func WithLogger(l *slog.Logger) Option {
 	return func(c *Consumer) { c.logger = l }
+}
+
+// WithoutInbox disables the inbox.ProcessOnce wrapper: the typed handler runs
+// directly, with NO database and NO dedup (pool may be nil).
+//
+// TEST-ONLY escape hatch. It exists so fast-lane unit tests can exercise the
+// real decode → dispatch → handler pipeline through fakes.Broker without
+// Docker. Production consumers MUST keep the inbox — without it, at-least-
+// once delivery re-runs side effects on every redelivery.
+func WithoutInbox() Option {
+	return func(c *Consumer) { c.noInbox = true }
 }
 
 // New creates a Consumer. group is the inbox consumer name — messages are
@@ -185,6 +197,18 @@ func (c *Consumer) Handler(handlers ...Handler) kafka.HandlerFunc {
 		}
 		ctx = msgctx.WithCorrelationID(ctx, corrID)
 		ctx = msgctx.WithParentMessageID(ctx, msgID)
+
+		if c.noInbox {
+			// Test-only path (WithoutInbox): no transaction, no dedup.
+			onCommitted, err := h.handle(ctx, c.dec, r.Value)
+			if err != nil {
+				return fmt.Errorf("consume: process %s (id=%s): %w", eventType, msgID, err)
+			}
+			if onCommitted != nil {
+				onCommitted(ctx)
+			}
+			return nil
+		}
 
 		var onCommitted func(context.Context)
 		_, err := inbox.ProcessOnce(ctx, c.pool, c.group, msgID, func(ctx context.Context) error {

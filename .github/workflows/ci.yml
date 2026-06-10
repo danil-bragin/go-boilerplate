@@ -112,6 +112,11 @@ jobs:
       - name: go test -short
         run: go test -short -race -timeout 2m ./...
 
+      # Scaffolding smoke: new-service generates a buildable service and
+      # rename-module --check produces a sane dry-run plan without writing.
+      - name: scaffold smoke (new-service + rename-module)
+        run: ./scripts/test-scaffold.sh
+
   # ── Integration tests ─────────────────────────────────────────────────────
   test:
     name: Test

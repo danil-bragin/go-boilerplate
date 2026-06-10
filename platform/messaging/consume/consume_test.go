@@ -290,3 +290,49 @@ func TestTyped_CorrelationCausationInContext(t *testing.T) {
 	assert.Equal(t, "m-corr-2", gotCorr, "missing correlation-id must default to the message id")
 	assert.Equal(t, "m-corr-2", gotParent)
 }
+
+// TestTyped_WithoutInbox_FastLane covers the test-only escape hatch: the full
+// typed pipeline (header dispatch, decode, ctx propagation, onCommitted) runs
+// with NO database — pool may be nil. Without the inbox there is no dedup:
+// every delivery runs the handler. This is what example-service fast-lane
+// tests build on (fakes.Broker + WithoutInbox).
+func TestTyped_WithoutInbox_FastLane(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	var calls, committed atomic.Int32
+	var gotCorr string
+	h := consume.New(nil, "grp", consume.WithoutInbox()).Handler(
+		consume.Typed("orders.OrderCreated.v1",
+			func(ctx context.Context, evt *ordersv1.OrderCreated) error {
+				calls.Add(1)
+				gotCorr = msgctx.CorrelationID(ctx)
+				assert.Equal(t, "o1", evt.GetOrderId(), "payload must be decoded")
+				return nil
+			},
+			func(context.Context, *ordersv1.OrderCreated) { committed.Add(1) },
+		),
+	)
+
+	rec := orderCreatedRecord(t, map[string]string{
+		"event-type": "orders.OrderCreated.v1",
+		"message-id": "m-ni-1",
+	}, 0, 1)
+	require.NoError(t, h(ctx, rec))
+	require.NoError(t, h(ctx, rec), "no inbox → no dedup: redelivery runs the handler again")
+	assert.Equal(t, int32(2), calls.Load())
+	assert.Equal(t, int32(2), committed.Load(), "onCommitted runs after each successful handle")
+	assert.Equal(t, "m-ni-1", gotCorr, "msgctx propagation works without the inbox")
+
+	// Unknown event types are still skipped, and handler errors still propagate.
+	require.NoError(t, h(ctx, orderCreatedRecord(t, map[string]string{"event-type": "nope.v9"}, 0, 2)))
+	assert.Equal(t, int32(2), calls.Load())
+
+	boom := errors.New("boom")
+	hErr := consume.New(nil, "grp", consume.WithoutInbox()).Handler(
+		consume.Typed("orders.OrderCreated.v1", func(context.Context, *ordersv1.OrderCreated) error {
+			return boom
+		}),
+	)
+	require.ErrorIs(t, hErr(ctx, rec), boom)
+}

@@ -92,6 +92,9 @@ just audit          # fmt + lint + vuln + unit tests
 just hooks          # (re)install lefthook git hooks
 just up             # start core infra via docker compose
 just test           # run all tests
+just new-service x  # scaffold examples/x from the payments template
+just rename-module github.com/acme/myapp   # adopt the boilerplate under your module path
+just rename-module-check github.com/acme/myapp  # dry run: print the rename plan only
 ```
 
 Run `just` (no args) to list all available recipes.

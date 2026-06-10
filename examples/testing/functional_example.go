@@ -9,7 +9,8 @@ import (
 
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/messaging/outbox"
-	"go-boilerplate/platform/testkit/fixtures"
+
+	"github.com/google/uuid"
 )
 
 // ItemResponse is the shape returned by the external catalogue API.
@@ -51,13 +52,18 @@ func FetchAndNotify(
 	raw, _ := json.Marshal(item)
 	cache.Set(ctx, "item:"+id, raw, time.Minute)
 
-	// Publish an outbox event so other services can react.
-	msg := fixtures.OutboxMessage(
-		fixtures.WithAggregateType("catalogue.events"),
-		fixtures.WithAggregateID(item.ID),
-		fixtures.WithEventType("ItemFetched"),
-		fixtures.WithPayload(raw),
-	)
+	// Publish an outbox event so other services can react. Constructed
+	// directly: production-shaped code must not use platform/testkit
+	// builders (fixtures are for _test.go files only — see the arch guard
+	// TestTestkitOnlyImportedFromTests).
+	msg := outbox.Message{
+		ID:            uuid.New(),
+		AggregateType: "catalogue.events",
+		AggregateID:   item.ID,
+		EventType:     "ItemFetched",
+		Payload:       raw,
+		CreatedAt:     time.Now().UTC(),
+	}
 	if err := pub.Publish(ctx, msg); err != nil {
 		return fmt.Errorf("FetchAndNotify: publish: %w", err)
 	}
