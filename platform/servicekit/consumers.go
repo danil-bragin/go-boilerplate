@@ -108,13 +108,9 @@ func (s *Service) AddConsumerWithRetry(ctx context.Context, groupID string, topi
 		return err
 	}
 
-	// 2. Build the escalator backed by the service producer; opt into key
-	// parking when the policy requests it.
-	var escOpts []retry.EscalatorOption
-	if policy.KeyParkingWindow > 0 {
-		escOpts = append(escOpts, retry.WithKeyParking(policy.KeyParkingWindow))
-	}
-	esc := retry.NewEscalator(s.producer, policy, escOpts...)
+	// 2. Build the escalator backed by the service producer. NewEscalator
+	// honors policy.KeyParkingWindow directly (key parking opt-in).
+	esc := retry.NewEscalator(s.producer, policy)
 
 	// 3. Wrap the handler: parked-key diversion + policy.FastAttempts
 	// in-process attempts, then escalation to the next retry tier.

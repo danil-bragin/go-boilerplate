@@ -87,6 +87,12 @@ type Policy struct {
 	// diverted straight to the first retry tier instead of being handled,
 	// preserving their order relative to the escalated record. In-memory
 	// best-effort — parking is lost on restart or rebalance.
+	//
+	// SIZING: choose window ≥ Tiers[0] + the retry consumer's redelivery lag,
+	// otherwise the key un-parks before the escalated record returns and the
+	// reorder happens anyway. For DefaultPolicy (tier-0 = 5s) ~10s is a
+	// sensible floor. NewEscalator honors this field; the WithKeyParking
+	// option overrides it.
 	KeyParkingWindow time.Duration
 }
 

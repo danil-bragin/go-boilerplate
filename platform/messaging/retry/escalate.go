@@ -60,13 +60,24 @@ type EscalatorOption func(*Escalator)
 // rebalance moves partitions to instances that have no parking state.
 // Treat parking as an ordering optimization, not a guarantee — consumers
 // still need downstream dedup (inbox) and should tolerate rare reordering.
+//
+// SIZING: the window must cover the time until the escalated record is back
+// in order — at least Tiers[0] (the first-tier delay) plus the retry
+// consumer's redelivery lag (poll interval + processing). A window shorter
+// than that un-parks the key before the escalated record is redelivered,
+// re-introducing the reorder the parking was meant to prevent. For
+// DefaultPolicy (tier-0 = 5s) a window of ~10s is a sensible floor.
+//
+// This option overrides Policy.KeyParkingWindow when both are set.
 func WithKeyParking(window time.Duration) EscalatorOption {
 	return func(e *Escalator) { e.parkWindow = window }
 }
 
 // NewEscalator constructs an Escalator backed by the given producer and policy.
+// Key parking is enabled when policy.KeyParkingWindow > 0; the WithKeyParking
+// option, when given, overrides the policy field.
 func NewEscalator(p producer, policy Policy, opts ...EscalatorOption) *Escalator {
-	e := &Escalator{producer: p, policy: policy}
+	e := &Escalator{producer: p, policy: policy, parkWindow: policy.KeyParkingWindow}
 	for _, o := range opts {
 		o(e)
 	}

@@ -258,6 +258,7 @@ After the last tier a record lands on `<base>.DLT`.
 | Check tier lag | `rpk group describe <group>.retry` (or `kafka-consumer-groups.sh --describe --group <group>.retry`) — lag per `.retry.<idx>` topic |
 | Check DLT depth | `rpk topic describe orders.commands.DLT -p` (high watermarks) — alert when > 0 for longer than your triage SLO |
 | Tune tiers | Edit the `retry.Policy` passed to `AddConsumerWithRetry` and redeploy. Topic names do not change (index-named); in-flight records keep their original `retry-due-at` |
+| Size key parking | `retry.Policy.KeyParkingWindow` must be ≥ `Tiers[0]` + the retry consumer's redelivery lag (poll interval + processing), or the key un-parks before the escalated record is redelivered and per-key order breaks anyway. For `DefaultPolicy` (tier-0 = 5s) use ~10s as the floor |
 
 ### DLT redrive procedure
 
