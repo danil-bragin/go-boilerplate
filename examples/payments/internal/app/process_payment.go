@@ -54,11 +54,7 @@ type ProcessPaymentResult struct {
 func ProcessPaymentHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.HandlerFunc[ProcessPayment, ProcessPaymentResult] {
 	return func(ctx context.Context, cmd ProcessPayment) (ProcessPaymentResult, error) {
 		paymentID := uuid.New()
-
-		status := "processed"
-		if cmd.AmountCents >= DeclineThresholdCents {
-			status = "failed"
-		}
+		status, eventType, event := paymentOutcome(cmd, paymentID)
 
 		q := gen.New(pg.FromContext(ctx, pool))
 		if err := q.InsertPayment(ctx, gen.InsertPaymentParams{
@@ -70,25 +66,6 @@ func ProcessPaymentHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.Ha
 			return ProcessPaymentResult{}, fmt.Errorf("process_payment: insert payment: %w", err)
 		}
 
-		var (
-			event     proto.Message
-			eventType string
-		)
-		if status == "failed" {
-			event = &ordersv1.PaymentFailed{
-				OrderId:    cmd.OrderID,
-				Reason:     "declined",
-				OccurredAt: timestamppb.Now(),
-			}
-			eventType = PaymentFailedEventType
-		} else {
-			event = &ordersv1.PaymentProcessed{
-				OrderId:   cmd.OrderID,
-				PaymentId: paymentID.String(),
-				Status:    "processed",
-			}
-			eventType = PaymentProcessedEventType
-		}
 		protoBytes, err := proto.Marshal(event)
 		if err != nil {
 			return ProcessPaymentResult{}, fmt.Errorf("process_payment: marshal event: %w", err)
@@ -106,6 +83,25 @@ func ProcessPaymentHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.Ha
 		}
 
 		return ProcessPaymentResult{PaymentID: paymentID.String(), Status: status}, nil
+	}
+}
+
+// paymentOutcome is the pure payment decision: it maps a command to the
+// resulting payment status, versioned event type, and event payload. Amounts
+// at or above DeclineThresholdCents are declined (PaymentFailed — the
+// choreography failure branch); everything else is processed.
+func paymentOutcome(cmd ProcessPayment, paymentID uuid.UUID) (status, eventType string, event proto.Message) {
+	if cmd.AmountCents >= DeclineThresholdCents {
+		return "failed", PaymentFailedEventType, &ordersv1.PaymentFailed{
+			OrderId:    cmd.OrderID,
+			Reason:     "declined",
+			OccurredAt: timestamppb.Now(),
+		}
+	}
+	return "processed", PaymentProcessedEventType, &ordersv1.PaymentProcessed{
+		OrderId:   cmd.OrderID,
+		PaymentId: paymentID.String(),
+		Status:    "processed",
 	}
 }
 
