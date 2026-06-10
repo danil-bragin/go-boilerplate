@@ -130,6 +130,24 @@ build-images:
     docker build --build-arg SERVICE=payments      -t go-boilerplate/payments:local      .
     docker build --build-arg SERVICE=notifications -t go-boilerplate/notifications:local .
 
+# ── Scaffolding ───────────────────────────────────────────────────────────────
+
+# Scaffold a new example service from the payments template (e.g. just new-service shipping)
+new-service name:
+    ./scripts/new-service.sh {{name}}
+
+# Rename the Go module path everywhere (e.g. just rename-module github.com/acme/myapp)
+rename-module path:
+    ./scripts/rename-module.sh {{path}}
+
+# Dry-run of rename-module: print the planned changes, modify nothing
+rename-module-check path:
+    ./scripts/rename-module.sh --check {{path}}
+
+# Smoke-test the scaffolding scripts (new-service build/vet + rename-module --check) — runs in CI
+test-scaffold:
+    ./scripts/test-scaffold.sh
+
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
 # Apply a service's embedded migrations (PG_DSN / PG_MIGRATE_URL from env; svc: gateway|orders|payments|notifications|all)
