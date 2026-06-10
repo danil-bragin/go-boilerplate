@@ -46,3 +46,25 @@ func TestMemory_ResultFields(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, res.Allowed)
 }
+
+// TestMemory_ResetReported verifies the memory limiter reports the time until
+// the bucket refills to full capacity (the RateLimit-Reset delta).
+func TestMemory_ResetReported(t *testing.T) {
+	clock := newFakeClock(time.Now())
+	m := NewMemory(1, 2, WithClock(clock.Now)) // 1 rps, burst 2
+	t.Cleanup(m.Close)
+	ctx := context.Background()
+
+	// First allow consumes one token: 1 token deficit at 1 rps → reset ≈ 1s.
+	res, err := m.Allow(ctx, "k")
+	require.NoError(t, err)
+	assert.True(t, res.Allowed)
+	assert.Greater(t, res.Reset, time.Duration(0), "partial bucket must report a reset delta")
+	assert.LessOrEqual(t, res.Reset, time.Second+50*time.Millisecond)
+
+	// Empty bucket: 2 token deficit → reset ≈ 2s.
+	res, err = m.Allow(ctx, "k")
+	require.NoError(t, err)
+	assert.Greater(t, res.Reset, time.Second)
+	assert.LessOrEqual(t, res.Reset, 2*time.Second+50*time.Millisecond)
+}

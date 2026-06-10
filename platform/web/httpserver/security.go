@@ -269,8 +269,10 @@ func inAny(addr netip.Addr, prefixes []netip.Prefix) bool {
 // RateLimitPer applies limiter l per key.
 //
 // Every response carries the rate-limit budget headers when the limiter
-// reports them: RateLimit-Limit (bucket capacity) and RateLimit-Remaining
-// (tokens left; omitted when unknown, e.g. fail-open while Redis is down).
+// reports them: RateLimit-Limit (bucket capacity), RateLimit-Remaining
+// (tokens left) and RateLimit-Reset (delta seconds until the bucket is full).
+// Unknown values (-1 sentinel for Limit/Remaining, 0 for Reset — e.g.
+// fail-open while Redis is down) omit the corresponding header.
 //
 // Denied requests receive an RFC7807 problem+json 429 with a real Retry-After
 // header — the limiter's computed wait until the next token, rounded UP to
@@ -316,13 +318,19 @@ func RateLimitPer(l ratelimit.Limiter, key func(*http.Request) string) func(http
 }
 
 // setRateLimitHeaders writes the RateLimit-* budget headers from res.
-// Unknown values (Limit 0, Remaining -1) are omitted rather than lied about.
+// Unknown values (-1 for Limit/Remaining, 0 for Reset — see ratelimit.Result)
+// are omitted rather than lied about.
 func setRateLimitHeaders(w http.ResponseWriter, res ratelimit.Result) {
 	if res.Limit > 0 {
 		w.Header().Set("RateLimit-Limit", strconv.FormatInt(res.Limit, 10))
 	}
 	if res.Remaining >= 0 {
 		w.Header().Set("RateLimit-Remaining", strconv.FormatInt(res.Remaining, 10))
+	}
+	if res.Reset > 0 {
+		// Delta seconds until the bucket is full, rounded up (a sub-second
+		// reset is reported as 1, never 0).
+		w.Header().Set("RateLimit-Reset", strconv.FormatInt(int64(math.Ceil(res.Reset.Seconds())), 10))
 	}
 }
 

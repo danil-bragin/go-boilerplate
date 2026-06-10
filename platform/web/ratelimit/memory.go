@@ -102,6 +102,12 @@ func (m *Memory) Allow(_ context.Context, key string) (Result, error) {
 			res.RetryAfter = time.Duration(deficit / m.rps * float64(time.Second))
 		}
 	}
+	if m.rps > 0 {
+		// Time until the bucket is full again (RateLimit-Reset delta).
+		if deficit := float64(m.burst) - tokens; deficit > 0 {
+			res.Reset = time.Duration(deficit / m.rps * float64(time.Second))
+		}
+	}
 	return res, nil
 }
 
