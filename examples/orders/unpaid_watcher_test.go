@@ -150,7 +150,7 @@ func TestOrders_UnpaidWatcherEmitsTimeoutOnce(t *testing.T) {
 	ctx := context.Background()
 	app, err := orders.NewApp(ctx)
 	require.NoError(t, err)
-	app.Start()
+	require.NoError(t, app.Start())
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

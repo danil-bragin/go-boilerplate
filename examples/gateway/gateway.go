@@ -49,7 +49,6 @@ package gateway
 
 import (
 	"context"
-	"io"
 
 	"go-boilerplate/examples/gateway/internal/api"
 	"go-boilerplate/examples/gateway/internal/migrations"
@@ -74,13 +73,6 @@ func WithVerifier(v auth.Verifier) Option {
 	return func(a *App) {
 		a.verifier = v
 	}
-}
-
-// WithLogWriter overrides the log output writer (default: os.Stdout).
-// NOTE: The harness always writes to os.Stdout; this option is kept for
-// API compatibility with tests and e2e. Pass io.Discard to suppress logs.
-func WithLogWriter(_ io.Writer) Option {
-	return func(_ *App) {}
 }
 
 // App holds all wired components for the gateway service.
@@ -225,10 +217,9 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 
 // Start launches background goroutines (projection consumer + public HTTP
 // server, both managed by the servicekit harness). Non-blocking.
-func (a *App) Start() {
+func (a *App) Start() error {
 	if err := a.svc.Start(); err != nil {
-		a.svc.Logger().Error("failed to start service", "error", err)
-		return
+		return err
 	}
 
 	a.svc.Logger().Info(
@@ -236,6 +227,7 @@ func (a *App) Start() {
 		"addr", a.server.Addr(),
 		"admin_addr", a.svc.AdminAddr(),
 	)
+	return nil
 }
 
 // Stop cancels consumer goroutines and closes all resources.

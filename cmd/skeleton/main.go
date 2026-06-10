@@ -10,9 +10,7 @@ package main
 import (
 	"context"
 	"io"
-	"log/slog"
 	"net/http"
-	"os"
 	"time"
 
 	"go-boilerplate/platform/config"
@@ -87,7 +85,8 @@ func newApp(ctx context.Context) (*app, error) {
 	return &app{cfg: cfg, svc: svc, server: server, health: h}, nil
 }
 
-func (a *app) start() error {
+// Start launches the harness (admin + public servers). Non-blocking.
+func (a *app) Start() error {
 	if err := a.svc.Start(); err != nil {
 		return err
 	}
@@ -103,31 +102,16 @@ func (a *app) start() error {
 	return nil
 }
 
-func (a *app) stop(ctx context.Context) error {
+// Stop closes all resources via the harness closer.
+func (a *app) Stop(ctx context.Context) error {
 	return a.svc.Stop(ctx)
 }
 
+// Closer exposes the harness closer for servicekit.Main / run.Run.
+func (a *app) Closer() *run.Closer { return a.svc.Closer() }
+
 func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	a, err := newApp(ctx)
-	if err != nil {
-		cancel()
-		slog.Error("startup failed", "error", err)
-		os.Exit(1)
-	}
-	if err := a.start(); err != nil {
-		cancel()
-		slog.Error("start failed", "error", err)
-		os.Exit(1)
-	}
-
-	// Block until SIGINT/SIGTERM, then close resources (reverse order).
-	if err := run.Run(ctx, run.Options{ShutdownTimeout: 15 * time.Second}, a.svc.Closer()); err != nil {
-		cancel()
-		slog.Error("shutdown completed with errors", "error", err)
-		os.Exit(1)
-	}
-	cancel()
-	slog.Info("shutdown complete")
+	servicekit.Main(func(ctx context.Context) (servicekit.App, error) {
+		return newApp(ctx)
+	})
 }

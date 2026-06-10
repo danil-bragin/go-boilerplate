@@ -24,7 +24,7 @@ func TestApp_StartHealthAndStop(t *testing.T) {
 
 	app, err := newApp(context.Background())
 	require.NoError(t, err)
-	require.NoError(t, app.start())
+	require.NoError(t, app.Start())
 
 	resp, err := http.Get("http://" + app.server.Addr() + "/livez")
 	require.NoError(t, err)
@@ -35,5 +35,5 @@ func TestApp_StartHealthAndStop(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	require.NoError(t, app.stop(ctx))
+	require.NoError(t, app.Stop(ctx))
 }

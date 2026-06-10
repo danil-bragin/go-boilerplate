@@ -15,7 +15,6 @@ package payments
 
 import (
 	"context"
-	"io"
 	"time"
 
 	"go-boilerplate/examples/payments/internal/app"
@@ -39,12 +38,6 @@ type Config struct {
 
 // Option is a functional option for [NewApp].
 type Option func(*App)
-
-// WithLogWriter overrides the log output writer (default: os.Stdout).
-// Kept for API compatibility; harness writes to os.Stdout.
-func WithLogWriter(_ io.Writer) Option {
-	return func(_ *App) {}
-}
 
 // App holds all wired components for the payments service.
 type App struct {
@@ -118,10 +111,8 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 
 // Start launches background goroutines (outbox relay + cleaner + Kafka consumer).
 // Non-blocking.
-func (a *App) Start() {
-	if err := a.svc.Start(); err != nil {
-		a.svc.Logger().Error("failed to start service", "error", err)
-	}
+func (a *App) Start() error {
+	return a.svc.Start()
 }
 
 // Stop cancels consumer goroutines and closes all resources.

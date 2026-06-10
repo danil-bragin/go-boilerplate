@@ -15,7 +15,6 @@ package orders
 
 import (
 	"context"
-	"io"
 	"time"
 
 	"go-boilerplate/examples/orders/internal/app"
@@ -48,13 +47,6 @@ type Config struct {
 
 // Option is a functional option for [NewApp].
 type Option func(*App)
-
-// WithLogWriter overrides the log output writer (default: os.Stdout).
-// NOTE: The harness always writes to os.Stdout; this option is kept for
-// API compatibility with tests and e2e. Pass io.Discard to suppress logs.
-func WithLogWriter(_ io.Writer) Option {
-	return func(_ *App) {}
-}
 
 // App holds all wired components for the orders service.
 type App struct {
@@ -148,10 +140,8 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 
 // Start launches background goroutines (outbox relay + cleaner + Kafka consumer).
 // Non-blocking.
-func (a *App) Start() {
-	if err := a.svc.Start(); err != nil {
-		a.svc.Logger().Error("failed to start service", "error", err)
-	}
+func (a *App) Start() error {
+	return a.svc.Start()
 }
 
 // Stop cancels consumer goroutines and closes all resources.

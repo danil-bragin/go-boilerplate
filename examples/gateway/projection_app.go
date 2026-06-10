@@ -82,11 +82,12 @@ func NewProjectionApp(ctx context.Context) (*ProjectionApp, error) {
 }
 
 // Start launches the projection consumer and admin server. Non-blocking.
-func (a *ProjectionApp) Start() {
+func (a *ProjectionApp) Start() error {
 	if err := a.svc.Start(); err != nil {
-		a.svc.Logger().Error("failed to start projection service", "error", err)
+		return err
 	}
 	a.svc.Logger().Info("projection service started", "admin_addr", a.svc.AdminAddr())
+	return nil
 }
 
 // Stop cancels the consumer and closes all resources.

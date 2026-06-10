@@ -45,8 +45,7 @@ func startApp(t *testing.T, broker, dsn string, opts ...gateway.Option) string {
 	a, err := gateway.NewApp(ctx, opts...)
 	require.NoError(t, err)
 
-	a.Start()
-
+	require.NoError(t, a.Start())
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -300,7 +299,7 @@ func startAppAuthEnabled(t *testing.T, broker, dsn string) string {
 	a, err := gateway.NewApp(ctx, gateway.WithVerifier(stubVerifier{}))
 	require.NoError(t, err)
 
-	a.Start()
+	require.NoError(t, a.Start())
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -509,7 +508,7 @@ func TestGateway_GetOrderCachedSecondCallSkipsDB(t *testing.T) {
 
 		a, err := gateway.NewApp(ctx)
 		require.NoError(t, err)
-		a.Start()
+		require.NoError(t, a.Start())
 		t.Cleanup(func() {
 			stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -685,7 +684,7 @@ func TestGateway_AuthzForbidsWithoutRole(t *testing.T) {
 	ctx := context.Background()
 	a, err := gateway.NewApp(ctx, gateway.WithVerifier(stubVerifierNoRole{}))
 	require.NoError(t, err)
-	a.Start()
+	require.NoError(t, a.Start())
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -718,7 +717,7 @@ func TestGateway_AuthzForbidsWithoutRole(t *testing.T) {
 
 	a2, err := gateway.NewApp(ctx, gateway.WithVerifier(stubVerifier{}))
 	require.NoError(t, err)
-	a2.Start()
+	require.NoError(t, a2.Start())
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
