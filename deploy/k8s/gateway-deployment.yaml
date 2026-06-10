@@ -71,6 +71,19 @@ spec:
                   name: gateway-db # CHANGEME: provision this Secret
                   key: dsn
             # Behind PgBouncer? Also set PG_MIGRATE_URL (direct-Postgres DSN).
+            # Per-replica pool budget. The platform default (PG_MAX_CONNS=25)
+            # hits Postgres' default max_connections=100 at N≈4 replicas:
+            #   N × (writer pool + reader pool if PG_READER_DSN) +
+            #     standalone projection replicas × pool + migrate job
+            #     ≤ max_connections − superuser_reserved_connections (3).
+            # 10 writer conns per replica keeps headroom for ~8 replicas;
+            # raise max_connections or front with PgBouncer (compose profile
+            # "pgbouncer"; PG_STATEMENT_CACHE_MODE=1 + PG_MIGRATE_URL direct)
+            # before raising this. See docs/operations.md § Scaling guide.
+            - name: PG_MAX_CONNS
+              value: "10"
+            - name: PG_MIN_CONNS
+              value: "2"
             - name: OTEL_SERVICE_NAME
               value: "gateway"
           resources:
