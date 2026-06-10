@@ -11,8 +11,15 @@ processors:
     timeout: 1s
     send_batch_size: 512
 
+extensions:
+  # Liveness endpoint the compose healthcheck probes (wget on :13133).
+  health_check:
+    endpoint: 0.0.0.0:13133
+
 exporters:
-  otlp/jaeger:
+  # `otlp_grpc` is the v0.153 name of the core OTLP gRPC exporter (the old
+  # `otlp` type is a deprecated alias — `components` no longer lists it).
+  otlp_grpc/jaeger:
     endpoint: jaeger:4317
     tls:
       insecure: true
@@ -30,11 +37,12 @@ exporters:
     verbosity: normal
 
 service:
+  extensions: [health_check]
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlp/jaeger, debug]
+      exporters: [otlp_grpc/jaeger, debug]
 
     metrics:
       receivers: [otlp]

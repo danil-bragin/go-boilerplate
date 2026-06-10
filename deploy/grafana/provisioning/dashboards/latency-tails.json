@@ -84,7 +84,7 @@
     {
       "id": 102,
       "type": "row",
-      "title": "Kafka (consumer handler + producer publish) — lane-B instruments",
+      "title": "Kafka (consumer handler + producer publish)",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
       "panels": []
     },
@@ -133,7 +133,7 @@
     {
       "id": 103,
       "type": "row",
-      "title": "Outbox publish lag (DB row → Kafka) — lane-B instrument",
+      "title": "Outbox publish lag (DB row → Kafka)",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
       "panels": []
     },
@@ -169,7 +169,7 @@
     {
       "id": 104,
       "type": "row",
-      "title": "Postgres queries (sqlc name) — lane-B instrument",
+      "title": "Postgres queries (sqlc name)",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 },
       "panels": []
     },
@@ -204,7 +204,7 @@
     {
       "id": 105,
       "type": "row",
-      "title": "Order lifecycle (created → terminal) — lane-B instrument",
+      "title": "Order lifecycle (created → terminal)",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 },
       "panels": []
     },

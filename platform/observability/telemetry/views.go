@@ -14,10 +14,10 @@ import (
 // signal. MaxSize 160 / MaxScale 20 match the OTel SDK defaults: 160 buckets
 // cover >5 orders of magnitude at the auto-downscaled resolution.
 //
-// The views are name-pattern scoped (*duration*, *lag*, *.duration_ms) AND
-// kind-scoped to histogram instruments only: kafka.consumer.lag is a GAUGE
-// that matches *lag* by name, and a view must never rewrite a gauge's
-// last-value aggregation.
+// The views are name-pattern scoped (*duration*, *lag* — the former also
+// covers *.duration_ms names) AND kind-scoped to histogram instruments only:
+// kafka.consumer.lag is a GAUGE that matches *lag* by name, and a view must
+// never rewrite a gauge's last-value aggregation.
 //
 // Fallback (TELEMETRY_CLASSIC_HISTOGRAMS=true): environments whose Prometheus
 // cannot ingest native histograms (managed offerings, remote-write hops that
@@ -60,8 +60,8 @@ func HistogramViews(classic bool) []sdkmetric.View {
 		return classicViews()
 	}
 	exp := sdkmetric.AggregationBase2ExponentialHistogram{MaxSize: 160, MaxScale: 20}
-	views := make([]sdkmetric.View, 0, 3)
-	for _, pattern := range []string{"*duration*", "*lag*", "*.duration_ms"} {
+	views := make([]sdkmetric.View, 0, 2)
+	for _, pattern := range []string{"*duration*", "*lag*"} {
 		views = append(views, sdkmetric.NewView(
 			sdkmetric.Instrument{Name: pattern, Kind: sdkmetric.InstrumentKindHistogram},
 			sdkmetric.Stream{Aggregation: exp},
@@ -70,9 +70,9 @@ func HistogramViews(classic bool) []sdkmetric.View {
 	return views
 }
 
-// classicViews maps each known duration instrument (current + lane-B planned
-// names) to its tuned explicit bucket table. Wildcards keep future kafka
-// duration instruments covered without editing this file.
+// classicViews maps each known duration instrument to its tuned explicit
+// bucket table. Wildcards keep future kafka duration instruments covered
+// without editing this file.
 func classicViews() []sdkmetric.View {
 	tables := []struct {
 		pattern string

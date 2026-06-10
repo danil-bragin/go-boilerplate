@@ -194,8 +194,13 @@ on conflict (order_id) do update set
   status     = 'paid',
   updated_at = now()
 where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout')
-returning created_at
+returning created_at, (xmax = 0) as inserted
 `
+
+type MarkPaidRow struct {
+	CreatedAt pgtype.Timestamptz
+	Inserted  bool
+}
 
 // Terminal-status precedence (MarkPaid / MarkPaymentFailed / MarkPaymentTimeout):
 // 'paid', 'payment_failed', and 'payment_timeout' are TERMINAL. Precedence is
@@ -207,11 +212,19 @@ returning created_at
 // RETURNING created_at feeds the orders.lifecycle.duration histogram: it is
 // only returned when the terminal write APPLIED, so the projection observes
 // the order's created→terminal latency exactly once per order.
-func (q *Queries) MarkPaid(ctx context.Context, orderID uuid.UUID) (pgtype.Timestamptz, error) {
+//
+// (xmax = 0) AS inserted distinguishes the INSERT arm from the UPDATE arm of
+// the upsert: a row written by INSERT has xmax 0, a row touched by the ON
+// CONFLICT UPDATE has the deleting/locking transaction id in xmax. When the
+// terminal event arrives BEFORE OrderCreated (reorder), the INSERT arm
+// creates a placeholder whose created_at is the row insertion time — the
+// real creation time is unknown, so the projection must SKIP the lifecycle
+// observation (a ≈0s sample would lie compliant and bias the SLO-2 good leg).
+func (q *Queries) MarkPaid(ctx context.Context, orderID uuid.UUID) (MarkPaidRow, error) {
 	row := q.db.QueryRow(ctx, markPaid, orderID)
-	var created_at pgtype.Timestamptz
-	err := row.Scan(&created_at)
-	return created_at, err
+	var i MarkPaidRow
+	err := row.Scan(&i.CreatedAt, &i.Inserted)
+	return i, err
 }
 
 const markPaymentFailed = `-- name: MarkPaymentFailed :one
@@ -221,14 +234,19 @@ on conflict (order_id) do update set
   status     = 'payment_failed',
   updated_at = now()
 where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout')
-returning created_at
+returning created_at, (xmax = 0) as inserted
 `
 
-func (q *Queries) MarkPaymentFailed(ctx context.Context, orderID uuid.UUID) (pgtype.Timestamptz, error) {
+type MarkPaymentFailedRow struct {
+	CreatedAt pgtype.Timestamptz
+	Inserted  bool
+}
+
+func (q *Queries) MarkPaymentFailed(ctx context.Context, orderID uuid.UUID) (MarkPaymentFailedRow, error) {
 	row := q.db.QueryRow(ctx, markPaymentFailed, orderID)
-	var created_at pgtype.Timestamptz
-	err := row.Scan(&created_at)
-	return created_at, err
+	var i MarkPaymentFailedRow
+	err := row.Scan(&i.CreatedAt, &i.Inserted)
+	return i, err
 }
 
 const markPaymentTimeout = `-- name: MarkPaymentTimeout :one
@@ -238,14 +256,19 @@ on conflict (order_id) do update set
   status     = 'payment_timeout',
   updated_at = now()
 where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout')
-returning created_at
+returning created_at, (xmax = 0) as inserted
 `
 
-func (q *Queries) MarkPaymentTimeout(ctx context.Context, orderID uuid.UUID) (pgtype.Timestamptz, error) {
+type MarkPaymentTimeoutRow struct {
+	CreatedAt pgtype.Timestamptz
+	Inserted  bool
+}
+
+func (q *Queries) MarkPaymentTimeout(ctx context.Context, orderID uuid.UUID) (MarkPaymentTimeoutRow, error) {
 	row := q.db.QueryRow(ctx, markPaymentTimeout, orderID)
-	var created_at pgtype.Timestamptz
-	err := row.Scan(&created_at)
-	return created_at, err
+	var i MarkPaymentTimeoutRow
+	err := row.Scan(&i.CreatedAt, &i.Inserted)
+	return i, err
 }
 
 const upsertOrderCreated = `-- name: UpsertOrderCreated :exec

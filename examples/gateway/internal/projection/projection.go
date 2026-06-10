@@ -90,7 +90,7 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 					return err
 				}
 				q := storegen.New(pg.FromContext(ctx, pool))
-				createdAt, err := q.MarkPaid(ctx, orderID)
+				row, err := q.MarkPaid(ctx, orderID)
 				if errors.Is(err, pgx.ErrNoRows) {
 					// First terminal state wins: the row is already in a
 					// terminal status (payment_failed/payment_timeout/paid) —
@@ -102,7 +102,13 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 				if err != nil {
 					return fmt.Errorf("projection: mark paid: %w", err)
 				}
-				metrics.observe(ctx, "paid", createdAt.Time)
+				if !row.Inserted {
+					// Inserted = the terminal event arrived before OrderCreated
+					// and the upsert created a placeholder row: its creation
+					// time is unknown, the ≈0s sample would lie compliant and
+					// bias the SLO-2 good leg — skip the observation.
+					metrics.observe(ctx, "paid", row.CreatedAt.Time)
+				}
 				logger.Debug("projection: marked paid", "order_id", orderID)
 				return nil
 			},
@@ -118,7 +124,7 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 					return err
 				}
 				q := storegen.New(pg.FromContext(ctx, pool))
-				createdAt, err := q.MarkPaymentTimeout(ctx, orderID)
+				row, err := q.MarkPaymentTimeout(ctx, orderID)
 				if errors.Is(err, pgx.ErrNoRows) {
 					logger.Warn("projection: OrderPaymentTimedOut ignored — order already in a terminal status",
 						"order_id", orderID)
@@ -127,7 +133,11 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 				if err != nil {
 					return fmt.Errorf("projection: mark payment_timeout: %w", err)
 				}
-				metrics.observe(ctx, "payment_timeout", createdAt.Time)
+				if !row.Inserted {
+					// Placeholder row (terminal-before-created reorder):
+					// creation time unknown — skip, see the MarkPaid branch.
+					metrics.observe(ctx, "payment_timeout", row.CreatedAt.Time)
+				}
 				logger.Debug("projection: marked payment_timeout", "order_id", orderID)
 				return nil
 			},
@@ -143,7 +153,7 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 					return err
 				}
 				q := storegen.New(pg.FromContext(ctx, pool))
-				createdAt, err := q.MarkPaymentFailed(ctx, orderID)
+				row, err := q.MarkPaymentFailed(ctx, orderID)
 				if errors.Is(err, pgx.ErrNoRows) {
 					logger.Warn("projection: PaymentFailed ignored — order already in a terminal status",
 						"order_id", orderID, "reason", evt.GetReason())
@@ -152,7 +162,11 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 				if err != nil {
 					return fmt.Errorf("projection: mark payment_failed: %w", err)
 				}
-				metrics.observe(ctx, "payment_failed", createdAt.Time)
+				if !row.Inserted {
+					// Placeholder row (terminal-before-created reorder):
+					// creation time unknown — skip, see the MarkPaid branch.
+					metrics.observe(ctx, "payment_failed", row.CreatedAt.Time)
+				}
 				logger.Debug("projection: marked payment_failed",
 					"order_id", orderID, "reason", evt.GetReason())
 				return nil

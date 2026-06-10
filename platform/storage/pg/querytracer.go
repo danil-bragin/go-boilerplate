@@ -56,11 +56,18 @@ func queryName(sql string) string {
 // serving reads when no replica is configured still reports "writer").
 //
 // The tracer is allocation-light by design: the start hooks stash a single
-// value (start time + parsed label) in the context; the end hooks record and
-// never allocate beyond the attribute set of the sample.
+// value (start time + parsed label) in the context; the end hooks record via
+// a per-tracer cache of pre-encoded attribute sets and do not allocate at all
+// (asserted by TestQueryTracer_EndPathAllocs).
 type queryTracer struct {
 	pool attribute.KeyValue
 	hist metric.Float64Histogram
+
+	// attrs caches the pre-encoded {query, pool} option slice per query name.
+	// The pool label is fixed per tracer instance, so the name alone keys the
+	// cache; cardinality is bounded by the sqlc registry plus the fixed
+	// fallback labels (raw/batch/copyfrom).
+	attrs sync.Map // string(query name) → []metric.RecordOption
 }
 
 // newQueryTracer creates the tracer for one pool role from the GLOBAL otel
@@ -101,10 +108,21 @@ func (t *queryTracer) end(ctx context.Context) {
 	if !ok {
 		return
 	}
-	t.hist.Record(ctx, time.Since(s.at).Seconds(), metric.WithAttributes(
-		attribute.String("query", s.name),
+	t.hist.Record(ctx, time.Since(s.at).Seconds(), t.recordOpts(s.name)...)
+}
+
+// recordOpts returns the cached {query, pool} options for a query name,
+// building and caching them on first use.
+func (t *queryTracer) recordOpts(name string) []metric.RecordOption {
+	if v, ok := t.attrs.Load(name); ok {
+		return v.([]metric.RecordOption) //nolint:forcetypeassert // cache stores []metric.RecordOption only
+	}
+	opts := []metric.RecordOption{metric.WithAttributeSet(attribute.NewSet(
+		attribute.String("query", name),
 		t.pool,
-	))
+	))}
+	v, _ := t.attrs.LoadOrStore(name, opts)
+	return v.([]metric.RecordOption) //nolint:forcetypeassert // cache stores []metric.RecordOption only
 }
 
 // TraceQueryStart implements pgx.QueryTracer.

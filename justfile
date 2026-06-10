@@ -92,6 +92,23 @@ lint:
 lint-sql:
     npx -y squawk-cli@latest $(git ls-files '*/migrations/*.sql' '*/migrations/sql/*.sql')
 
+# Validate Prometheus rules + config and run the rule unit tests via the
+# dockerized promtool (same image the compose stack pins) — same gate as CI.
+# The config check mounts the rule files at the exact paths prometheus.yml
+# references (mirrors the compose volume layout).
+promtool:
+    docker run --rm -v "$PWD/deploy/prometheus:/r:ro" --entrypoint promtool prom/prometheus:v3.12.0 \
+      check rules /r/rules.yaml /r/rules-latency.yaml /r/slo.yaml
+    docker run --rm \
+      -v "$PWD/deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+      -v "$PWD/deploy/prometheus/rules.yaml:/etc/prometheus/rules.yaml:ro" \
+      -v "$PWD/deploy/prometheus/rules-latency.yaml:/etc/prometheus/rules-latency.yaml:ro" \
+      -v "$PWD/deploy/prometheus/slo.yaml:/etc/prometheus/slo.yaml:ro" \
+      --entrypoint promtool prom/prometheus:v3.12.0 \
+      check config /etc/prometheus/prometheus.yml
+    docker run --rm -v "$PWD/deploy/prometheus:/r:ro" --entrypoint promtool prom/prometheus:v3.12.0 \
+      test rules /r/tests/slo_test.yaml
+
 # Run golangci-lint with auto-fix
 lint-fix:
     golangci-lint run --fix ./...

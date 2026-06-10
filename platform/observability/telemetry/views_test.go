@@ -64,9 +64,9 @@ func TestHistogramViews_ExponentialAppliedToDurationHistograms(t *testing.T) {
 
 	for _, name := range []string{
 		"http.server.duration",            // ms histogram (RouteTag)
-		"cqrs.handler.duration_ms",        // ms histogram (cqrs.Metrics)
-		"kafka.consumer.handler.duration", // future lane-B seconds histogram
-		"outbox.publish_lag",              // future lane-B seconds histogram (*lag*)
+		"cqrs.handler.duration_ms",        // ms histogram (cqrs.Metrics); *duration* covers _ms names
+		"kafka.consumer.handler.duration", // seconds histogram (kafka consumerMetrics)
+		"outbox.publish_lag",              // seconds histogram (*lag*)
 	} {
 		h, err := m.Float64Histogram(name)
 		require.NoError(t, err)

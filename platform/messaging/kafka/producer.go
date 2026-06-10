@@ -75,13 +75,22 @@ func (p *Producer) ProduceBatch(ctx context.Context, records []Record) error {
 
 	// One publish-duration sample per DISTINCT topic in the batch: the whole
 	// batch shares a single Flush round-trip, so the measured RTT applies to
-	// every topic it contains.
-	topics := map[string]struct{}{}
+	// every topic it contains. Known bias: in a MIXED-topic batch each topic
+	// gets the WHOLE flush RTT attributed to it, even if its own records were
+	// acknowledged earlier — per-topic tails in mixed batches read pessimistic.
+	// The map is only built when the instrument is live (nil-degraded metrics
+	// must not cost an allocation per batch).
+	var topics map[string]struct{}
+	if p.metrics.publishDurationEnabled() {
+		topics = make(map[string]struct{})
+	}
 	start := time.Now()
 
 	wg.Add(len(records))
 	for _, rec := range records {
-		topics[rec.Topic] = struct{}{}
+		if topics != nil {
+			topics[rec.Topic] = struct{}{}
+		}
 		headers := make([]kgo.RecordHeader, 0, len(rec.Headers))
 		for k, v := range rec.Headers {
 			headers = append(headers, kgo.RecordHeader{

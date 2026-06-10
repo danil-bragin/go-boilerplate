@@ -140,4 +140,17 @@ func TestProjection_LifecycleDurationMetric(t *testing.T) {
 	rm = collect()
 	require.Equal(t, uint64(1), lifecycleCount(&rm, "payment_failed"))
 	require.Equal(t, uint64(1), lifecycleCount(&rm, "paid"), "paid series must be untouched by the failed order")
+
+	// Reordered: the terminal event arrives BEFORE OrderCreated. The upsert's
+	// INSERT arm creates a placeholder row whose created_at is the row
+	// insertion time — the real creation time is unknown, so a lifecycle
+	// sample would lie compliant (≈0s) and bias the SLO-2 good leg. The
+	// projection must record NO sample for an inserted (placeholder) row.
+	reorderedOrder := uuid.New().String()
+	publish("payments.events", projection.PaymentProcessedEventType, &ordersv1.PaymentProcessed{
+		OrderId: reorderedOrder,
+	})
+	rm = collect()
+	require.Equal(t, uint64(1), lifecycleCount(&rm, "paid"),
+		"terminal-before-created reorder must not observe a lifecycle sample (creation time unknown)")
 }

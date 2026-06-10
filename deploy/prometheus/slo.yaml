@@ -10,7 +10,7 @@
 # │        scripts/k6/order-flow.js)                                         │
 # │                                                                          │
 # │ SLO-2  Order choreography: 99% of orders reach a terminal status         │
-# │        (paid / payment_failed / cancelled) in < 60 s of creation,        │
+# │        (paid / payment_failed / payment_timeout) in < 60 s of creation,  │
 # │        over a rolling 30-day window.                                     │
 # │        Caveat: orders that NEVER reach a terminal status are not         │
 # │        observed by the lifecycle histogram — the OutboxBacklogGrowing /  │
@@ -43,40 +43,82 @@ groups:
   # 500 ms (histogram_fraction over the non-5xx native histogram × its count)
   # and total = all requests. Zero-traffic windows yield NaN, which never
   # satisfies a > comparison — no alert on silence.
+  #
+  # NaN-proofing the GOOD leg (total-outage case): during a 100%-5xx outage
+  # the non-5xx selector matches a zero-count histogram (stale series) or no
+  # series at all, so histogram_fraction yields NaN / nothing and the whole
+  # ratio would be NaN / absent — every burn alert SILENT exactly when it
+  # matters most. The `>= 0` filter drops the NaN (NaN >= 0 is false) and the
+  # `or 0 * histogram_count(<total>)` arm substitutes a 0 good-count carrying
+  # the total leg's labels, clamping the ratio to 1. Zero-traffic windows
+  # stay silent: the division by a zero total count still yields NaN.
   - name: slo-http-error-ratio
     rules:
       - record: job:slo_http_error_ratio:rate5m
         expr: |
           1 - (
-              histogram_fraction(0, 500, sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[5m])))
-            * histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[5m])))
+            (
+                (
+                    histogram_fraction(0, 500, sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[5m])))
+                  * histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[5m])))
+                ) >= 0
+              or
+                0 * histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds[5m])))
+            )
             / histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds[5m])))
           )
       - record: job:slo_http_error_ratio:rate30m
         expr: |
           1 - (
-              histogram_fraction(0, 500, sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[30m])))
-            * histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[30m])))
+            (
+                (
+                    histogram_fraction(0, 500, sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[30m])))
+                  * histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[30m])))
+                ) >= 0
+              or
+                0 * histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds[30m])))
+            )
             / histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds[30m])))
           )
       - record: job:slo_http_error_ratio:rate1h
         expr: |
           1 - (
-              histogram_fraction(0, 500, sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[1h])))
-            * histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[1h])))
+            (
+                (
+                    histogram_fraction(0, 500, sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[1h])))
+                  * histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[1h])))
+                ) >= 0
+              or
+                0 * histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds[1h])))
+            )
             / histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds[1h])))
           )
       - record: job:slo_http_error_ratio:rate6h
         expr: |
           1 - (
-              histogram_fraction(0, 500, sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[6h])))
-            * histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[6h])))
+            (
+                (
+                    histogram_fraction(0, 500, sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[6h])))
+                  * histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[6h])))
+                ) >= 0
+              or
+                0 * histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds[6h])))
+            )
             / histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds[6h])))
           )
 
   # ── SLO-2: order-lifecycle error ratio, multiwindow ──────────────────────
   # error_ratio(W) = fraction of orders whose created→terminal duration
-  # exceeded 60 s. Fed by the lane-B orders.lifecycle.duration histogram.
+  # exceeded 60 s. Fed by the orders.lifecycle.duration histogram.
+  #
+  # No NaN-proofing needed here (unlike SLO-1): good and bad samples land in
+  # the SAME histogram — there is no separately-selected good leg that can go
+  # stale while the total keeps moving. histogram_fraction is well-defined
+  # whenever ANY terminal event lands in the window (including the all-bad
+  # case: fraction = 0 → ratio = 1 → alerts fire), and a zero-count window
+  # means no terminal events at all — NaN, silent by design (the fully-stuck
+  # case is covered by OutboxBacklogGrowing / KafkaConsumerLagGrowing, see
+  # the SLO-2 caveat above).
   - name: slo-orders-lifecycle-error-ratio
     rules:
       - record: global:slo_orders_lifecycle_error_ratio:rate5m

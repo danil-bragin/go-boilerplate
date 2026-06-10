@@ -57,3 +57,14 @@ scrape_configs:
           - orders:9090
           - payments:9090
           - notifications:9090
+    # Keep only what this lane is FOR: the up series plus the Go runtime /
+    # process gauges the apps expose directly. Everything else (the app
+    # duration histograms, incl. their native-histogram series) already
+    # arrives via the collector job above — without this keep-list every
+    # histogram would be double-ingested under a second name nothing queries.
+    # (`up` is synthesized by Prometheus and unaffected by metric relabeling;
+    # listed for self-documentation.)
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: "up|go_.*|process_.*"
+        action: keep
