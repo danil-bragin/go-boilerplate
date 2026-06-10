@@ -19,10 +19,14 @@
 // Usage:
 //
 //	handler := consume.New(pool, "gateway-projection", consume.WithLogger(l)).Handler(
-//	    consume.Typed("orders.OrderCreated.v1", onOrderCreated),
-//	    consume.Typed("orders.PaymentProcessed.v1", onPaymentProcessed),
+//	    consume.TypedFor(1, onOrderCreated),     // event type derived from the proto message
+//	    consume.TypedFor(1, onPaymentProcessed), // (see EventTypeFor)
 //	)
 //	svc.AddConsumer(ctx, "gateway-projection", topics, handler)
+//
+// Prefer TypedFor over Typed with a hand-written event-type string: the name
+// is derived from the proto message via EventTypeFor, so producers and
+// consumers can never drift.
 package consume
 
 import (

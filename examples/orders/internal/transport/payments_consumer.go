@@ -15,10 +15,11 @@ import (
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
-// Versioned event types consumed from payments.events by the orders service.
-const (
-	PaymentProcessedEventType = "orders.PaymentProcessed.v1"
-	PaymentFailedEventType    = "orders.PaymentFailed.v1"
+// Versioned event types consumed from payments.events by the orders service
+// (derived from the proto messages via consume.EventTypeFor).
+var (
+	PaymentProcessedEventType = consume.EventTypeFor[*ordersv1.PaymentProcessed](1)
+	PaymentFailedEventType    = consume.EventTypeFor[*ordersv1.PaymentFailed](1)
 )
 
 // NewPaymentsEventHandler returns a kafka.HandlerFunc that records terminal
@@ -60,10 +61,10 @@ func NewPaymentsEventHandler(pool *pg.Pool, logger *slog.Logger, opts ...consume
 
 	opts = append([]consume.Option{consume.WithLogger(logger)}, opts...)
 	return consume.New(pool, "orders-payments", opts...).Handler(
-		consume.Typed(PaymentProcessedEventType, func(ctx context.Context, evt *ordersv1.PaymentProcessed) error {
+		consume.TypedFor(1, func(ctx context.Context, evt *ordersv1.PaymentProcessed) error {
 			return apply(ctx, evt.GetOrderId(), "paid")
 		}),
-		consume.Typed(PaymentFailedEventType, func(ctx context.Context, evt *ordersv1.PaymentFailed) error {
+		consume.TypedFor(1, func(ctx context.Context, evt *ordersv1.PaymentFailed) error {
 			return apply(ctx, evt.GetOrderId(), "payment_failed")
 		}),
 	)

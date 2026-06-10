@@ -7,6 +7,7 @@ import (
 
 	"go-boilerplate/examples/orders/internal/store/gen"
 	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/security/audit"
 	"go-boilerplate/platform/storage/pg"
@@ -16,6 +17,11 @@ import (
 
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
+
+// OrderCreatedEventType is the versioned event type emitted on orders.events
+// when an order row is created ("orders.OrderCreated.v1", derived from the
+// proto message).
+var OrderCreatedEventType = consume.EventTypeFor[*ordersv1.OrderCreated](1)
 
 // CreateOrder is the command to create a new order.
 type CreateOrder struct {
@@ -68,7 +74,7 @@ func CreateOrderHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.Handl
 			Topic:         "orders.events",
 			AggregateType: "order",
 			AggregateID:   cmd.OrderID,
-			EventType:     "orders.OrderCreated.v1",
+			EventType:     OrderCreatedEventType,
 			Payload:       protoBytes,
 		}); err != nil {
 			return CreateOrderResult{}, fmt.Errorf("create_order: enqueue event: %w", err)

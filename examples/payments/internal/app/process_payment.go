@@ -7,6 +7,7 @@ import (
 
 	"go-boilerplate/examples/payments/internal/store/gen"
 	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/security/audit"
 	"go-boilerplate/platform/storage/pg"
@@ -18,10 +19,11 @@ import (
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
-// Versioned event types emitted by the payments service on payments.events.
-const (
-	PaymentProcessedEventType = "orders.PaymentProcessed.v1"
-	PaymentFailedEventType    = "orders.PaymentFailed.v1"
+// Versioned event types emitted by the payments service on payments.events
+// (derived from the proto messages via consume.EventTypeFor).
+var (
+	PaymentProcessedEventType = consume.EventTypeFor[*ordersv1.PaymentProcessed](1)
+	PaymentFailedEventType    = consume.EventTypeFor[*ordersv1.PaymentFailed](1)
 )
 
 // DeclineThresholdCents is the deterministic demo decline rule: payments with
