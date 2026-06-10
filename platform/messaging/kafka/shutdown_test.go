@@ -25,10 +25,11 @@ func TestShutdownCommitsProcessedRecords(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 	ctx := context.Background()
 
-	const topic = "shutdown-commit"
+	topic := uniqueName("shutdown-commit")
+	group := uniqueName("g-shut")
 
 	adminCl, err := kafka.NewClient(kafka.Config{Brokers: []string{broker}, ClientID: "admin"})
 	require.NoError(t, err)
@@ -45,7 +46,7 @@ func TestShutdownCommitsProcessedRecords(t *testing.T) {
 	produceManual(t, broker, recs...)
 
 	c1, err := kafka.NewConsumer(kafka.Config{
-		Brokers: []string{broker}, ClientID: "c-shut-1", GroupID: "g-shut",
+		Brokers: []string{broker}, ClientID: "c-shut-1", GroupID: group,
 	}, []string{topic})
 	require.NoError(t, err)
 
@@ -78,7 +79,7 @@ func TestShutdownCommitsProcessedRecords(t *testing.T) {
 
 	// Second consumer, same group: nothing must be redelivered.
 	c2, err := kafka.NewConsumer(kafka.Config{
-		Brokers: []string{broker}, ClientID: "c-shut-2", GroupID: "g-shut",
+		Brokers: []string{broker}, ClientID: "c-shut-2", GroupID: group,
 	}, []string{topic})
 	require.NoError(t, err)
 	defer c2.Close(ctx)

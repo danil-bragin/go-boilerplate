@@ -22,7 +22,7 @@ func TestProducer_ProduceBatch(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 
 	ctx := context.Background()
 
@@ -33,7 +33,7 @@ func TestProducer_ProduceBatch(t *testing.T) {
 	require.NoError(t, err)
 	defer producerCl.Close()
 
-	const topic = "test-batch-topic"
+	topic := uniqueName("test-batch-topic")
 	require.NoError(t, kafka.EnsureTopics(ctx, producerCl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, topic))
 
 	prod := kafka.NewProducer(producerCl)
@@ -87,7 +87,7 @@ func TestProducer_ProduceAndConsumeRoundTrip(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 
 	ctx := context.Background()
 
@@ -99,7 +99,7 @@ func TestProducer_ProduceAndConsumeRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	defer producerCl.Close()
 
-	const topic = "test-topic"
+	topic := uniqueName("test-topic")
 
 	// Ensure the topic exists before producing.
 	require.NoError(t, kafka.EnsureTopics(ctx, producerCl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, topic))

@@ -35,10 +35,12 @@ import (
 func startApp(t *testing.T, broker, dsn string, opts ...gateway.Option) string {
 	t.Helper()
 
+	configureTopics(t)
 	os.Setenv("PG_DSN", dsn)
 	os.Setenv("KAFKA_BROKERS", broker)
 	os.Setenv("KAFKA_CLIENT_ID", "gateway-test-"+uuid.New().String())
-	os.Setenv("HTTP_ADDR", "127.0.0.1:0") // random port
+	os.Setenv("HTTP_ADDR", "127.0.0.1:0")       // random port
+	os.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0") // random port — :9090 may be taken (e.g. a compose Prometheus)
 	os.Setenv("GATEWAY_AUTH_DISABLED", "true")
 	os.Setenv("LOG_LEVEL", "error") // suppress noise in tests
 
@@ -63,8 +65,8 @@ func TestGateway_PostOrderPublishesCommand(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 
 	baseURL := startApp(t, broker, dsn)
 
@@ -103,15 +105,15 @@ func TestGateway_ProjectionAndGetOrder(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 
 	baseURL := startApp(t, broker, dsn)
 
 	orderID := uuid.New().String()
 
 	// Produce an OrderCreated event to orders.events.
-	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
+	produceEvent(t, broker, topicOrdersEvents, "orders.OrderCreated.v1", orderID, func() proto.Message {
 		return &ordersv1.OrderCreated{
 			OrderId:     orderID,
 			CustomerId:  "cust-proj",
@@ -125,7 +127,7 @@ func TestGateway_ProjectionAndGetOrder(t *testing.T) {
 
 	// Produce a PaymentProcessed event to payments.events.
 	paymentID := uuid.New().String()
-	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", orderID, func() proto.Message {
+	produceEvent(t, broker, topicPaymentsEvents, "orders.PaymentProcessed.v1", orderID, func() proto.Message {
 		return &ordersv1.PaymentProcessed{
 			OrderId:   orderID,
 			PaymentId: paymentID,
@@ -143,8 +145,8 @@ func TestGateway_GetUnknownOrder404(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 
 	baseURL := startApp(t, broker, dsn)
 
@@ -165,7 +167,7 @@ func consumeCreateOrderCommand(t *testing.T, broker, orderID string, timeout tim
 		ClientID: "test-cmd-consumer-" + orderID,
 		GroupID:  "test-cmd-consumer-" + orderID,
 	}
-	consumer, err := kafka.NewConsumer(cfg, []string{"orders.commands"})
+	consumer, err := kafka.NewConsumer(cfg, []string{topicCommands})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = consumer.Close(context.Background()) })
 
@@ -310,6 +312,7 @@ func startAppAuthEnabled(t *testing.T, broker, dsn string) string {
 func startAppWithVerifier(t *testing.T, broker, dsn string, v authpkg.Verifier) string {
 	t.Helper()
 
+	configureTopics(t)
 	t.Setenv("PG_DSN", dsn)
 	t.Setenv("KAFKA_BROKERS", broker)
 	t.Setenv("KAFKA_CLIENT_ID", "gateway-test-auth-"+uuid.New().String())
@@ -340,8 +343,8 @@ func TestGateway_AuthEnabledRequiresToken(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 	baseURL := startAppAuthEnabled(t, broker, dsn)
 
 	body := map[string]interface{}{
@@ -398,15 +401,15 @@ func TestGateway_ProjectionPaidBeforeCreatedStillPaid(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 	baseURL := startApp(t, broker, dsn)
 
 	orderID := uuid.New().String()
 
 	// Step 1: produce PaymentProcessed FIRST (no OrderCreated yet).
 	paymentID := uuid.New().String()
-	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", orderID, func() proto.Message {
+	produceEvent(t, broker, topicPaymentsEvents, "orders.PaymentProcessed.v1", orderID, func() proto.Message {
 		return &ordersv1.PaymentProcessed{
 			OrderId:   orderID,
 			PaymentId: paymentID,
@@ -418,7 +421,7 @@ func TestGateway_ProjectionPaidBeforeCreatedStillPaid(t *testing.T) {
 	pollOrderStatus(t, baseURL, orderID, "paid", 30*time.Second)
 
 	// Step 2: produce OrderCreated LATE — must NOT downgrade status to "created".
-	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
+	produceEvent(t, broker, topicOrdersEvents, "orders.OrderCreated.v1", orderID, func() proto.Message {
 		return &ordersv1.OrderCreated{
 			OrderId:     orderID,
 			CustomerId:  "cust-reorder",
@@ -519,9 +522,10 @@ func TestGateway_GetOrderCachedSecondCallSkipsDB(t *testing.T) {
 		// Start Redis container.
 		redisAddr := newRedisAddr(t)
 
-		broker, _ := kafkatest.NewRedpanda(t)
-		dsn := pgtest.NewDSN(t)
+		broker, _ := kafkatest.Shared(t)
+		dsn := pgtest.SharedDSN(t)
 
+		configureTopics(t)
 		t.Setenv("PG_DSN", dsn)
 		t.Setenv("KAFKA_BROKERS", broker)
 		t.Setenv("KAFKA_CLIENT_ID", "gateway-cache-test-"+uuid.New().String())
@@ -544,7 +548,7 @@ func TestGateway_GetOrderCachedSecondCallSkipsDB(t *testing.T) {
 		orderID := uuid.New().String()
 
 		// Seed the projection by producing an OrderCreated event.
-		produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
+		produceEvent(t, broker, topicOrdersEvents, "orders.OrderCreated.v1", orderID, func() proto.Message {
 			return &ordersv1.OrderCreated{
 				OrderId:     orderID,
 				CustomerId:  "cust-cache",
@@ -659,8 +663,8 @@ func TestGateway_PerIPRateLimit(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 
 	t.Setenv("RATELIMIT_RPS", "1")
 	t.Setenv("RATELIMIT_BURST", "2")
@@ -695,10 +699,11 @@ func TestGateway_AuthzForbidsWithoutRole(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 
 	// Start with auth enabled + a verifier that returns a role-less principal.
+	configureTopics(t)
 	t.Setenv("PG_DSN", dsn)
 	t.Setenv("KAFKA_BROKERS", broker)
 	t.Setenv("KAFKA_CLIENT_ID", "gateway-authz-test-"+uuid.New().String())
@@ -797,8 +802,8 @@ func TestGateway_IdempotencyKey(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 	baseURL := startApp(t, broker, dsn)
 
 	id1 := postOrderWithKey(t, baseURL, "retry-key-1")
@@ -815,7 +820,7 @@ func TestGateway_IdempotencyKey(t *testing.T) {
 	// Downstream dedup hinges on message-id == order id for BOTH deliveries.
 	cl, err := kgo.NewClient(
 		kgo.SeedBrokers(broker),
-		kgo.ConsumeTopics("orders.commands"),
+		kgo.ConsumeTopics(topicCommands),
 		kgo.ConsumerGroup("idem-test-"+uuid.New().String()),
 		kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()),
 	)
@@ -874,8 +879,8 @@ func TestGateway_IdempotencyKeyScopedByPrincipal(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 	baseURL := startAppWithVerifier(t, broker, dsn, multiUserVerifier{})
 
 	aliceBody := []byte(`{"customer_id":"alice","amount_cents":1500,"currency":"USD"}`)
@@ -903,8 +908,8 @@ func TestGateway_IdempotencyKeyBodyMismatch409(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 	baseURL := startApp(t, broker, dsn)
 
 	st, id := postOrderRaw(t, baseURL, "mismatch-key", "",
@@ -946,8 +951,8 @@ func TestGateway_PostReturnsLocationAndPendingRow(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 	baseURL := startApp(t, broker, dsn)
 
 	body := []byte(`{"customer_id":"c1","amount_cents":1500,"currency":"USD"}`)
@@ -998,27 +1003,27 @@ func TestGateway_PendingUpgradesAndReorderSafety(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 	baseURL := startApp(t, broker, dsn)
 
 	// Create an order (pending row).
 	orderID := postOrderWithKey(t, baseURL, "")
 
 	// OrderCreated arrives → pending upgrades to created.
-	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
+	produceEvent(t, broker, topicOrdersEvents, "orders.OrderCreated.v1", orderID, func() proto.Message {
 		return &ordersv1.OrderCreated{OrderId: orderID, CustomerId: "c1", AmountCents: 1500, Currency: "USD"}
 	})
 	pollOrderStatus(t, baseURL, orderID, "created", 15*time.Second)
 
 	// PaymentProcessed → paid.
-	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", orderID, func() proto.Message {
+	produceEvent(t, broker, topicPaymentsEvents, "orders.PaymentProcessed.v1", orderID, func() proto.Message {
 		return &ordersv1.PaymentProcessed{OrderId: orderID, PaymentId: uuid.New().String(), Status: "processed"}
 	})
 	pollOrderStatus(t, baseURL, orderID, "paid", 15*time.Second)
 
 	// A late duplicate OrderCreated must NOT downgrade paid.
-	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
+	produceEvent(t, broker, topicOrdersEvents, "orders.OrderCreated.v1", orderID, func() proto.Message {
 		return &ordersv1.OrderCreated{OrderId: orderID, CustomerId: "c1", AmountCents: 1500, Currency: "USD"}
 	})
 	time.Sleep(2 * time.Second)
@@ -1033,8 +1038,8 @@ func TestGateway_IdempotentRetrySinglePendingRow(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 	baseURL := startApp(t, broker, dsn)
 
 	id1 := postOrderWithKey(t, baseURL, "single-row-key")
@@ -1063,8 +1068,8 @@ func TestGateway_ReadOwnership(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 	baseURL := startAppWithVerifier(t, broker, dsn, multiUserVerifier{})
 
 	get := func(token, orderID string) int {
@@ -1126,8 +1131,8 @@ func TestGateway_ListOrdersKeysetPagination(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 	baseURL := startApp(t, broker, dsn)
 
 	// Create 5 orders.
@@ -1209,23 +1214,23 @@ func TestGateway_ProjectionPaymentFailed(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 	baseURL := startApp(t, broker, dsn)
 
 	orderID := uuid.New().String()
-	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
+	produceEvent(t, broker, topicOrdersEvents, "orders.OrderCreated.v1", orderID, func() proto.Message {
 		return &ordersv1.OrderCreated{OrderId: orderID, CustomerId: "c-fail", AmountCents: 1_000_000, Currency: "USD"}
 	})
 	pollOrderStatus(t, baseURL, orderID, "created", 30*time.Second)
 
-	produceEvent(t, broker, "payments.events", "orders.PaymentFailed.v1", orderID, func() proto.Message {
+	produceEvent(t, broker, topicPaymentsEvents, "orders.PaymentFailed.v1", orderID, func() proto.Message {
 		return &ordersv1.PaymentFailed{OrderId: orderID, Reason: "declined"}
 	})
 	pollOrderStatus(t, baseURL, orderID, "payment_failed", 30*time.Second)
 
 	// A late PaymentProcessed must be ignored: first terminal state wins.
-	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", orderID, func() proto.Message {
+	produceEvent(t, broker, topicPaymentsEvents, "orders.PaymentProcessed.v1", orderID, func() proto.Message {
 		return &ordersv1.PaymentProcessed{OrderId: orderID, PaymentId: uuid.New().String(), Status: "success"}
 	})
 	time.Sleep(3 * time.Second)
@@ -1240,22 +1245,22 @@ func TestGateway_ProjectionPaidWinsOverLateFailure(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 	baseURL := startApp(t, broker, dsn)
 
 	orderID := uuid.New().String()
-	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
+	produceEvent(t, broker, topicOrdersEvents, "orders.OrderCreated.v1", orderID, func() proto.Message {
 		return &ordersv1.OrderCreated{OrderId: orderID, CustomerId: "c-paid", AmountCents: 100, Currency: "USD"}
 	})
 	pollOrderStatus(t, baseURL, orderID, "created", 30*time.Second)
 
-	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", orderID, func() proto.Message {
+	produceEvent(t, broker, topicPaymentsEvents, "orders.PaymentProcessed.v1", orderID, func() proto.Message {
 		return &ordersv1.PaymentProcessed{OrderId: orderID, PaymentId: uuid.New().String(), Status: "success"}
 	})
 	pollOrderStatus(t, baseURL, orderID, "paid", 30*time.Second)
 
-	produceEvent(t, broker, "payments.events", "orders.PaymentFailed.v1", orderID, func() proto.Message {
+	produceEvent(t, broker, topicPaymentsEvents, "orders.PaymentFailed.v1", orderID, func() proto.Message {
 		return &ordersv1.PaymentFailed{OrderId: orderID, Reason: "declined"}
 	})
 	time.Sleep(3 * time.Second)
@@ -1291,34 +1296,34 @@ func TestGateway_ProjectionPaymentTimeout(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 	baseURL := startApp(t, broker, dsn)
 
 	// Unpaid order: created → payment_timeout.
 	orderID := uuid.New().String()
-	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", orderID, func() proto.Message {
+	produceEvent(t, broker, topicOrdersEvents, "orders.OrderCreated.v1", orderID, func() proto.Message {
 		return &ordersv1.OrderCreated{OrderId: orderID, CustomerId: "c-late", AmountCents: 700, Currency: "USD"}
 	})
 	pollOrderStatus(t, baseURL, orderID, "created", 30*time.Second)
 
-	produceEvent(t, broker, "orders.events", "orders.OrderPaymentTimedOut.v1", orderID, func() proto.Message {
+	produceEvent(t, broker, topicOrdersEvents, "orders.OrderPaymentTimedOut.v1", orderID, func() proto.Message {
 		return &ordersv1.OrderPaymentTimedOut{OrderId: orderID}
 	})
 	pollOrderStatus(t, baseURL, orderID, "payment_timeout", 30*time.Second)
 
 	// Paid order: a late OrderPaymentTimedOut must be ignored.
 	paidID := uuid.New().String()
-	produceEvent(t, broker, "orders.events", "orders.OrderCreated.v1", paidID, func() proto.Message {
+	produceEvent(t, broker, topicOrdersEvents, "orders.OrderCreated.v1", paidID, func() proto.Message {
 		return &ordersv1.OrderCreated{OrderId: paidID, CustomerId: "c-paid", AmountCents: 100, Currency: "USD"}
 	})
 	pollOrderStatus(t, baseURL, paidID, "created", 30*time.Second)
-	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", paidID, func() proto.Message {
+	produceEvent(t, broker, topicPaymentsEvents, "orders.PaymentProcessed.v1", paidID, func() proto.Message {
 		return &ordersv1.PaymentProcessed{OrderId: paidID, PaymentId: uuid.New().String(), Status: "success"}
 	})
 	pollOrderStatus(t, baseURL, paidID, "paid", 30*time.Second)
 
-	produceEvent(t, broker, "orders.events", "orders.OrderPaymentTimedOut.v1", paidID, func() proto.Message {
+	produceEvent(t, broker, topicOrdersEvents, "orders.OrderPaymentTimedOut.v1", paidID, func() proto.Message {
 		return &ordersv1.OrderPaymentTimedOut{OrderId: paidID}
 	})
 	time.Sleep(3 * time.Second)
@@ -1329,7 +1334,7 @@ func TestGateway_ProjectionPaymentTimeout(t *testing.T) {
 	// flip the projection back to paid — first terminal event wins, matching
 	// the orders service (whose status='created' guard ignores the late
 	// outcome too).
-	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", orderID, func() proto.Message {
+	produceEvent(t, broker, topicPaymentsEvents, "orders.PaymentProcessed.v1", orderID, func() proto.Message {
 		return &ordersv1.PaymentProcessed{OrderId: orderID, PaymentId: uuid.New().String(), Status: "success"}
 	})
 	time.Sleep(3 * time.Second)

@@ -23,13 +23,11 @@ func TestConsumer_GroupConsumesCommitted(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 
-	const (
-		topic   = "ctopic"
-		groupID = "g1"
-		n       = 5
-	)
+	topic := uniqueName("ctopic")
+	groupID := uniqueName("g1")
+	const n = 5
 
 	ctx := context.Background()
 
@@ -168,12 +166,10 @@ func TestConsumer_HandlerErrorRedeliversRecord(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 
-	const (
-		topic   = "redeliver-topic"
-		groupID = "redeliver-group"
-	)
+	topic := uniqueName("redeliver-topic")
+	groupID := uniqueName("redeliver-group")
 
 	ctx := context.Background()
 
@@ -292,11 +288,11 @@ func TestConsumer_PerPartitionParallelOrdering(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 
+	topic := uniqueName("parallel-ordering-topic")
+	groupID := uniqueName("parallel-ordering-group")
 	const (
-		topic          = "parallel-ordering-topic"
-		groupID        = "parallel-ordering-group"
 		nPartitions    = 3
 		nPerPartition  = 4
 		sleepPerRecord = 10 * time.Millisecond
@@ -447,11 +443,11 @@ func TestConsumer_OnePartitionFailureDoesNotBlockOthers(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 
+	topic := uniqueName("partition-isolation-topic")
+	groupID := uniqueName("partition-isolation-group")
 	const (
-		topic         = "partition-isolation-topic"
-		groupID       = "partition-isolation-group"
 		nHealthy      = 3
 		healthyPartID = int32(1)
 		failingPartID = int32(0)

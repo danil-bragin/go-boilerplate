@@ -36,10 +36,11 @@ func TestRedeliveryOnHandlerFailure(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 	ctx := context.Background()
 
-	const topic = "redeliver-transient"
+	topic := uniqueName("redeliver-transient")
+	group := uniqueName("g-transient")
 
 	adminCl, err := kafka.NewClient(kafka.Config{Brokers: []string{broker}, ClientID: "admin"})
 	require.NoError(t, err)
@@ -53,7 +54,7 @@ func TestRedeliveryOnHandlerFailure(t *testing.T) {
 	)
 
 	c, err := kafka.NewConsumer(kafka.Config{
-		Brokers: []string{broker}, ClientID: "c-transient", GroupID: "g-transient",
+		Brokers: []string{broker}, ClientID: "c-transient", GroupID: group,
 	}, []string{topic})
 	require.NoError(t, err)
 	defer c.Close(ctx)
@@ -106,10 +107,11 @@ func TestNoCommitPastFailure(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 	ctx := context.Background()
 
-	const topic = "redeliver-permanent"
+	topic := uniqueName("redeliver-permanent")
+	group := uniqueName("g-perm")
 
 	adminCl, err := kafka.NewClient(kafka.Config{Brokers: []string{broker}, ClientID: "admin"})
 	require.NoError(t, err)
@@ -123,7 +125,7 @@ func TestNoCommitPastFailure(t *testing.T) {
 	)
 
 	c1, err := kafka.NewConsumer(kafka.Config{
-		Brokers: []string{broker}, ClientID: "c-perm-1", GroupID: "g-perm",
+		Brokers: []string{broker}, ClientID: "c-perm-1", GroupID: group,
 	}, []string{topic})
 	require.NoError(t, err)
 
@@ -165,7 +167,7 @@ func TestNoCommitPastFailure(t *testing.T) {
 
 	// Second consumer, same group: must receive r2 first (commit stopped at r1).
 	c2, err := kafka.NewConsumer(kafka.Config{
-		Brokers: []string{broker}, ClientID: "c-perm-2", GroupID: "g-perm",
+		Brokers: []string{broker}, ClientID: "c-perm-2", GroupID: group,
 	}, []string{topic})
 	require.NoError(t, err)
 	defer c2.Close(ctx)
@@ -197,10 +199,11 @@ func TestFailureIsolatedPerPartition(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 	ctx := context.Background()
 
-	const topic = "redeliver-isolated"
+	topic := uniqueName("redeliver-isolated")
+	group := uniqueName("g-iso")
 
 	adminCl, err := kafka.NewClient(kafka.Config{Brokers: []string{broker}, ClientID: "admin"})
 	require.NoError(t, err)
@@ -219,7 +222,7 @@ func TestFailureIsolatedPerPartition(t *testing.T) {
 	produceManual(t, broker, recs...)
 
 	c, err := kafka.NewConsumer(kafka.Config{
-		Brokers: []string{broker}, ClientID: "c-iso", GroupID: "g-iso",
+		Brokers: []string{broker}, ClientID: "c-iso", GroupID: group,
 	}, []string{topic})
 	require.NoError(t, err)
 	defer c.Close(ctx)

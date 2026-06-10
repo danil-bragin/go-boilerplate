@@ -24,13 +24,16 @@ func TestTransact_ExactlyOnceHappyPath(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 
 	ctx := context.Background()
 	const n = 5
 
 	inTopic := "txn-in-" + uuid.NewString()[:8]
 	outTopic := "txn-out-" + uuid.NewString()[:8]
+	group := uniqueName("txn-happy-group")
+	readerGroup := uniqueName("txn-happy-reader-group")
+	txnID := uniqueName("txn-happy-txn-id")
 
 	// ── Admin setup ──────────────────────────────────────────────────────────
 	adminCl, err := kafka.NewClient(kafka.Config{
@@ -56,8 +59,8 @@ func TestTransact_ExactlyOnceHappyPath(t *testing.T) {
 	// ── TransactConsumer: forward each record to out-topic ───────────────────
 	tc, err := kafka.NewTransactConsumer(
 		kafka.Config{Brokers: []string{broker}, ClientID: "txn-happy-tc"},
-		"txn-happy-txn-id",
-		"txn-happy-group",
+		txnID,
+		group,
 		[]string{inTopic},
 	)
 	require.NoError(t, err)
@@ -79,7 +82,7 @@ func TestTransact_ExactlyOnceHappyPath(t *testing.T) {
 	outCfg := kafka.Config{
 		Brokers:  []string{broker},
 		ClientID: "txn-happy-reader",
-		GroupID:  "txn-happy-reader-group",
+		GroupID:  readerGroup,
 	}
 	reader, err := kafka.NewConsumer(outCfg, []string{outTopic})
 	require.NoError(t, err)
@@ -146,8 +149,8 @@ func TestTransact_ExactlyOnceHappyPath(t *testing.T) {
 
 	tc2, err := kafka.NewTransactConsumer(
 		kafka.Config{Brokers: []string{broker}, ClientID: "txn-happy-tc2"},
-		"txn-happy-txn-id-2", // new txn ID
-		"txn-happy-group",    // SAME group → picks up from committed offset
+		txnID+"-2", // new txn ID
+		group,      // SAME group → picks up from committed offset
 		[]string{inTopic},
 	)
 	require.NoError(t, err)
@@ -194,7 +197,7 @@ func TestTransact_ClientSideProduceFailureAborts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 
 	ctx := context.Background()
 
@@ -233,8 +236,8 @@ func TestTransact_ClientSideProduceFailureAborts(t *testing.T) {
 
 	tc, err := kafka.NewTransactConsumer(
 		kafka.Config{Brokers: []string{broker}, ClientID: "txn-toolarge-tc"},
-		"txn-toolarge-txn-id",
-		"txn-toolarge-group",
+		uniqueName("txn-toolarge-txn-id"),
+		uniqueName("txn-toolarge-group"),
 		[]string{inTopic},
 	)
 	require.NoError(t, err)
@@ -251,7 +254,7 @@ func TestTransact_ClientSideProduceFailureAborts(t *testing.T) {
 	reader, err := kafka.NewConsumer(kafka.Config{
 		Brokers:  []string{broker},
 		ClientID: "txn-toolarge-reader",
-		GroupID:  "txn-toolarge-reader-group",
+		GroupID:  uniqueName("txn-toolarge-reader-group"),
 	}, []string{outTopic})
 	require.NoError(t, err)
 
@@ -305,7 +308,7 @@ func TestTransact_AbortInvisibleAndRedelivered(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 
 	ctx := context.Background()
 
@@ -360,8 +363,8 @@ func TestTransact_AbortInvisibleAndRedelivered(t *testing.T) {
 
 	tc, err := kafka.NewTransactConsumer(
 		kafka.Config{Brokers: []string{broker}, ClientID: "txn-abort-tc"},
-		"txn-abort-txn-id",
-		"txn-abort-group",
+		uniqueName("txn-abort-txn-id"),
+		uniqueName("txn-abort-group"),
 		[]string{inTopic},
 	)
 	require.NoError(t, err)
@@ -377,7 +380,7 @@ func TestTransact_AbortInvisibleAndRedelivered(t *testing.T) {
 	outCfg := kafka.Config{
 		Brokers:  []string{broker},
 		ClientID: "txn-abort-reader",
-		GroupID:  "txn-abort-reader-group",
+		GroupID:  uniqueName("txn-abort-reader-group"),
 	}
 	reader, err := kafka.NewConsumer(outCfg, []string{outTopic})
 	require.NoError(t, err)

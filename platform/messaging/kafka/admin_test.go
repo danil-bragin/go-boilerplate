@@ -21,7 +21,7 @@ func TestEnsureTopics_AppliesSpec(t *testing.T) {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 	cl, err := kafka.NewClient(kafka.Config{
 		Brokers:  []string{broker},
 		ClientID: "admin-test-" + uuid.NewString()[:8],
@@ -73,7 +73,7 @@ func TestEnsureTopics_DefaultsZeroValues(t *testing.T) {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 	cl, err := kafka.NewClient(kafka.Config{
 		Brokers:  []string{broker},
 		ClientID: "admin-test-" + uuid.NewString()[:8],
