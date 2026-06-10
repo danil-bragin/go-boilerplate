@@ -211,6 +211,16 @@ func (r *Relay) ProcessBatch(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("outbox: mark published batch: %w", err)
 	}
 
+	// Publish lag is observed ONLY for rows that completed the full A→B→C
+	// cycle (same condition as the outbox.published counter): a row whose
+	// phase C failed stays unpublished and will be observed once on the retry
+	// that actually marks it. now − CreatedAt mixes the app clock with DB
+	// insert time — see relayMetrics.recordPublishLag for the skew note.
+	now := time.Now().UTC()
+	for _, msg := range msgs {
+		r.metrics.recordPublishLag(ctx, now.Sub(msg.CreatedAt))
+	}
+
 	r.metrics.addPublished(ctx, int64(len(msgs)))
 	return len(msgs), nil
 }

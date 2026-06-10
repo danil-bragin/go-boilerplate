@@ -186,7 +186,7 @@ func (q *Queries) ListOrdersByCustomer(ctx context.Context, arg ListOrdersByCust
 	return items, nil
 }
 
-const markPaid = `-- name: MarkPaid :execrows
+const markPaid = `-- name: MarkPaid :one
 
 insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)
 values ($1, '', 0, '', 'paid', now())
@@ -194,53 +194,58 @@ on conflict (order_id) do update set
   status     = 'paid',
   updated_at = now()
 where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout')
+returning created_at
 `
 
 // Terminal-status precedence (MarkPaid / MarkPaymentFailed / MarkPaymentTimeout):
 // 'paid', 'payment_failed', and 'payment_timeout' are TERMINAL. Precedence is
 // pending < created < {terminal}; the FIRST terminal event wins and any later
-// terminal event is ignored (0 rows affected — the projection logs a warning).
-// This keeps the projection reorder-safe under at-least-once delivery.
-func (q *Queries) MarkPaid(ctx context.Context, orderID uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, markPaid, orderID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+// terminal event is ignored (no row returned — sqlc.ErrNoRows — and the
+// projection logs a warning). This keeps the projection reorder-safe under
+// at-least-once delivery.
+//
+// RETURNING created_at feeds the orders.lifecycle.duration histogram: it is
+// only returned when the terminal write APPLIED, so the projection observes
+// the order's created→terminal latency exactly once per order.
+func (q *Queries) MarkPaid(ctx context.Context, orderID uuid.UUID) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, markPaid, orderID)
+	var created_at pgtype.Timestamptz
+	err := row.Scan(&created_at)
+	return created_at, err
 }
 
-const markPaymentFailed = `-- name: MarkPaymentFailed :execrows
+const markPaymentFailed = `-- name: MarkPaymentFailed :one
 insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)
 values ($1, '', 0, '', 'payment_failed', now())
 on conflict (order_id) do update set
   status     = 'payment_failed',
   updated_at = now()
 where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout')
+returning created_at
 `
 
-func (q *Queries) MarkPaymentFailed(ctx context.Context, orderID uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, markPaymentFailed, orderID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+func (q *Queries) MarkPaymentFailed(ctx context.Context, orderID uuid.UUID) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, markPaymentFailed, orderID)
+	var created_at pgtype.Timestamptz
+	err := row.Scan(&created_at)
+	return created_at, err
 }
 
-const markPaymentTimeout = `-- name: MarkPaymentTimeout :execrows
+const markPaymentTimeout = `-- name: MarkPaymentTimeout :one
 insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)
 values ($1, '', 0, '', 'payment_timeout', now())
 on conflict (order_id) do update set
   status     = 'payment_timeout',
   updated_at = now()
 where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout')
+returning created_at
 `
 
-func (q *Queries) MarkPaymentTimeout(ctx context.Context, orderID uuid.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, markPaymentTimeout, orderID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+func (q *Queries) MarkPaymentTimeout(ctx context.Context, orderID uuid.UUID) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, markPaymentTimeout, orderID)
+	var created_at pgtype.Timestamptz
+	err := row.Scan(&created_at)
+	return created_at, err
 }
 
 const upsertOrderCreated = `-- name: UpsertOrderCreated :exec

@@ -191,7 +191,10 @@ func (c *Consumer) Run(ctx context.Context, h HandlerFunc) error {
 						return
 					}
 					r := RecordFromKGO(rec)
-					if err := h(ctx, r); err != nil {
+					start := time.Now()
+					err := h(ctx, r)
+					c.metrics.recordHandlerDuration(ctx, part.Topic, time.Since(start), err)
+					if err != nil {
 						firstBad = rec
 						return
 					}

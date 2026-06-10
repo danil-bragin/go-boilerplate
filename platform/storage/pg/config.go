@@ -116,6 +116,12 @@ type Config struct {
 	// Default (0) leaves pgx's CachedPlan behaviour unchanged.
 	// Set to StatementCacheModeDescribeExec when behind PgBouncer txn pooling.
 	StatementCacheMode StatementCacheMode `env:"PG_STATEMENT_CACHE_MODE" envDefault:"0"`
+
+	// QueryMetrics installs a pgx tracer on both pools that records the
+	// pg.query.duration histogram (seconds, {query, pool}) for every query,
+	// batch, and CopyFrom — see querytracer.go. Env default is ON; note that
+	// a zero-value Config constructed in code (tests) leaves it off.
+	QueryMetrics bool `env:"PG_QUERY_METRICS" envDefault:"true"`
 }
 
 // BuildPoolConfig parses DSN into a *pgxpool.Config and applies sizing/timeout
@@ -130,7 +136,7 @@ func (c Config) BuildPoolConfig() (*pgxpool.Config, error) {
 }
 
 func (c Config) buildPoolConfig(dsn string) (*pgxpool.Config, error) {
-	return c.buildSizedPoolConfig(dsn, c.MaxConns, c.MinConns)
+	return c.buildSizedPoolConfig(dsn, c.MaxConns, c.MinConns, "writer")
 }
 
 // buildReaderPoolConfig sizes the reader pool from ReaderMaxConns/ReaderMinConns,
@@ -144,10 +150,10 @@ func (c Config) buildReaderPoolConfig(dsn string) (*pgxpool.Config, error) {
 	if minConns <= 0 {
 		minConns = c.MinConns
 	}
-	return c.buildSizedPoolConfig(dsn, maxConns, minConns)
+	return c.buildSizedPoolConfig(dsn, maxConns, minConns, "reader")
 }
 
-func (c Config) buildSizedPoolConfig(dsn string, maxConns, minConns int32) (*pgxpool.Config, error) {
+func (c Config) buildSizedPoolConfig(dsn string, maxConns, minConns int32, role string) (*pgxpool.Config, error) {
 	pc, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("pg: parse dsn: %w", err)
@@ -172,6 +178,12 @@ func (c Config) buildSizedPoolConfig(dsn string, maxConns, minConns int32) (*pgx
 
 	if c.StatementCacheMode == StatementCacheModeDescribeExec {
 		pc.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
+	}
+
+	// Query duration metrics: one tracer instance per pool, carrying the
+	// pool's ROLE as the bounded "pool" label (writer|reader).
+	if c.QueryMetrics {
+		pc.ConnConfig.Tracer = newQueryTracer(role)
 	}
 
 	// UTC scanning: pgx's default TimestamptzCodec has no ScanLocation, so

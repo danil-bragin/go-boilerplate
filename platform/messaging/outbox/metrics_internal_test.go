@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/storage/pg"
@@ -140,4 +141,68 @@ func TestRelayMetrics_PendingPublishedErrors(t *testing.T) {
 	require.Error(t, err)
 	require.NoError(t, rd.Collect(ctx, &rm))
 	require.GreaterOrEqual(t, sumCounter(&rm, "outbox.publish_errors"), int64(1))
+}
+
+// histPoint returns the single datapoint of the named float64 histogram.
+func histPoint(rm *metricdata.ResourceMetrics, name string) (metricdata.HistogramDataPoint[float64], bool) {
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			if h, ok := m.Data.(metricdata.Histogram[float64]); ok && len(h.DataPoints) > 0 {
+				return h.DataPoints[0], true
+			}
+		}
+	}
+	return metricdata.HistogramDataPoint[float64]{}, false
+}
+
+// TestRelayMetrics_PublishLag verifies outbox.publish_lag: each successfully
+// published row contributes one sample of now − created_at in SECONDS, and a
+// FAILED publish contributes nothing (lag is only meaningful for rows that
+// actually reached the broker). The reader is the binary-wide cumulative one,
+// so assertions are DELTAS against a baseline taken at test start.
+func TestRelayMetrics_PublishLag(t *testing.T) {
+	rd := manualReader(t)
+	pool := newMetricsPool(t)
+	ctx := context.Background()
+
+	lagState := func() (uint64, float64) {
+		var rm metricdata.ResourceMetrics
+		require.NoError(t, rd.Collect(ctx, &rm))
+		dp, found := histPoint(&rm, "outbox.publish_lag")
+		if !found {
+			return 0, 0
+		}
+		return dp.Count, dp.Sum
+	}
+	baseCount, baseSum := lagState()
+
+	// Failed publish first: rows stay pending, NO lag samples.
+	old := time.Now().UTC().Add(-2 * time.Minute)
+	for i := 0; i < 2; i++ {
+		_, err := pool.Writer().Exec(ctx,
+			`insert into outbox (id, topic, aggregate_type, aggregate_id, event_type, payload, headers, created_at)
+			 values ($1, 'orders.events', 'order', 'lag', 'Test', '{}', '{}', $2)`, uuid.New(), old)
+		require.NoError(t, err)
+	}
+	failing := NewRelay(pool, &countingPub{fail: true}, RelayConfig{BatchSize: 10})
+	_, err := failing.ProcessBatch(ctx)
+	require.Error(t, err)
+
+	count, _ := lagState()
+	require.Equal(t, baseCount, count, "failed publish must not record lag samples")
+
+	// Successful batch: one sample per row, each ≥ the injected 2-minute age.
+	relay := NewRelay(pool, &countingPub{}, RelayConfig{BatchSize: 10})
+	n, err := relay.ProcessBatch(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 2, n)
+
+	count, sum := lagState()
+	require.Equal(t, baseCount+2, count, "one lag sample per published row")
+	require.GreaterOrEqual(t, sum-baseSum, 2*119.0,
+		"lag is recorded in SECONDS and includes the backlog age (2 rows × ≥119s)")
+	require.Less(t, sum-baseSum, 2*600.0, "sanity: lag is seconds, not milliseconds")
 }

@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -16,6 +17,7 @@ type relayMetrics struct {
 	published     metric.Int64Counter
 	publishErrors metric.Int64Counter
 	pending       metric.Int64Gauge
+	publishLag    metric.Float64Histogram
 }
 
 func newRelayMetrics() relayMetrics {
@@ -39,6 +41,13 @@ func newRelayMetrics() relayMetrics {
 	); err == nil {
 		rm.pending = g
 	}
+	if h, err := m.Float64Histogram(
+		"outbox.publish_lag",
+		metric.WithDescription("End-to-end DB insert → broker publish delay per row, including drain backlog"),
+		metric.WithUnit("s"),
+	); err == nil {
+		rm.publishLag = h
+	}
 	return rm
 }
 
@@ -54,6 +63,21 @@ func (rm relayMetrics) addPublishError(ctx context.Context) {
 		return
 	}
 	rm.publishErrors.Add(ctx, 1)
+}
+
+// recordPublishLag observes one SECONDS sample per successfully published
+// row: now − created_at. created_at is DATABASE time (DEFAULT now() at insert)
+// while "now" is the APP clock, so the value carries DB↔app clock skew —
+// negligible against the ≥ poll-interval magnitudes this histogram tracks,
+// but the reason negative skew is clamped to zero rather than recorded.
+func (rm relayMetrics) recordPublishLag(ctx context.Context, lag time.Duration) {
+	if rm.publishLag == nil {
+		return
+	}
+	if lag < 0 {
+		lag = 0
+	}
+	rm.publishLag.Record(ctx, lag.Seconds())
 }
 
 func (rm relayMetrics) recordPending(ctx context.Context, n int64) {
