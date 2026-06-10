@@ -1,6 +1,8 @@
 package httpserver_test
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -70,6 +72,7 @@ func TestCORS_PreflightAndAllowOrigin(t *testing.T) {
 	t.Run("preflight from disallowed origin", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodOptions, "/orders", http.NoBody)
 		req.Header.Set("Origin", "https://evil.com")
+		req.Header.Set("Access-Control-Request-Method", "POST")
 
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -101,7 +104,37 @@ func TestCORS_PreflightAndAllowOrigin(t *testing.T) {
 
 		require.Equal(t, http.StatusOK, rec.Code)
 		require.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
-		require.Empty(t, rec.Header().Get("Vary"), "no Origin header → no Vary needed")
+		require.Equal(t, "Origin", rec.Header().Get("Vary"),
+			"Vary: Origin must be emitted even without an Origin header — caches must always key on Origin")
+	})
+
+	t.Run("OPTIONS without Access-Control-Request-Method is not a preflight", func(t *testing.T) {
+		// A plain OPTIONS request (no Access-Control-Request-Method) is an
+		// ordinary cross-origin request, not a preflight: it must reach the
+		// handler instead of being short-circuited with 204.
+		req := httptest.NewRequest(http.MethodOptions, "/orders", http.NoBody)
+		req.Header.Set("Origin", "https://example.com")
+
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code, "plain OPTIONS must reach the handler")
+		require.Equal(t, "https://example.com", rec.Header().Get("Access-Control-Allow-Origin"))
+		require.Empty(t, rec.Header().Get("Access-Control-Allow-Methods"),
+			"preflight-only headers must not appear on a non-preflight response")
+	})
+
+	t.Run("disallowed preflight gets problem+json body", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodOptions, "/orders", http.NoBody)
+		req.Header.Set("Origin", "https://evil.com")
+		req.Header.Set("Access-Control-Request-Method", "POST")
+
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusForbidden, rec.Code)
+		require.Equal(t, "application/problem+json", rec.Header().Get("Content-Type"))
+		require.Contains(t, rec.Body.String(), "Forbidden")
 	})
 
 	t.Run("Vary Origin always present when Origin sent", func(t *testing.T) {
@@ -311,6 +344,35 @@ func TestRateLimitPer_XFFRightToLeftSkipsTrustedHops(t *testing.T) {
 	rec2 := httptest.NewRecorder()
 	h.ServeHTTP(rec2, newReq("10.0.0.1:9000", "2.3.4.5, 10.0.0.2"))
 	require.Equal(t, http.StatusTooManyRequests, rec2.Code, "same client IP must reuse the same bucket")
+}
+
+// errLimiter is a Limiter stub whose Allow always fails (fail-closed limiter
+// surfacing an infrastructure error, e.g. Redis down with fail-open disabled).
+type errLimiter struct{ err error }
+
+func (l errLimiter) Allow(context.Context, string) (ratelimit.Result, error) {
+	return ratelimit.Result{}, l.err
+}
+
+// TestRateLimitPer_LimiterError503 verifies the fail-closed error path: a
+// limiter infrastructure error is NOT the client's fault — the response must
+// be 503 problem+json (service trouble), not a 429 with a made-up
+// Retry-After: 1 that invites an immediate retry storm against a broken
+// backend.
+func TestRateLimitPer_LimiterError503(t *testing.T) {
+	h := httpserver.RateLimitPer(errLimiter{err: errors.New("redis: connection refused")},
+		httpserver.ClientIPKey(nil))(okHandler)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, newReq("1.2.3.4:50001", ""))
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code,
+		"limiter error under fail-closed must be 503, not 429")
+	require.Equal(t, "application/problem+json", rec.Header().Get("Content-Type"))
+	require.Empty(t, rec.Header().Get("Retry-After"),
+		"no real wait estimate exists on a limiter error — do not fabricate Retry-After")
+	require.NotContains(t, rec.Body.String(), "redis",
+		"limiter internals must not leak to the client")
 }
 
 // TestRateLimitPer_429ProblemAndHeaders verifies the 429 ergonomics: a real

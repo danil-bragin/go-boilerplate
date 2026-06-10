@@ -63,13 +63,17 @@ type CORSOptions struct {
 // Behaviour:
 //   - Deny-by-default: with no AllowedOrigins configured, no
 //     Access-Control-Allow-* header is ever emitted.
-//   - Allowed preflight OPTIONS → 204 with the Access-Control-Allow-* headers.
-//   - Disallowed preflight → 403 with NO CORS headers.
+//   - A preflight is an OPTIONS request carrying Access-Control-Request-Method
+//     (the browser always sends it); a plain OPTIONS request without that
+//     header is an ordinary request and reaches the handler.
+//   - Allowed preflight → 204 with the Access-Control-Allow-* headers.
+//   - Disallowed preflight → 403 problem+json with NO CORS headers.
 //   - Actual requests from an allowed origin get Access-Control-Allow-Origin;
 //     disallowed origins get none (the browser blocks the response).
-//   - Vary: Origin is always set when the request carries an Origin header, so
-//     shared caches never serve a response with one origin's CORS headers to
-//     another origin.
+//   - Vary: Origin is set UNCONDITIONALLY — also on responses to requests
+//     without an Origin header — so shared caches always key on Origin and
+//     never serve a response with one origin's CORS headers to another
+//     origin (or a header-less response to a CORS request).
 //
 // For production use with credentials (cookies / Authorization headers) set
 // AllowedOrigins to the exact allowed origin(s); never use "*" with
@@ -107,6 +111,12 @@ func CORS(opts CORSOptions) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// The response varies with the Origin request header: caches must
+			// key on it for EVERY response from this endpoint, including
+			// responses to requests without an Origin header (otherwise a
+			// cached header-less response could be served to a CORS request).
+			w.Header().Add("Vary", "Origin")
+
 			origin := r.Header.Get("Origin")
 			if origin == "" {
 				// Not a CORS request.
@@ -114,17 +124,19 @@ func CORS(opts CORSOptions) func(http.Handler) http.Handler {
 				return
 			}
 
-			// The response depends on the Origin request header from here on:
-			// caches must key on it (cache-poisoning defence).
-			w.Header().Add("Vary", "Origin")
-
 			allowed := allowAll || originSet[origin]
 
-			if r.Method == http.MethodOptions {
+			// A real preflight carries Access-Control-Request-Method; a plain
+			// OPTIONS request without it is an ordinary request.
+			if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
 				// Preflight request.
 				if !allowed {
 					// No CORS headers for disallowed origins; reject outright.
-					w.WriteHeader(http.StatusForbidden)
+					httpx.WriteProblem(w, httpx.Problem{
+						Status: http.StatusForbidden,
+						Title:  "Forbidden",
+						Detail: "origin not allowed",
+					})
 					return
 				}
 				h := w.Header()
@@ -264,8 +276,10 @@ func inAny(addr netip.Addr, prefixes []netip.Prefix) bool {
 // header — the limiter's computed wait until the next token, rounded UP to
 // whole seconds (minimum 1, since Retry-After: 0 invites an instant retry).
 //
-// On limiter error the request is denied (fail-closed). Fail-open limiters
-// surface errors as allowed results so they never trigger this path.
+// On limiter ERROR the request is denied (fail-closed) with a 503
+// problem+json: the failure is the service's, not the client's, so a 429 with
+// a fabricated Retry-After would be a lie. Fail-open limiters surface errors
+// as allowed results so they never trigger this path.
 //
 // If key(r) returns an empty string, r.RemoteAddr is used instead.
 func RateLimitPer(l ratelimit.Limiter, key func(*http.Request) string) func(http.Handler) http.Handler {
@@ -277,7 +291,17 @@ func RateLimitPer(l ratelimit.Limiter, key func(*http.Request) string) func(http
 			}
 			res, err := l.Allow(r.Context(), k)
 			setRateLimitHeaders(w, res)
-			if err != nil || !res.Allowed {
+			if err != nil {
+				// Fail-closed infrastructure error: not the client's fault and
+				// no real wait estimate exists — 503 without Retry-After.
+				httpx.WriteProblem(w, httpx.Problem{
+					Status: http.StatusServiceUnavailable,
+					Title:  "Service Unavailable",
+					Detail: "rate limiter unavailable",
+				})
+				return
+			}
+			if !res.Allowed {
 				w.Header().Set("Retry-After", strconv.FormatInt(retryAfterSeconds(res.RetryAfter), 10))
 				httpx.WriteProblem(w, httpx.Problem{
 					Status: http.StatusTooManyRequests,
