@@ -1,5 +1,16 @@
 # Round 5 — Latency Tails Observability (p50/p95/p99)
 
+> **STATUS: COMPLETE (2026-06-11).** Lanes A+B + fix round merged (~20 commits). Engine:
+> exponential histograms → Prometheus v3.12 NATIVE histograms, proven empirically end-to-end
+> (zero _bucket series in TSDB; histogram_quantile sans le). Signals: kafka handler+producer,
+> outbox publish_lag, pg.query.duration{query,pool} via pgx tracer, orders.lifecycle.duration.
+> 23 recording rules + 2 SLOs w/ multiwindow burn-rate alerts (promtool-tested incl. the
+> 100%-outage NaN case found by review — good leg NaN-proofed). Live validation: real
+> choreography traffic, ALL rules returned data (table in transcript). Fix round: attr-set
+> caches on hot paths, lifecycle placeholder-insert bias removed (xmax=0), promtool in CI,
+> collector healthcheck. Final suite: 54+notifications-rerun = all green (one env-collision
+> test fixed: ephemeral admin ports now a recorded convention).
+
 > User decisions: exponential histograms + Prometheus native histograms (classic-buckets fallback documented);
 > signals: kafka consumer handler + producer, outbox e2e publish lag, pg queries (pgx tracer), business
 > order→terminal; SLO burn-rate multiwindow alerts. TDD; one commit per task; normal-English messages +
