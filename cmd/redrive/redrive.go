@@ -37,6 +37,9 @@ import (
 	"io"
 	"time"
 
+	"go-boilerplate/platform/messaging/kafka"
+	"go-boilerplate/platform/messaging/retry"
+
 	"github.com/google/uuid"
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -70,13 +73,13 @@ type Stats struct {
 // strippedHeaders are removed from every record before republishing: the
 // record re-enters the pipeline as a clean first attempt.
 var strippedHeaders = map[string]bool{
-	"x-error":          true,
-	"x-attempts":       true,
-	"x-original-topic": true,
-	"retry-attempt":    true,
-	"retry-orig-topic": true,
-	"retry-due-at":     true,
-	"retry-last-error": true,
+	kafka.HeaderDLTError:         true,
+	kafka.HeaderDLTAttempts:      true,
+	kafka.HeaderDLTOriginalTopic: true,
+	retry.HeaderAttempt:          true,
+	retry.HeaderOrigTopic:        true,
+	retry.HeaderDueAt:            true,
+	retry.HeaderLastError:        true,
 }
 
 // pollTimeout bounds one PollFetches call; pending records not delivered
@@ -171,9 +174,9 @@ func redriveRecord(ctx context.Context, cl *kgo.Client, cfg Config, out io.Write
 		headers[h.Key] = string(h.Value)
 	}
 
-	origTopic := headers["x-original-topic"]
+	origTopic := headers[kafka.HeaderDLTOriginalTopic]
 	if origTopic == "" {
-		origTopic = headers["retry-orig-topic"]
+		origTopic = headers[retry.HeaderOrigTopic]
 	}
 	if origTopic == "" {
 		return fmt.Errorf(
@@ -185,7 +188,7 @@ func redriveRecord(ctx context.Context, cl *kgo.Client, cfg Config, out io.Write
 	// back to topic:partition:offset as the identity — which CHANGES on
 	// republish, so "consumers dedup on redrive" does NOT hold for this
 	// record and its side effects will run again.
-	if !cfg.FreshIDs && headers["message-id"] == "" {
+	if !cfg.FreshIDs && headers[kafka.HeaderMessageID] == "" {
 		stats.MissingMessageID++
 		_, _ = fmt.Fprintf(out, "WARN %s[%d]@%d -> %s key=%q has no message-id header — inbox dedup will NOT collapse this replay (fallback identity topic:partition:offset changes on republish)\n",
 			rec.Topic, rec.Partition, rec.Offset, origTopic, string(rec.Key))
@@ -196,19 +199,19 @@ func redriveRecord(ctx context.Context, cl *kgo.Client, cfg Config, out io.Write
 		if strippedHeaders[h.Key] {
 			continue
 		}
-		if cfg.FreshIDs && h.Key == "message-id" {
+		if cfg.FreshIDs && h.Key == kafka.HeaderMessageID {
 			continue
 		}
 		outHeaders = append(outHeaders, h)
 	}
 	if cfg.FreshIDs {
-		outHeaders = append(outHeaders, kgo.RecordHeader{Key: "message-id", Value: []byte(uuid.New().String())})
+		outHeaders = append(outHeaders, kgo.RecordHeader{Key: kafka.HeaderMessageID, Value: []byte(uuid.New().String())})
 	}
 
 	if cfg.DryRun {
 		_, _ = fmt.Fprintf(out, "DRY-RUN %s[%d]@%d -> %s key=%q message-id=%q event-type=%q\n",
 			rec.Topic, rec.Partition, rec.Offset, origTopic,
-			string(rec.Key), headers["message-id"], headers["event-type"])
+			string(rec.Key), headers[kafka.HeaderMessageID], headers[kafka.HeaderEventType])
 		return nil
 	}
 

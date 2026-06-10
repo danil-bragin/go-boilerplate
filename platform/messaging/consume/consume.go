@@ -196,7 +196,7 @@ func (c *Consumer) Handler(handlers ...Handler) kafka.HandlerFunc {
 		// boundary is the broker ACL/mTLS perimeter (see auth.ExtractToContext).
 		ctx = auth.ExtractToContext(ctx, r.Headers)
 
-		eventType := r.Headers["event-type"]
+		eventType := r.Headers[kafka.HeaderEventType]
 		h, ok := byType[eventType]
 		if !ok {
 			c.logger.DebugContext(ctx, "consume: skipping unknown event type",
@@ -206,7 +206,7 @@ func (c *Consumer) Handler(handlers ...Handler) kafka.HandlerFunc {
 
 		// Uniform message-id policy: outbox-stamped header first, stable
 		// topic:partition:offset position as the fallback.
-		msgID := r.Headers["message-id"]
+		msgID := r.Headers[kafka.HeaderMessageID]
 		if msgID == "" {
 			msgID = fmt.Sprintf("%s:%d:%d", r.Topic, r.Partition, r.Offset)
 		}

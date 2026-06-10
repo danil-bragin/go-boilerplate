@@ -179,8 +179,8 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 	// carries this same correlation-id, with causation-id pointing at the
 	// direct parent message (see platform/messaging/msgctx).
 	headers := map[string]string{
-		"message-id":               orderID,
-		"event-type":               "orders.CreateOrderCommand.v1",
+		kafka.HeaderMessageID:      orderID,
+		kafka.HeaderEventType:      "orders.CreateOrderCommand.v1",
 		msgctx.HeaderCorrelationID: orderID,
 	}
 	auth.InjectHeaders(ctx, headers)

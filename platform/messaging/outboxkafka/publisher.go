@@ -84,9 +84,9 @@ func New(producer *kafka.Producer, opts ...Option) *KafkaPublisher {
 // headers to be used (see head-of-line-block rationale in Publish).
 func (p *KafkaPublisher) messageToRecord(msg outbox.Message) (kafka.Record, error) {
 	headers := map[string]string{
-		"event-type":     msg.EventType,
-		"message-id":     msg.ID.String(),
-		"aggregate-type": msg.AggregateType,
+		kafka.HeaderEventType: msg.EventType,
+		kafka.HeaderMessageID: msg.ID.String(),
+		"aggregate-type":      msg.AggregateType,
 	}
 	if len(msg.Headers) > 0 {
 		var custom map[string]string
