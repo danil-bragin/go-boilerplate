@@ -65,8 +65,12 @@ type Config struct {
 	// Default false keeps the insert synchronous — read-your-writes UX: an
 	// immediate GET after POST sees the pending row. true trades that for
 	// writer relief under burst: GET right after POST may 404 until the
-	// batch flushes; rows are best-effort (dropped + WARN +
-	// gateway.pending_async.dropped counter when the buffer is full — the
-	// projection creates the row when OrderCreated arrives regardless).
+	// batch flushes; an Idempotency-Key body-mismatch within the flush
+	// window returns 202 instead of 409 (the mismatch check reads the
+	// not-yet-flushed row — detection resumes once the projection writes
+	// it); rows are best-effort (dropped + WARN +
+	// gateway.pending_async.dropped counter on buffer-full AND on failed
+	// batch INSERTs — the projection creates the row when OrderCreated
+	// arrives regardless).
 	PendingAsync bool `env:"GATEWAY_PENDING_ASYNC" envDefault:"false"`
 }

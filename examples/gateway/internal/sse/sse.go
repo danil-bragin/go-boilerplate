@@ -303,7 +303,7 @@ func (s *Streamer) Notify(ctx context.Context, orderID string) {
 	if s.client == nil {
 		return
 	}
-	status, _, err := s.currentStatus(ctx, orderID)
+	status, err := s.writerStatus(ctx, orderID)
 	if err != nil {
 		s.logger.Warn("sse: notify: read current status failed", "order_id", orderID, "error", err)
 		return
@@ -462,7 +462,32 @@ func (s *Streamer) subscribeOnce() error {
 // errNotFound marks an order that does not exist in the read model.
 var errNotFound = errors.New("sse: order not found")
 
-// currentStatus reads the order's status and owner from the projection store.
+// writerStatus reads the order's status from the WRITER pool. Notify runs
+// right after the projection committed on the writer; with PG_READER_DSN set
+// a replica read here could lag — publishing a stale pre-terminal status or
+// nothing at all (ErrNoRows) for a row the replica hasn't seen yet. Terminal
+// statuses have no follow-up event to recover from that, so Notify must have
+// read-your-writes. Notify volume = projection write rate (low), so the
+// writer cost is negligible.
+func (s *Streamer) writerStatus(ctx context.Context, orderID string) (string, error) {
+	id, err := uuid.Parse(orderID)
+	if err != nil {
+		return "", errNotFound
+	}
+	row, err := storegen.New(s.pool.Writer()).GetOrderView(ctx, id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", errNotFound
+		}
+		return "", fmt.Errorf("sse: get order view (writer): %w", err)
+	}
+	return row.Status, nil
+}
+
+// currentStatus reads the order's status and owner from the projection store
+// via the READER pool. Stream-side reads (snapshot, refresh, safety poll)
+// tolerate bounded replica lag: a stale read is corrected by the next
+// broadcast (published from the writer by Notify) or the next poll tick.
 func (s *Streamer) currentStatus(ctx context.Context, orderID string) (status, customerID string, err error) {
 	id, err := uuid.Parse(orderID)
 	if err != nil {
@@ -533,6 +558,8 @@ func (s *Streamer) Stream(w http.ResponseWriter, r *http.Request) {
 			// Subscriber slow or Redis down: proceed — the resubscribe
 			// refresh and the safety poll recover anything missed (delayed,
 			// never lost).
+		case <-s.shutdown: // draining: don't make a new stream wait it out
+			return
 		case <-ctx.Done():
 			return
 		}
@@ -606,10 +633,15 @@ func (s *Streamer) Stream(w http.ResponseWriter, r *http.Request) {
 			st, refresh := sl.take()
 			if refresh {
 				// Possible missed broadcast: the store is authoritative and
-				// at least as new as anything missed. On a read failure keep
-				// whatever the slot held; the safety poll retries the store.
-				if cur, _, err := s.currentStatus(ctx, orderID); err == nil && statusOrdinal(cur) > statusOrdinal(st) {
-					st = cur
+				// at least as new as anything missed. On a read failure
+				// re-arm the refresh flag so the next wake retries promptly
+				// instead of waiting out the slow safety poll.
+				if cur, _, err := s.currentStatus(ctx, orderID); err == nil {
+					if statusOrdinal(cur) > statusOrdinal(st) {
+						st = cur
+					}
+				} else {
+					sl.markRefresh()
 				}
 			}
 			if st != "" && !send(st) {

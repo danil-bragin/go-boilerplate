@@ -140,11 +140,23 @@ func (b *PendingBatcher) Run(ctx context.Context) {
 		case p := <-b.buf:
 			batch = append(batch, p)
 			if len(batch) >= b.maxBatch {
+				// During shutdown select picks randomly between the
+				// cancelled ctx and a ready buffer: flushing on the dead
+				// worker ctx would fail instantly and drop the whole batch.
+				// Divert to the drain path (fresh bounded ctx) instead.
+				if ctx.Err() != nil {
+					b.drain(batch)
+					return
+				}
 				b.flush(ctx, batch)
 				batch = batch[:0]
 			}
 		case <-ticker.C:
 			if len(batch) > 0 {
+				if ctx.Err() != nil {
+					b.drain(batch)
+					return
+				}
 				b.flush(ctx, batch)
 				batch = batch[:0]
 			}
@@ -183,6 +195,9 @@ func (b *PendingBatcher) flush(ctx context.Context, batch []storegen.InsertPendi
 	if len(batch) == 0 {
 		return
 	}
+	// Hand-built multi-row INSERT (sqlc has no multirow variant for this
+	// query). MUST stay column-compatible with InsertPendingOrder in
+	// internal/store/queries/gateway.sql — change both together.
 	var sb strings.Builder
 	sb.WriteString("insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at) values ")
 	args := make([]any, 0, len(batch)*4)
@@ -197,6 +212,11 @@ func (b *PendingBatcher) flush(ctx context.Context, batch []storegen.InsertPendi
 	sb.WriteString(" on conflict (order_id) do nothing")
 
 	if _, err := b.pool.Writer().Exec(ctx, sb.String(), args...); err != nil {
+		// Failed flushes are the likeliest loss mode — count them in the same
+		// dropped metric operators are told to watch, not just buffer-fulls.
+		if b.dropped != nil {
+			b.dropped.Add(ctx, int64(len(batch)))
+		}
 		b.logger.WarnContext(ctx, "gateway: async pending-row batch insert failed (rows dropped — best-effort)",
 			"rows", len(batch), "error", err)
 	}
