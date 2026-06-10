@@ -479,6 +479,8 @@ slo.yaml comment block, re-run the promtool unit tests
 prove the burn arithmetic), and align `scripts/k6/order-flow.js` thresholds:
 
 ```bash
+just promtool   # rules + config check + rule unit tests (same gate as CI)
+# or just the unit tests:
 docker run --rm -v $PWD/deploy/prometheus:/r --entrypoint promtool \
   prom/prometheus:v3.12.0 test rules /r/tests/slo_test.yaml
 ```
