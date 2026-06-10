@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/msgctx"
@@ -25,7 +26,7 @@ func newPool(t *testing.T) *pg.Pool {
 	t.Helper()
 	ctx := context.Background()
 	dsn := pgtest.NewDSN(t)
-	pool, err := pg.New(ctx, pg.Config{DSN: dsn})
+	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool.Close(context.Background()) })
 	_, err = pool.Writer().Exec(ctx, `

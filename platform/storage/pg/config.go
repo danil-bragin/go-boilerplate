@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"time"
 
+	"go-boilerplate/platform/config"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -74,13 +76,16 @@ const (
 // Set StatementCacheMode to StatementCacheModeDescribeExec when connecting
 // through PgBouncer in transaction-mode pooling. See StatementCacheMode docs.
 type Config struct {
-	DSN       string `env:"PG_DSN" envDefault:"postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"`
-	ReaderDSN string `env:"PG_READER_DSN" envDefault:""`
+	// DSN / ReaderDSN / MigrateURL embed the database password, so they are
+	// config.Secret: %v/%+v/%#v dumps and slog output print [REDACTED]. The
+	// raw value is read via Reveal() only at the pgxpool/migration call sites.
+	DSN       config.Secret `env:"PG_DSN" envDefault:"postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"`
+	ReaderDSN config.Secret `env:"PG_READER_DSN" envDefault:""`
 
 	// MigrateURL, when set, is the DSN Migrate dials instead of DSN. REQUIRED
 	// when DSN points at PgBouncer in transaction pooling mode: migrations
 	// need a direct-Postgres session for the advisory lock (see Migrate docs).
-	MigrateURL        string        `env:"PG_MIGRATE_URL" envDefault:""`
+	MigrateURL        config.Secret `env:"PG_MIGRATE_URL" envDefault:""`
 	MaxConns          int32         `env:"PG_MAX_CONNS" envDefault:"25"`
 	MinConns          int32         `env:"PG_MIN_CONNS" envDefault:"5"`
 	MaxConnLifetime   time.Duration `env:"PG_MAX_CONN_LIFETIME" envDefault:"30m"`
@@ -119,7 +124,7 @@ type Config struct {
 // request-scoped deadline (cqrs.Deadline, http request ctx) IS the acquire
 // bound. Never call pool methods with context.Background() on a request path.
 func (c Config) BuildPoolConfig() (*pgxpool.Config, error) {
-	return c.buildPoolConfig(c.DSN)
+	return c.buildPoolConfig(c.DSN.Reveal())
 }
 
 func (c Config) buildPoolConfig(dsn string) (*pgxpool.Config, error) {
@@ -171,8 +176,9 @@ func (c Config) buildSizedPoolConfig(dsn string, maxConns, minConns int32) (*pgx
 }
 
 // MigrateDSN returns the DSN migrations should dial: MigrateURL when set
-// (direct Postgres behind PgBouncer), otherwise the pool DSN.
-func (c Config) MigrateDSN() string {
+// (direct Postgres behind PgBouncer), otherwise the pool DSN. The value stays
+// a config.Secret; call Reveal() at the Migrate call site.
+func (c Config) MigrateDSN() config.Secret {
 	if c.MigrateURL != "" {
 		return c.MigrateURL
 	}

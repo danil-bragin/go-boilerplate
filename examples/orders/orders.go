@@ -153,3 +153,9 @@ func (a *App) Stop(ctx context.Context) error {
 func (a *App) Closer() *run.Closer {
 	return a.svc.Closer()
 }
+
+// Fatal exposes the harness fatal-error channel so servicekit.Main tears the
+// process down (non-zero exit) when a public HTTP server dies after Start.
+func (a *App) Fatal() <-chan error {
+	return a.svc.Fatal()
+}

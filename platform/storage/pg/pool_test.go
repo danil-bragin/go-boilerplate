@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/storage/pg/pgtest"
 
@@ -19,7 +20,7 @@ func TestPool_ConnectsPingsAndHealthChecks(t *testing.T) {
 	dsn := pgtest.NewDSN(t)
 	ctx := context.Background()
 
-	pool, err := pg.New(ctx, pg.Config{DSN: dsn, MaxConns: 5, MinConns: 1})
+	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn), MaxConns: 5, MinConns: 1})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool.Close(ctx) })
 
@@ -43,8 +44,8 @@ func TestPool_ReaderSizingAndStatementTimeout(t *testing.T) {
 	dsn := pgtest.NewDSN(t)
 
 	cfg := pg.Config{
-		DSN:              dsn,
-		ReaderDSN:        dsn, // same instance, distinct pool
+		DSN:              config.Secret(dsn),
+		ReaderDSN:        config.Secret(dsn), // same instance, distinct pool
 		MaxConns:         10,
 		MinConns:         1,
 		ReaderMaxConns:   3,
@@ -77,7 +78,7 @@ func TestPool_ReaderSizingDefaultsToWriter(t *testing.T) {
 	ctx := context.Background()
 	dsn := pgtest.NewDSN(t)
 
-	cfg := pg.Config{DSN: dsn, ReaderDSN: dsn, MaxConns: 8, MinConns: 2}
+	cfg := pg.Config{DSN: config.Secret(dsn), ReaderDSN: config.Secret(dsn), MaxConns: 8, MinConns: 2}
 	pool, err := pg.New(ctx, cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool.Close(ctx) })

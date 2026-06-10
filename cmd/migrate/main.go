@@ -78,7 +78,7 @@ func run(service string) error {
 		if !ok {
 			return fmt.Errorf("unknown service %q (want gateway|orders|payments|notifications|all)", name)
 		}
-		if err := pg.Migrate(ctx, cfg.MigrateDSN(), fsys, "sql"); err != nil {
+		if err := pg.Migrate(ctx, cfg.MigrateDSN().Reveal(), fsys, "sql"); err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
 		fmt.Printf("migrate: %s migrations applied\n", name)

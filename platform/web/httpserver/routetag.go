@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -132,12 +133,20 @@ func RouteTag() func(http.Handler) http.Handler {
 			span.SetAttributes(semconv.HTTPRoute(route))
 
 			if duration != nil {
+				// When http.TimeoutHandler cut the request off, the status the
+				// handler wrote went to an abandoned writer — the CLIENT got
+				// the TimeoutHandler's 503. Record what the client saw, not
+				// the handler's intent.
+				status := cw.Status()
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					status = http.StatusServiceUnavailable
+				}
 				duration.Record(ctx,
 					float64(time.Since(start))/float64(time.Millisecond),
 					metric.WithAttributes(
 						attribute.String("http.request.method", r.Method),
 						attribute.String("http.route", route),
-						attribute.Int("http.response.status_code", cw.Status()),
+						attribute.Int("http.response.status_code", status),
 					),
 				)
 			}

@@ -152,6 +152,32 @@ func TestJWKSVerifier_Expired(t *testing.T) {
 	assert.True(t, errors.Is(err, auth.ErrInvalidToken), "expected ErrInvalidToken, got: %v", err)
 }
 
+// TestJWKSVerifier_JWKSFetchError_NotInvalidToken: an infrastructure failure
+// fetching the JWKS (IdP outage, cache shut down) must NOT be classified as
+// ErrInvalidToken — the middleware logs non-token errors, and wrapping them in
+// ErrInvalidToken would turn an IdP outage into a silent 401 storm.
+func TestJWKSVerifier_JWKSFetchError_NotInvalidToken(t *testing.T) {
+	keys := generateTestKeys(t)
+	srv := startJWKSServer(t, keys)
+
+	v := newVerifier(t, srv.URL, testIssuer, testAudience)
+
+	signed := signToken(t, keys, testIssuer, testAudience, testSubject, testUsername,
+		time.Now().Add(time.Hour), nil)
+
+	// A cancelled request ctx makes the JWKS cache lookup fail exactly the way
+	// it does when the IdP is unreachable past the request deadline — every
+	// cache.Lookup failure takes the same error-wrapping path in Verify.
+	deadCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := v.Verify(deadCtx, string(signed))
+	require.Error(t, err, "Verify must fail when the JWKS lookup fails")
+
+	assert.False(t, errors.Is(err, auth.ErrInvalidToken),
+		"JWKS fetch failures are infrastructure errors, not token-validation errors: %v", err)
+	assert.Contains(t, err.Error(), "JWKS", "error should identify the JWKS fetch step")
+}
+
 func TestJWKSVerifier_WrongIssuer(t *testing.T) {
 	keys := generateTestKeys(t)
 	srv := startJWKSServer(t, keys)

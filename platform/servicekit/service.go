@@ -64,6 +64,11 @@ type Service struct {
 	httpServers []namedServer
 	runCtx      context.Context //nolint:containedctx
 	cancelRun   context.CancelFunc
+	// fatal receives the first fatal serve error of a public HTTP server
+	// (buffered, never closed). servicekit.Main watches it and tears the
+	// process down with a non-zero exit — readiness alone only removes the
+	// pod from endpoints, it never restarts it.
+	fatal chan error
 	// wg tracks every goroutine launched in Start. Teardown waits for them
 	// to exit AFTER cancelling runCtx and BEFORE closing the kafka client /
 	// pg pool, so in-flight final commits and cleanup writes are not cut off
@@ -167,7 +172,7 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 		// skips them (production: a dedicated migrate job owns schema changes).
 		// MigrateDSN honors PG_MIGRATE_URL — required behind PgBouncer.
 		if cfg.MigrateOnStart && migrations != nil && migrationsDir != "" {
-			if err := pg.Migrate(ctx, cfg.PG.MigrateDSN(), migrations, migrationsDir); err != nil {
+			if err := pg.Migrate(ctx, cfg.PG.MigrateDSN().Reveal(), migrations, migrationsDir); err != nil {
 				return nil, err
 			}
 		}
@@ -239,6 +244,7 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 		h:           h,
 		adminServer: adminServer,
 		serde:       srSerde,
+		fatal:       make(chan error, 1),
 	}, nil
 }
 
@@ -259,6 +265,17 @@ func (s *Service) Health() *health.Health { return s.h }
 
 // Closer returns the run.Closer for integration with run.Run.
 func (s *Service) Closer() *run.Closer { return s.closer }
+
+// Fatal returns the channel that receives the first fatal serve error of a
+// public HTTP server (the listener dying after a successful Start). It
+// satisfies the FatalNotifier contract servicekit.Main watches: on a fatal
+// error Main tears the app down via the Closer and exits non-zero, so the
+// orchestrator restarts the pod instead of leaving a NotReady zombie (the
+// liveness probe stays green — readiness alone never restarts anything).
+//
+// App wrappers around *Service should expose this method (delegate to the
+// embedded Service) so Main can see fatal errors through them.
+func (s *Service) Fatal() <-chan error { return s.fatal }
 
 // Cfg returns the base Config.
 func (s *Service) Cfg() Config { return s.cfg }
@@ -286,8 +303,10 @@ func (s *Service) AddWorker(name string, fn func(context.Context)) {
 //
 // In-flight request handlers may therefore still use the kafka producer and
 // pg pool while the server drains. A fatal serve error after startup (e.g.
-// the listener dying) flips readiness to 503 so orchestrators restart the
-// pod. Must be called before Start.
+// the listener dying) flips readiness to 503 AND is forwarded to Fatal();
+// under servicekit.Main that triggers full teardown and a non-zero exit so
+// the orchestrator restarts the process (readiness alone never would).
+// Must be called before Start.
 func (s *Service) AddHTTPServer(name string, srv *httpserver.Server) {
 	s.httpServers = append(s.httpServers, namedServer{name: name, srv: srv})
 }

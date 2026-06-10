@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"go-boilerplate/platform/observability/log"
 	"go-boilerplate/platform/web/httpserver"
@@ -97,6 +98,80 @@ func TestRouteTag_SpanNameMetricAndRoute(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "http.server.duration{method,route,status} datapoint must exist")
+}
+
+// TestRouteTag_TimeoutRecords503: when http.TimeoutHandler cuts a request
+// off, the client receives 503 — the RED metric must say 503 too, not the
+// status the abandoned handler wrote on its dead writer.
+func TestRouteTag_TimeoutRecords503(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	prevMP := otel.GetMeterProvider()
+	otel.SetMeterProvider(mp)
+	t.Cleanup(func() {
+		otel.SetMeterProvider(prevMP)
+		_ = mp.Shutdown(context.Background())
+	})
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	r := chi.NewRouter()
+	r.Use(httpserver.Timeout(30 * time.Millisecond))
+	r.Use(httpserver.RouteTag())
+	done := make(chan struct{})
+	r.Get("/v1/slow", func(w http.ResponseWriter, req *http.Request) {
+		defer close(done)
+		select {
+		case <-req.Context().Done(): // TimeoutHandler cancelled us
+		case <-release:
+		}
+		w.WriteHeader(http.StatusOK) // lands on the abandoned writer
+	})
+
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/slow", http.NoBody))
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, "client must see the TimeoutHandler 503")
+
+	// RouteTag records on the inner (abandoned) goroutine — wait for it.
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler goroutine did not finish")
+	}
+
+	// The datapoint is recorded just after the handler returns on the
+	// abandoned goroutine; poll until it shows up.
+	var status int64 = -1
+	require.Eventually(t, func() bool {
+		var rm metricdata.ResourceMetrics
+		if err := reader.Collect(context.Background(), &rm); err != nil {
+			return false
+		}
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				if m.Name != "http.server.duration" {
+					continue
+				}
+				hist, ok := m.Data.(metricdata.Histogram[float64])
+				if !ok {
+					continue
+				}
+				for _, dp := range hist.DataPoints {
+					route, _ := dp.Attributes.Value("http.route")
+					if route.AsString() == "/v1/slow" {
+						s, _ := dp.Attributes.Value("http.response.status_code")
+						status = s.AsInt64()
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}, 5*time.Second, 10*time.Millisecond, "a datapoint for the timed-out route must exist")
+
+	assert.Equal(t, int64(http.StatusServiceUnavailable), status,
+		"timed-out request must be recorded as 503, not the handler's intended status")
 }
 
 // TestAccessLog_UsesRoutePattern: the access log line must carry the route

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/messaging/retry"
@@ -35,7 +36,7 @@ func TestService_AdminEndpoints(t *testing.T) {
 		AdminAddr: "127.0.0.1:0", // random port avoids conflicts
 	}
 	cfg.EnsureTopics = true
-	cfg.PG.DSN = dsn
+	cfg.PG.DSN = config.Secret(dsn)
 	cfg.Kafka.Brokers = []string{broker}
 	cfg.Telemetry.Enabled = false
 	cfg.Telemetry.MetricsPrometheus = true
@@ -112,7 +113,7 @@ func TestService_AddConsumerWithRetry(t *testing.T) {
 		AdminAddr: "127.0.0.1:0",
 	}
 	cfg.EnsureTopics = true
-	cfg.PG.DSN = dsn
+	cfg.PG.DSN = config.Secret(dsn)
 	cfg.Kafka.Brokers = []string{broker}
 	cfg.Telemetry.Enabled = false
 	cfg.Log.Level = "error"

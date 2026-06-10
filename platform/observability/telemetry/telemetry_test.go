@@ -1,8 +1,10 @@
 package telemetry_test
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -143,6 +145,34 @@ func TestSetup_InstallsMeterProvider(t *testing.T) {
 	body, _ := io.ReadAll(rec.Body)
 	require.Contains(t, string(body), "test_requests_total",
 		"Prometheus output must contain the recorded counter")
+}
+
+// TestSetup_ZeroTraceRatioLogsWarning: a hand-built Config that forgets to
+// set TraceRatio gets the zero value — every root span silently dropped.
+// Setup must announce that at startup so the missing-traces mystery is a
+// one-line log grep instead of a debugging session.
+func TestSetup_ZeroTraceRatioLogsWarning(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	shutdown, err := telemetry.Setup(context.Background(), telemetry.Config{
+		ServiceName:       "zero-ratio-test",
+		OTLPEndpoint:      "localhost:1", // never reached: nothing is exported in-test
+		Enabled:           true,
+		MetricsPrometheus: false,
+		TraceRatio:        0,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = shutdown(cctx)
+	})
+
+	require.Contains(t, buf.String(), "no root spans will be sampled",
+		"effective TraceRatio 0 must be announced at startup")
 }
 
 // TestSetup_TraceRatioSamplerApplied verifies TELEMETRY_TRACE_RATIO wiring:

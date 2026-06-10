@@ -37,6 +37,10 @@ func (s *Service) AddAuditCleanup(store *audit.PgStore, interval, retention time
 
 // startInboxCleanup launches the inbox-row cleanup goroutine if configured.
 // Called from Start; runCtx is the goroutine lifetime context.
+//
+// The goroutine is tracked by s.wg like every other harness goroutine: the
+// consumers-cancel closer cancels runCtx and WAITS on s.wg before the pg
+// closer runs, so an in-flight cleanup DELETE can never race pool teardown.
 func (s *Service) startInboxCleanup(runCtx context.Context) {
 	if s.cfg.InboxCleanupInterval <= 0 || s.pool == nil {
 		return
@@ -46,7 +50,9 @@ func (s *Service) startInboxCleanup(runCtx context.Context) {
 		retention = 168 * time.Hour // 7d fallback
 	}
 	interval := s.cfg.InboxCleanupInterval
+	s.wg.Add(1)
 	go func() {
+		defer s.wg.Done()
 		if err := inbox.RunCleanupWithOnError(runCtx, s.pool, interval, retention, func(err error) {
 			s.logger.Error("inbox cleaner error", "error", err)
 		}); err != nil && runCtx.Err() == nil {

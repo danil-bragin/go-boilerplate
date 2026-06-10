@@ -169,12 +169,17 @@ func Timeout(d time.Duration) func(http.Handler) http.Handler {
 // It is chi-compatible and can be used as a middleware or applied to individual
 // routes.
 //
-// Span naming: chi (≥5.1) populates r.Pattern with the matched route pattern;
-// otelhttp re-evaluates the span name formatter AFTER the inner chain returns,
-// so the exported span is named "METHOD /route/{pattern}" (low-cardinality).
-// Requests that match no route keep the generic "http.server" name. The
-// http.route attribute and the per-route duration histogram are added by the
-// RouteTag middleware, which must sit INSIDE OTel.
+// Span naming: the exported span is named "METHOD /route/{pattern}"
+// (low-cardinality) by the RouteTag middleware, which renames the active span
+// after chi has routed the request. otelhttp's own post-serve r.Pattern
+// re-evaluation never fires in this stack: middlewares between OTel and the
+// router (RequestID, AccessLog, TimeoutHandler) call r.WithContext and hand
+// chi a COPY of the request, so chi's r.Pattern write is invisible to the
+// *http.Request otelhttp holds. The spanNameFromPattern formatter below is
+// therefore only effective at span start (where it falls back to the
+// operation name); requests that match no route keep the generic
+// "http.server" name. The http.route attribute and the per-route duration
+// histogram are also added by RouteTag, which must sit INSIDE OTel.
 //
 // Wire it into the server's middleware chain so that downstream handlers (and
 // the AccessLog, which calls log.From(ctx)) benefit from trace correlation in
@@ -184,9 +189,12 @@ func OTel(next http.Handler) http.Handler {
 		otelhttp.WithSpanNameFormatter(spanNameFromPattern))
 }
 
-// spanNameFromPattern names the server span "METHOD pattern" once the router
-// has populated r.Pattern, and falls back to the operation name before
-// routing (span start) or when no route matched.
+// spanNameFromPattern names the server span "METHOD pattern" when r.Pattern
+// is populated and falls back to the operation name otherwise. In the
+// standard stack r.Pattern is never set on otelhttp's request copy (see the
+// OTel docs above) — the formatter is kept so that a bare
+// OTel(chiRouter) wiring without intermediate request-copying middlewares
+// still names spans correctly; with the full stack, RouteTag does the rename.
 func spanNameFromPattern(operation string, r *http.Request) string {
 	if r.Pattern != "" {
 		return r.Method + " " + r.Pattern

@@ -6,10 +6,15 @@ package servicekit
 
 import (
 	"context"
+	"errors"
+	"log/slog"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/observability/health"
 	"go-boilerplate/platform/web/httpserver"
 
 	"github.com/stretchr/testify/assert"
@@ -68,4 +73,112 @@ func TestAddHTTPServer_TeardownOrder(t *testing.T) {
 		"consumer-cancelled:readyz-503",
 		"consumer-cancelled:public-down",
 	}, log.list(), "public server must shut after drain-gate and before consumers-cancel")
+}
+
+// TestAddHTTPServer_PartialStartFailureShutsStartedServers: when server N
+// fails to bind, servers 0..N-1 already started MUST have their shutdown
+// closers registered, so the teardown that Main runs after a failed Start
+// actually shuts them down (no orphaned listeners on a half-started pod).
+func TestAddHTTPServer_PartialStartFailureShutsStartedServers(t *testing.T) {
+	cfg := Config{AdminAddr: "127.0.0.1:0"}
+	cfg.Telemetry.Enabled = false
+	cfg.Log.Level = "error"
+	cfg.DrainGrace = 0
+
+	svc, err := New(context.Background(), cfg, nil, "", WithoutKafka(), WithoutPG())
+	require.NoError(t, err)
+
+	// Occupy a port so the second server's bind fails.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	first := httpserver.New(httpserver.Config{Addr: "127.0.0.1:0"})
+	first.Mux().Get("/ping", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	second := httpserver.New(httpserver.Config{Addr: ln.Addr().String()}) // bind will fail
+
+	svc.AddHTTPServer("first", first)
+	svc.AddHTTPServer("second", second)
+
+	err = svc.Start()
+	require.Error(t, err, "second server's bind failure must fail Start")
+	require.Contains(t, err.Error(), "second")
+
+	// The first server bound successfully and is still serving at this point.
+	resp, err := http.Get("http://" + first.Addr() + "/ping") //nolint:noctx
+	require.NoError(t, err, "first server must be up after the partial start")
+	_ = resp.Body.Close()
+
+	// Teardown via the closer (what servicekit.Main does after a failed
+	// Start) must shut the first server down.
+	stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	require.NoError(t, svc.Stop(stopCtx))
+
+	_, err = http.Get("http://" + first.Addr() + "/ping") //nolint:noctx,bodyclose
+	require.Error(t, err, "first server must be shut down by the closer after a partial-start failure")
+}
+
+// TestWatchServe_ForwardsFatalServeError: the per-server watcher must flip
+// readiness AND forward the error to the Fatal channel, so servicekit.Main
+// can tear the process down (exit non-zero) instead of leaving a NotReady
+// zombie pod behind.
+func TestWatchServe_ForwardsFatalServeError(t *testing.T) {
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s := &Service{
+		logger: slog.Default(),
+		h:      health.New(),
+		fatal:  make(chan error, 1),
+		runCtx: runCtx,
+	}
+
+	notify := make(chan error, 1)
+	s.wg.Add(1)
+	go s.watchServe("public", notify)
+
+	notify <- errors.New("accept tcp: use of closed network connection")
+
+	select {
+	case err := <-s.Fatal():
+		require.ErrorContains(t, err, "closed network connection")
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve error was not forwarded to the Fatal channel")
+	}
+
+	// Readiness must have flipped too (LB stops routing while Main tears down).
+	rec := httptest.NewRecorder()
+	s.h.ReadyzHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody))
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+
+	s.wg.Wait() // watcher must exit after reporting
+}
+
+// TestWatchServe_GracefulShutdownIsNotFatal: Notify() is CLOSED on graceful
+// shutdown (nil error) — that must not be reported as fatal.
+func TestWatchServe_GracefulShutdownIsNotFatal(t *testing.T) {
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s := &Service{
+		logger: slog.Default(),
+		h:      health.New(),
+		fatal:  make(chan error, 1),
+		runCtx: runCtx,
+	}
+
+	notify := make(chan error)
+	s.wg.Add(1)
+	go s.watchServe("public", notify)
+	close(notify) // graceful shutdown closes the channel
+
+	s.wg.Wait()
+	select {
+	case err := <-s.Fatal():
+		t.Fatalf("graceful shutdown must not be fatal, got: %v", err)
+	default:
+	}
 }
