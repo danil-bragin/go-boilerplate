@@ -6,6 +6,7 @@ package retry
 
 import (
 	"context"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -235,6 +236,132 @@ func TestDrainWakes_IgnoresStaleSeq(t *testing.T) {
 	c.mu.Unlock()
 	require.True(t, exists, "current-gen batch must not be cleared by stale wake")
 	assert.Equal(t, currentSeq, batch.seq)
+}
+
+// retryHeaders builds the kgo headers for a valid retry record.
+func retryHeaders(attempt int, orig string, due time.Time) []kgo.RecordHeader {
+	return []kgo.RecordHeader{
+		{Key: HeaderAttempt, Value: []byte(strconv.Itoa(attempt))},
+		{Key: HeaderOrigTopic, Value: []byte(orig)},
+		{Key: HeaderDueAt, Value: []byte(strconv.FormatInt(due.UnixMilli(), 10))},
+	}
+}
+
+// newWiredConsumer builds a Consumer with a real (never-dialed) kgo client,
+// a mock escalation producer, and a counting handler.
+func newWiredConsumer(t *testing.T, mp *mockProducer, handler kafka.HandlerFunc) *Consumer {
+	t.Helper()
+	c := newBareConsumer()
+	cl, err := kgo.NewClient(kgo.SeedBrokers("127.0.0.1:1"))
+	require.NoError(t, err)
+	t.Cleanup(cl.Close)
+	c.client = cl
+	c.esc = &Escalator{producer: mp}
+	c.handler = handler
+	c.onError = func(error) {}
+	t.Cleanup(func() {
+		c.mu.Lock()
+		for _, tm := range c.timers {
+			tm.Stop()
+		}
+		c.mu.Unlock()
+	})
+	return c
+}
+
+// TestDrainWakes_RechecksPerRecordDueTime verifies that when a held batch
+// wakes at the FIRST record's due time, later records whose own due time has
+// not arrived are NOT processed early (premature tier burn) but re-held until
+// their own due time, with the partition staying paused.
+func TestDrainWakes_RechecksPerRecordDueTime(t *testing.T) {
+	var handled []string
+	mp := &mockProducer{}
+	c := newWiredConsumer(t, mp, func(_ context.Context, r kafka.Record) error {
+		handled = append(handled, string(r.Key))
+		return nil
+	})
+
+	tp := topicPartition{topic: "base.retry.0", partition: 0}
+	now := time.Now()
+	laterDue := now.Add(time.Hour)
+	rec1 := &kgo.Record{
+		Topic: tp.topic, Partition: tp.partition, Key: []byte("due-now"),
+		Headers: retryHeaders(1, "base", now.Add(-time.Second)),
+	}
+	rec2 := &kgo.Record{
+		Topic: tp.topic, Partition: tp.partition, Key: []byte("due-later"),
+		Headers: retryHeaders(1, "base", laterDue),
+	}
+
+	// Install the held batch (woken at rec1's due time) and its wake event.
+	seq := c.nextSeq.Add(1)
+	c.mu.Lock()
+	c.held[tp] = &heldBatch{records: []*kgo.Record{rec1, rec2}, dueAt: now, seq: seq}
+	c.mu.Unlock()
+	c.wake <- wakeEvent{tp: tp, seq: seq}
+
+	toCommit := c.drainWakes(context.Background(), nil)
+
+	// Only the due record was handled and committed.
+	assert.Equal(t, []string{"due-now"}, handled, "not-yet-due record must not be processed at the first record's due time")
+	require.Len(t, toCommit, 1)
+	assert.Equal(t, rec1, toCommit[0])
+
+	// The not-yet-due tail was re-held until ITS OWN due time…
+	c.mu.Lock()
+	batch, held := c.held[tp]
+	c.mu.Unlock()
+	require.True(t, held, "not-yet-due tail must be re-held")
+	require.Len(t, batch.records, 1)
+	assert.Equal(t, rec2, batch.records[0])
+	assert.WithinDuration(t, laterDue, batch.dueAt, time.Second, "re-hold must use the record's own due time")
+
+	// …and the partition stays paused.
+	paused := c.client.PauseFetchPartitions(nil)
+	assert.Contains(t, paused[tp.topic], tp.partition, "partition must stay paused while the tail is held")
+}
+
+// TestDrainWakes_MalformedRecordGoesToDLT verifies that a malformed
+// (headerless) record inside a held batch takes the same DLT path as in
+// processPartition, instead of being run through the handler and — on
+// handler failure — escalated to a garbage "<tier>.retry.<n>" topic via the
+// orig=rec.Topic fallback.
+func TestDrainWakes_MalformedRecordGoesToDLT(t *testing.T) {
+	var handled int
+	mp := &mockProducer{}
+	c := newWiredConsumer(t, mp, func(_ context.Context, _ kafka.Record) error {
+		handled++
+		return nil
+	})
+
+	tp := topicPartition{topic: "base.retry.0", partition: 0}
+	malformed := &kgo.Record{
+		Topic: tp.topic, Partition: tp.partition,
+		Key: []byte("k"), Value: []byte("v"), // no retry headers
+	}
+
+	seq := c.nextSeq.Add(1)
+	c.mu.Lock()
+	c.held[tp] = &heldBatch{records: []*kgo.Record{malformed}, dueAt: time.Now(), seq: seq}
+	c.mu.Unlock()
+	c.wake <- wakeEvent{tp: tp, seq: seq}
+
+	toCommit := c.drainWakes(context.Background(), nil)
+
+	assert.Equal(t, 0, handled, "handler must not see a malformed record")
+	require.Len(t, mp.produced, 1, "malformed record must be escalated to the DLT")
+	assert.Equal(t, DLTTopic("base"), mp.produced[0].Topic,
+		"escalation must target the base topic's DLT, never a derived retry-tier topic")
+	require.Len(t, toCommit, 1, "successfully DLT-routed record must be committed")
+	assert.Equal(t, malformed, toCommit[0])
+
+	// Batch fully drained → partition resumed, nothing held.
+	c.mu.Lock()
+	_, held := c.held[tp]
+	c.mu.Unlock()
+	assert.False(t, held)
+	paused := c.client.PauseFetchPartitions(nil)
+	assert.NotContains(t, paused[tp.topic], tp.partition, "fully drained partition must be resumed")
 }
 
 // ---------------------------------------------------------------------------
