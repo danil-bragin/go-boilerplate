@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"go-boilerplate/platform/apperr"
 	"go-boilerplate/platform/messaging/kafka"
 )
 
@@ -92,6 +93,10 @@ func NewEscalator(p producer, policy Policy, opts ...EscalatorOption) *Escalator
 // (0 when absent, i.e. first failure on the base topic).
 //
 // Routing logic:
+//   - If cause is a permanent apperr (apperr.IsPermanent) → destination is
+//     DLTTopic(origTopic), skipping every remaining tier: no redelivery can
+//     fix the payload. The DLT record keeps retry-last-error and adds the
+//     x-error-code header with the apperr code.
 //   - If attempt >= len(policy.Tiers) → destination is DLTTopic(origTopic).
 //   - Otherwise → destination is TierTopic(origTopic, attempt) — the
 //     zero-based tier INDEX names the topic; the tier delay only sets the
@@ -132,8 +137,15 @@ func (e *Escalator) publishNext(ctx context.Context, origTopic string, rec kafka
 		attempt = 0
 	}
 
+	// Permanent errors skip every remaining tier: redelivery cannot fix the
+	// payload, so the record goes straight to the DLT.
+	toDLT := attempt >= len(e.policy.Tiers) || apperr.IsPermanent(cause)
+
 	// Build the destination record with a copy of all headers.
-	dest := e.nextDestination(origTopic, attempt)
+	dest := TierTopic(origTopic, attempt)
+	if toDLT {
+		dest = DLTTopic(origTopic)
+	}
 	out := kafka.Record{
 		Topic:   dest,
 		Key:     rec.Key,
@@ -141,10 +153,15 @@ func (e *Escalator) publishNext(ctx context.Context, origTopic string, rec kafka
 		Headers: copyHeaders(rec.Headers),
 	}
 
-	if attempt >= len(e.policy.Tiers) {
-		// Final tier exhausted — route to DLT. Keep the existing retry
-		// headers for forensics and add/overwrite last-error.
+	if toDLT {
+		// Route to DLT (final tier exhausted or permanent error). Keep the
+		// existing retry headers for forensics and add/overwrite last-error;
+		// stamp the apperr code when the chain carries one.
 		out.Headers[HeaderLastError] = truncate(cause.Error(), 512)
+		var ae *apperr.Error
+		if errors.As(cause, &ae) {
+			out.Headers[kafka.HeaderDLTErrorCode] = ae.Code
+		}
 	} else {
 		due := time.Now().Add(e.policy.Tiers[attempt])
 		SetRetryHeaders(&out, attempt+1, origTopic, due, cause)
@@ -206,7 +223,9 @@ func (e *Escalator) KeyParked(topic string, key []byte) bool {
 //     so its order relative to the escalated record is preserved.
 //  2. Otherwise the handler runs up to policy.FastAttempts times in-process
 //     (with a ctx-aware policy.FastBackoff sleep between attempts; values
-//     <= 0 default to 100ms).
+//     <= 0 default to 100ms). A PERMANENT apperr (apperr.IsPermanent) stops
+//     the loop after the first failure — the escalator then routes the
+//     record straight to the DLT instead of a retry tier.
 //  3. When all fast attempts fail the record is escalated to the next retry
 //     tier. A nil return means the consumer may commit the offset; an
 //     escalation/diversion produce failure is returned so the record is NOT
@@ -233,6 +252,11 @@ func WrapHandler(handler kafka.HandlerFunc, esc *Escalator, policy Policy) kafka
 			if lastErr == nil {
 				return nil
 			}
+			// Permanent → no point in further fast attempts; Escalate below
+			// routes the record straight to the DLT.
+			if apperr.IsPermanent(lastErr) {
+				break
+			}
 			if attempt < fastAttempts {
 				select {
 				case <-ctx.Done():
@@ -248,14 +272,6 @@ func WrapHandler(handler kafka.HandlerFunc, esc *Escalator, policy Policy) kafka
 		// Successful escalation: commit; the retry consumer redelivers later.
 		return nil
 	}
-}
-
-// nextDestination returns the topic the record should be sent to.
-func (e *Escalator) nextDestination(origTopic string, attempt int) string {
-	if attempt >= len(e.policy.Tiers) {
-		return DLTTopic(origTopic)
-	}
-	return TierTopic(origTopic, attempt)
 }
 
 // copyHeaders returns a shallow copy of h; handles nil gracefully.

@@ -29,4 +29,10 @@ const (
 	// HeaderDLTOriginalTopic is the topic the record was consumed from before
 	// dead-lettering; cmd/redrive republishes to it.
 	HeaderDLTOriginalTopic = "x-original-topic"
+
+	// HeaderDLTErrorCode is the apperr code of the error that dead-lettered
+	// the record (set by both WithRetry and the tiered-retry escalator when
+	// the failure chain contains an apperr.Error). Lets operators triage DLTs
+	// by code without parsing x-error strings.
+	HeaderDLTErrorCode = "x-error-code"
 )
