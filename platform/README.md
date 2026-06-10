@@ -47,5 +47,6 @@ Grouped by domain (≤2 levels). Package names are unqualified (import `go-boile
 - **resilience** — failsafe-go policy builders: `Retry`, `CircuitBreaker`, `Timeout`, `Bulkhead`, `RateLimit`; compose via `failsafe.With`
 - **config** — `caarlos0/env` struct-tag loader; `Load[T]()` returns a typed config value
 - **run** — signal handling (`SIGINT`/`SIGTERM`); ordered `Start`; reverse-order `Closer`; two-phase shutdown
+- **servicekit** — shared service harness: logger, telemetry, pg pool+migrations, kafka client+producer, health checks, admin HTTP (`/livez` `/readyz` `/metrics`), consumer wiring with retry/DLT, outbox relay, public HTTP servers, readiness-first graceful teardown; `WithoutKafka`/`WithoutPG` options; `Main` entry point (automaxprocs + signal handling)
 - **featureflags** — OpenFeature Go SDK wrapper; `BoolValue`/`StringValue` helpers; swappable provider (env-var provider included)
 - **testkit** — test doubles: `fakes` (in-memory Publisher, Cache, ObjectStore), `mockhttp` (recording server + JWKS), `mocks` (moq-generated), `fixtures` (test data builders)
