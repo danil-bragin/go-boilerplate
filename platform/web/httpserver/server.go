@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"sync"
@@ -35,6 +36,11 @@ type Server struct {
 	closed   bool
 	started  atomic.Bool
 	addr     string
+
+	// noMaxBytes records that the server-wide request-body cap was skipped
+	// (WithoutMaxBytes); Start warns so a route group that forgot its own
+	// MaxBytes does not silently accept unbounded bodies.
+	noMaxBytes bool
 }
 
 // ServerOption customizes the middleware stack installed by New.
@@ -80,6 +86,9 @@ func WithoutTimeout() ServerOption {
 //	})
 //
 // CAUTION: a group without any MaxBytes has an unbounded request body.
+// chi cannot introspect group middlewares, so this cannot be verified at
+// wiring time — Start logs a WARN whenever the server-wide cap is absent as
+// a reminder to audit every group.
 func WithoutMaxBytes() ServerOption {
 	return func(o *serverOptions) { o.noMaxBytes = true }
 }
@@ -145,9 +154,10 @@ func New(cfg Config, opts ...ServerOption) *Server {
 	mux.Use(RouteTag())
 
 	return &Server{
-		mux:      mux,
-		addr:     cfg.Addr,
-		serveErr: make(chan error, 1),
+		mux:        mux,
+		addr:       cfg.Addr,
+		noMaxBytes: o.noMaxBytes,
+		serveErr:   make(chan error, 1),
 		http: &http.Server{
 			Handler:           mux,
 			ReadHeaderTimeout: cfg.ReadHeaderTimeout,
@@ -167,6 +177,14 @@ func (s *Server) Start() error {
 	// A6: guard against double-start.
 	if !s.started.CompareAndSwap(false, true) {
 		return errors.New("httpserver: already started")
+	}
+
+	// Per-group MaxBytes middlewares are opaque to chi, so the server cannot
+	// verify that every route group installed its own cap — the best feasible
+	// signal is a startup WARN whenever the server-wide cap is absent.
+	if s.noMaxBytes {
+		slog.Warn("httpserver: started WithoutMaxBytes — no server-wide request-body cap; " +
+			"every route group MUST install its own httpserver.MaxBytes or accept unbounded bodies")
 	}
 
 	ln, err := net.Listen("tcp", s.addr)

@@ -129,7 +129,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 
 	// Schema Registry (no-op when SERDE_SR_URL is unset): commands the gateway
 	// produces and events the projection consumes.
-	if err := svc.RegisterSchema(ctx, cfg.CommandsTopic, "orders.CreateOrderCommand.v1", &ordersv1.CreateOrderCommand{}); err != nil {
+	if err := svc.RegisterSchema(ctx, cfg.CommandsTopic, api.CreateOrderCommandEventType, &ordersv1.CreateOrderCommand{}); err != nil {
 		return nil, err
 	}
 	if err := svc.RegisterSchema(ctx, cfg.OrdersEventsTopic, projection.OrderCreatedEventType, &ordersv1.OrderCreated{}); err != nil {

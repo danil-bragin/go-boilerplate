@@ -32,6 +32,11 @@ type AuthzPolicy interface {
 // Tracing outermost is load-bearing: every inner behavior (and the handler)
 // runs inside the span so context-aware log records carry trace_id/span_id —
 // see the package doc.
+//
+// Resilience (retries, circuit breaking, rate limiting) is deliberately NOT a
+// pipeline concern: it stays at the transport level (httpserver middleware,
+// kafka/retry escalation, platform/resilience around outbound calls), where
+// the failure domain and backoff semantics are known.
 type Pipeline[C, R any] struct {
 	name     string
 	deadline time.Duration
@@ -82,6 +87,13 @@ func (p *Pipeline[C, R]) WithCache(cache Cache, keyFor func(C) string, ttl time.
 }
 
 // WithTransaction wraps the handler in pg.RunInTx (COMMANDS ONLY).
+//
+// Do NOT use it for handlers invoked from a Kafka consumer built on
+// inbox.ProcessOnce: the inbox owns the transaction there — it opens its own
+// RunInTx and the handler already runs inside it. Adding WithTransaction
+// would create a redundant savepoint (pgx v5 opens a SAVEPOINT on the
+// already-open tx) — not incorrect, but unnecessary. Behaviors that use
+// pg.FromContext (e.g. Audit) join the inbox transaction automatically.
 func (p *Pipeline[C, R]) WithTransaction(pool *pg.Pool) *Pipeline[C, R] {
 	p.txPool = pool
 	return p

@@ -77,6 +77,36 @@ func TestKeyParking_WindowExpires(t *testing.T) {
 	assert.False(t, esc.KeyParked("orders.commands", []byte("K1")), "parking must expire after window")
 }
 
+// TestKeyParking_PolicyFieldEnablesParking: setting Policy.KeyParkingWindow
+// alone (no WithKeyParking option) must activate parking — NewEscalator
+// honors the policy field.
+func TestKeyParking_PolicyFieldEnablesParking(t *testing.T) {
+	prod := &parkProducer{}
+	pol := retry.DefaultPolicy()
+	pol.KeyParkingWindow = time.Hour
+	esc := retry.NewEscalator(prod, pol)
+
+	_, err := esc.Escalate(context.Background(), "orders.commands", baseRec("K1", "v1"), errors.New("boom"))
+	require.NoError(t, err)
+	assert.True(t, esc.KeyParked("orders.commands", []byte("K1")),
+		"Policy.KeyParkingWindow alone must enable parking")
+}
+
+// TestKeyParking_OptionOverridesPolicyField: WithKeyParking takes precedence
+// over Policy.KeyParkingWindow.
+func TestKeyParking_OptionOverridesPolicyField(t *testing.T) {
+	prod := &parkProducer{}
+	pol := retry.DefaultPolicy()
+	pol.KeyParkingWindow = time.Hour
+	esc := retry.NewEscalator(prod, pol, retry.WithKeyParking(time.Nanosecond))
+
+	_, err := esc.Escalate(context.Background(), "orders.commands", baseRec("K1", "v1"), errors.New("boom"))
+	require.NoError(t, err)
+	time.Sleep(time.Millisecond)
+	assert.False(t, esc.KeyParked("orders.commands", []byte("K1")),
+		"WithKeyParking(1ns) must override the policy's 1h window")
+}
+
 // TestKeyParking_DisabledByDefault: without WithKeyParking, KeyParked is
 // always false.
 func TestKeyParking_DisabledByDefault(t *testing.T) {

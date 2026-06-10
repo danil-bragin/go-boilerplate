@@ -81,20 +81,32 @@ type Policy struct {
 	// first escalation to a retry topic. Values <= 0 are treated as 1.
 	FastAttempts int
 
+	// FastBackoff is the sleep between in-process fast attempts (used by
+	// WrapHandler when FastAttempts > 1). Values <= 0 default to 100ms.
+	FastBackoff time.Duration
+
 	// KeyParkingWindow, when > 0, enables opt-in key parking (see the
 	// package-level ORDERING WARNING): after a key is escalated, records with
 	// the same key arriving on the same base topic within the window are
 	// diverted straight to the first retry tier instead of being handled,
 	// preserving their order relative to the escalated record. In-memory
 	// best-effort — parking is lost on restart or rebalance.
+	//
+	// SIZING: choose window ≥ Tiers[0] + the retry consumer's redelivery lag,
+	// otherwise the key un-parks before the escalated record returns and the
+	// reorder happens anyway. For DefaultPolicy (tier-0 = 5s) ~10s is a
+	// sensible floor. NewEscalator honors this field; the WithKeyParking
+	// option overrides it.
 	KeyParkingWindow time.Duration
 }
 
-// DefaultPolicy returns the recommended three-tier policy: 5 s → 30 s → 5 m.
+// DefaultPolicy returns the recommended three-tier policy: 5 s → 30 s → 5 m,
+// with a single fast attempt and the standard 100ms fast backoff.
 func DefaultPolicy() Policy {
 	return Policy{
 		Tiers:        []time.Duration{5 * time.Second, 30 * time.Second, 5 * time.Minute},
 		FastAttempts: 1,
+		FastBackoff:  100 * time.Millisecond,
 	}
 }
 

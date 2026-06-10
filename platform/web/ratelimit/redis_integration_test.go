@@ -64,6 +64,9 @@ func TestRedis_BurstThenDeny(t *testing.T) {
 		assert.True(t, res.Allowed, "allow %d must succeed (burst=3)", i+1)
 		assert.EqualValues(t, 3, res.Limit, "Limit must report the bucket capacity")
 		assert.EqualValues(t, 3-(i+1), res.Remaining, "Remaining must count down with each allow")
+		assert.Greater(t, res.Reset, time.Duration(0), "partial bucket must carry a Reset delta")
+		assert.LessOrEqual(t, res.Reset, time.Duration(i+1)*time.Second+200*time.Millisecond,
+			"at 1 rps a deficit of %d tokens refills in ≈%ds", i+1, i+1)
 	}
 
 	res, err := limiter.Allow(ctx, "burst-key")
@@ -72,6 +75,8 @@ func TestRedis_BurstThenDeny(t *testing.T) {
 	assert.EqualValues(t, 0, res.Remaining)
 	assert.Greater(t, res.RetryAfter, time.Duration(0), "denied result must carry the real refill wait")
 	assert.LessOrEqual(t, res.RetryAfter, time.Second+100*time.Millisecond, "at 1 rps the wait is ≈1s")
+	assert.Greater(t, res.Reset, 2*time.Second, "empty bucket at 1 rps refills in ≈3s")
+	assert.LessOrEqual(t, res.Reset, 3*time.Second+200*time.Millisecond)
 }
 
 // TestRedis_KeyIsolation verifies that two distinct keys have independent budgets.

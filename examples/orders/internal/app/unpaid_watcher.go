@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"go-boilerplate/examples/orders/internal/store/gen"
+	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/storage/pg"
 
@@ -18,8 +19,9 @@ import (
 )
 
 // OrderPaymentTimedOutEventType is the versioned event type emitted on
-// orders.events when an order stays unpaid past the payment deadline.
-const OrderPaymentTimedOutEventType = "orders.OrderPaymentTimedOut.v1"
+// orders.events when an order stays unpaid past the payment deadline
+// ("orders.OrderPaymentTimedOut.v1", derived from the proto message).
+var OrderPaymentTimedOutEventType = consume.EventTypeFor[*ordersv1.OrderPaymentTimedOut](1)
 
 // unpaidBatchLimit bounds how many expired orders one poll processes; the
 // loop drains until a short batch, so a backlog clears within one tick.

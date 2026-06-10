@@ -44,9 +44,13 @@ if tokens >= 1 then
 elseif rps > 0 then
   retry_ms = math.ceil((1 - tokens) / rps * 1000)
 end
+local reset_ms = 0
+if rps > 0 and tokens < tonumber(ARGV[2]) then
+  reset_ms = math.ceil((tonumber(ARGV[2]) - tokens) / rps * 1000)
+end
 redis.call('HSET', KEYS[1], 't', tokens, 'ts', now)
 redis.call('PEXPIRE', KEYS[1], ARGV[3])
-return {allowed, math.floor(tokens), retry_ms}
+return {allowed, math.floor(tokens), retry_ms, reset_ms}
 `
 
 var bucketScript = rueidis.NewLuaScript(luaTokenBucket)
@@ -121,12 +125,12 @@ func NewRedis(client rueidis.Client, rps float64, burst int, opts ...RedisOption
 	return r
 }
 
-// Allow reports whether key may proceed, together with the remaining budget
-// and (when denied) the wait until the next token, both computed atomically
-// by the Lua bucket. On Redis error the behaviour depends on the fail-open /
-// fail-closed setting:
+// Allow reports whether key may proceed, together with the remaining budget,
+// the time until the bucket is full (Reset) and (when denied) the wait until
+// the next token, all computed atomically by the Lua bucket. On Redis error
+// the behaviour depends on the fail-open / fail-closed setting:
 //   - fail-open (default): returns an Allowed result with Remaining=-1
-//     (unknown budget) and calls onError(err).
+//     (unknown budget, Reset=0) and calls onError(err).
 //   - fail-closed: returns a denied result and the error; calls onError(err).
 func (r *Redis) Allow(ctx context.Context, key string) (Result, error) {
 	rpsStr := strconv.FormatFloat(r.rps, 'f', -1, 64)
@@ -145,7 +149,7 @@ func (r *Redis) Allow(ctx context.Context, key string) (Result, error) {
 	}
 
 	arr, err := res.AsIntSlice()
-	if err != nil || len(arr) != 3 {
+	if err != nil || len(arr) != 4 {
 		if err == nil {
 			err = fmt.Errorf("unexpected reply length %d", len(arr))
 		}
@@ -156,6 +160,7 @@ func (r *Redis) Allow(ctx context.Context, key string) (Result, error) {
 		Allowed:   arr[0] == 1,
 		Limit:     int64(r.burst),
 		Remaining: arr[1],
+		Reset:     time.Duration(arr[3]) * time.Millisecond,
 	}
 	if out.Remaining < 0 {
 		out.Remaining = 0

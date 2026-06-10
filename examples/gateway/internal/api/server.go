@@ -13,6 +13,7 @@ import (
 	"go-boilerplate/examples/gateway/internal/app"
 	"go-boilerplate/examples/gateway/internal/attachments"
 	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/msgctx"
 	"go-boilerplate/platform/resilience"
@@ -29,6 +30,11 @@ import (
 
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
+
+// CreateOrderCommandEventType is the versioned event type stamped on
+// CreateOrderCommand records produced to orders.commands
+// ("orders.CreateOrderCommand.v1", derived from the proto message).
+var CreateOrderCommandEventType = consume.EventTypeFor[*ordersv1.CreateOrderCommand](1)
 
 // rbacPolicy is the RBAC policy for write operations.
 // "order:create" requires the "user" or "admin" role.
@@ -179,8 +185,8 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 	// carries this same correlation-id, with causation-id pointing at the
 	// direct parent message (see platform/messaging/msgctx).
 	headers := map[string]string{
-		"message-id":               orderID,
-		"event-type":               "orders.CreateOrderCommand.v1",
+		kafka.HeaderMessageID:      orderID,
+		kafka.HeaderEventType:      CreateOrderCommandEventType,
 		msgctx.HeaderCorrelationID: orderID,
 	}
 	auth.InjectHeaders(ctx, headers)

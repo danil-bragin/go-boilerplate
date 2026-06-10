@@ -96,9 +96,9 @@ func WithRetry(h HandlerFunc, opts RetryOpts) HandlerFunc {
 		for k, v := range rec.Headers {
 			dltHeaders[k] = v
 		}
-		dltHeaders["x-error"] = lastErr.Error()
-		dltHeaders["x-attempts"] = strconv.Itoa(opts.MaxAttempts)
-		dltHeaders["x-original-topic"] = rec.Topic
+		dltHeaders[HeaderDLTError] = lastErr.Error()
+		dltHeaders[HeaderDLTAttempts] = strconv.Itoa(opts.MaxAttempts)
+		dltHeaders[HeaderDLTOriginalTopic] = rec.Topic
 
 		dltRec := Record{
 			Topic:   opts.DLTTopic(rec.Topic),

@@ -15,9 +15,9 @@ type Config struct {
 	HTTP                httpserver.Config
 	Cache               cache.Config
 	S3                  blob.Config
-	CommandsTopic       string `env:"GATEWAY_COMMANDS_TOPIC"        envDefault:"orders.commands"`
-	OrdersEventsTopic   string `env:"GATEWAY_ORDERS_EVENTS_TOPIC"   envDefault:"orders.events"`
-	PaymentsEventsTopic string `env:"GATEWAY_PAYMENTS_EVENTS_TOPIC" envDefault:"payments.events"`
+	CommandsTopic       string `env:"ORDERS_COMMANDS_TOPIC"        envDefault:"orders.commands"`
+	OrdersEventsTopic   string `env:"ORDERS_EVENTS_TOPIC"   envDefault:"orders.events"`
+	PaymentsEventsTopic string `env:"PAYMENTS_EVENTS_TOPIC" envDefault:"payments.events"`
 	AuthDisabled        bool   `env:"GATEWAY_AUTH_DISABLED"         envDefault:"false"`
 	JWKSUrl             string `env:"GATEWAY_JWKS_URL"              envDefault:""`
 	JWKSIssuer          string `env:"GATEWAY_JWKS_ISSUER"           envDefault:""`

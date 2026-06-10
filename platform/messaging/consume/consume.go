@@ -19,10 +19,14 @@
 // Usage:
 //
 //	handler := consume.New(pool, "gateway-projection", consume.WithLogger(l)).Handler(
-//	    consume.Typed("orders.OrderCreated.v1", onOrderCreated),
-//	    consume.Typed("orders.PaymentProcessed.v1", onPaymentProcessed),
+//	    consume.TypedFor(1, onOrderCreated),     // event type derived from the proto message
+//	    consume.TypedFor(1, onPaymentProcessed), // (see EventTypeFor)
 //	)
 //	svc.AddConsumer(ctx, "gateway-projection", topics, handler)
+//
+// Prefer TypedFor over Typed with a hand-written event-type string: the name
+// is derived from the proto message via EventTypeFor, so producers and
+// consumers can never drift.
 package consume
 
 import (
@@ -105,23 +109,29 @@ type typedHandler[T proto.Message] struct {
 	onCommitted func(context.Context, T)
 }
 
+// TypedOption configures a typed handler built by Typed or TypedFor.
+type TypedOption[T proto.Message] func(*typedHandler[T])
+
+// OnCommitted sets a callback that runs AFTER the inbox transaction commits
+// successfully — use it for post-commit side effects such as cache
+// invalidation that must not run before the write is visible. It does not
+// run for duplicate messages (the original delivery already ran it) nor when
+// the transaction rolled back. When given multiple times, the last call wins.
+func OnCommitted[T proto.Message](fn func(context.Context, T)) TypedOption[T] {
+	return func(h *typedHandler[T]) { h.onCommitted = fn }
+}
+
 // Typed builds a Handler that decodes the record value into T and invokes fn
-// inside the inbox transaction. The optional onCommitted callback (at most
-// one) runs AFTER the inbox transaction commits successfully — use it for
-// post-commit side effects such as cache invalidation that must not run
-// before the write is visible. It does not run for duplicate messages (the
-// original delivery already ran it) nor when the transaction rolled back.
+// inside the inbox transaction. Options (e.g. OnCommitted) configure
+// post-commit behavior.
 func Typed[T proto.Message](
 	eventType string,
 	fn func(context.Context, T) error,
-	onCommitted ...func(context.Context, T),
+	opts ...TypedOption[T],
 ) Handler {
 	h := typedHandler[T]{event: eventType, fn: fn}
-	if len(onCommitted) > 0 {
-		if len(onCommitted) > 1 {
-			panic("consume.Typed: at most one onCommitted callback")
-		}
-		h.onCommitted = onCommitted[0]
+	for _, o := range opts {
+		o(&h)
 	}
 	return h
 }
@@ -196,7 +206,7 @@ func (c *Consumer) Handler(handlers ...Handler) kafka.HandlerFunc {
 		// boundary is the broker ACL/mTLS perimeter (see auth.ExtractToContext).
 		ctx = auth.ExtractToContext(ctx, r.Headers)
 
-		eventType := r.Headers["event-type"]
+		eventType := r.Headers[kafka.HeaderEventType]
 		h, ok := byType[eventType]
 		if !ok {
 			c.logger.DebugContext(ctx, "consume: skipping unknown event type",
@@ -206,7 +216,7 @@ func (c *Consumer) Handler(handlers ...Handler) kafka.HandlerFunc {
 
 		// Uniform message-id policy: outbox-stamped header first, stable
 		// topic:partition:offset position as the fallback.
-		msgID := r.Headers["message-id"]
+		msgID := r.Headers[kafka.HeaderMessageID]
 		if msgID == "" {
 			msgID = fmt.Sprintf("%s:%d:%d", r.Topic, r.Partition, r.Offset)
 		}

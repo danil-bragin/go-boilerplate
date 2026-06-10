@@ -209,6 +209,9 @@ const (
 )
 
 // Config aggregates all configuration for the shipping service.
+// Topic envs are named after the TOPIC, never the service (conventions §8):
+// the env for orders.events is ORDERS_EVENTS_TOPIC in every service that
+// touches it — not SHIPPING_EVENTS_TOPIC.
 type Config struct {
 	servicekit.Config
 	EventsTopic string `env:"ORDERS_EVENTS_TOPIC" envDefault:"orders.events"`
@@ -265,21 +268,17 @@ func ArrangeShipmentHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.H
 }
 
 // DecorateArrangeShipmentHandler applies the standard behavior pipeline.
-// Tracing is OUTERMOST so log records carry trace_id/span_id; Transaction is
-// OMITTED because inbox.ProcessOnce already opened the transaction.
+// StandardPipeline assembles Tracing → Logging → Metrics → Validation in the
+// canonical order; WithTransaction is OMITTED because inbox.ProcessOnce
+// already owns the transaction (see cqrs.Pipeline.WithTransaction godoc).
 func DecorateArrangeShipmentHandler(
 	h cqrs.HandlerFunc[ArrangeShipment, ArrangeShipmentResult],
 	auditStore audit.Store,
 ) cqrs.HandlerFunc[ArrangeShipment, ArrangeShipmentResult] {
-	return cqrs.Decorate(
-		h,
-		cqrs.Tracing[ArrangeShipment, ArrangeShipmentResult]("ArrangeShipment"),
-		cqrs.Logging[ArrangeShipment, ArrangeShipmentResult]("ArrangeShipment"),
-		cqrs.Metrics[ArrangeShipment, ArrangeShipmentResult]("ArrangeShipment"),
-		cqrs.Validation[ArrangeShipment, ArrangeShipmentResult](),
-		audit.Audit[ArrangeShipment, ArrangeShipmentResult](auditStore, "shipment:arrange",
-			func(cmd ArrangeShipment) string { return cmd.OrderID }),
-	)
+	return cqrs.StandardPipeline[ArrangeShipment, ArrangeShipmentResult]("ArrangeShipment").
+		Use(audit.Audit[ArrangeShipment, ArrangeShipmentResult](auditStore, "shipment:arrange",
+			func(cmd ArrangeShipment) string { return cmd.OrderID })).
+		Decorate(h)
 }
 
 // NewEventHandler is the Kafka transport: consume.Typed decodes the record

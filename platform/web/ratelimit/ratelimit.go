@@ -10,12 +10,17 @@ import (
 
 // Result is the outcome of a rate-limit decision. Beyond the allow/deny bit
 // it carries the data clients need to behave well: the bucket capacity
-// (RateLimit-Limit header), the remaining budget (RateLimit-Remaining), and —
-// when denied — how long to wait before retrying (Retry-After).
+// (RateLimit-Limit header), the remaining budget (RateLimit-Remaining), the
+// time until the bucket is full again (RateLimit-Reset), and — when denied —
+// how long to wait before retrying (Retry-After).
+//
+// Unknown-value sentinel: -1 for both Limit and Remaining (e.g. a fail-open
+// decision while Redis is down); 0 for Reset. The middleware omits the
+// corresponding header rather than lying about the budget.
 type Result struct {
 	// Allowed reports whether the request may proceed.
 	Allowed bool
-	// Limit is the bucket capacity (burst). 0 when unknown.
+	// Limit is the bucket capacity (burst). -1 when unknown.
 	Limit int64
 	// Remaining is the number of tokens left after this decision.
 	// -1 means unknown (e.g. a fail-open decision while Redis is down).
@@ -23,6 +28,9 @@ type Result struct {
 	// RetryAfter is the wait until the next token becomes available.
 	// Only meaningful when Allowed is false; 0 otherwise.
 	RetryAfter time.Duration
+	// Reset is the time until the bucket refills to full capacity
+	// (the RateLimit-Reset delta). 0 when unknown or already full.
+	Reset time.Duration
 }
 
 // Limiter reports whether the caller identified by key may proceed.

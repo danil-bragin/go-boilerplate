@@ -7,6 +7,7 @@ import (
 
 	"go-boilerplate/examples/orders/internal/store/gen"
 	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/security/audit"
 	"go-boilerplate/platform/storage/pg"
@@ -16,6 +17,11 @@ import (
 
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
+
+// OrderCreatedEventType is the versioned event type emitted on orders.events
+// when an order row is created ("orders.OrderCreated.v1", derived from the
+// proto message).
+var OrderCreatedEventType = consume.EventTypeFor[*ordersv1.OrderCreated](1)
 
 // CreateOrder is the command to create a new order.
 type CreateOrder struct {
@@ -68,7 +74,7 @@ func CreateOrderHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.Handl
 			Topic:         "orders.events",
 			AggregateType: "order",
 			AggregateID:   cmd.OrderID,
-			EventType:     "orders.OrderCreated.v1",
+			EventType:     OrderCreatedEventType,
 			Payload:       protoBytes,
 		}); err != nil {
 			return CreateOrderResult{}, fmt.Errorf("create_order: enqueue event: %w", err)
@@ -78,29 +84,20 @@ func CreateOrderHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.Handl
 	}
 }
 
-// DecorateCreateOrderHandler wraps the raw handler with Logging, Tracing,
-// Metrics, Validation, and Audit behaviors.
+// DecorateCreateOrderHandler wraps the raw handler with the standard pipeline
+// (Tracing → Logging → Metrics → Validation) plus the Audit behavior.
 //
-// NOTE: Transaction behavior is intentionally omitted. The consumer uses
-// inbox.ProcessOnce which opens its own RunInTx; the handler runs inside that
-// transaction. Adding Transaction here would create a redundant savepoint
-// (pgx v5 would open a SAVEPOINT on the already-open tx) — not incorrect, but
-// unnecessary. The Audit behavior uses pg.FromContext and therefore joins the
-// inbox transaction automatically.
+// WithTransaction is intentionally NOT used: the consumer runs this handler
+// inside inbox.ProcessOnce, which owns the transaction (see the
+// cqrs.Pipeline.WithTransaction godoc). The Audit behavior uses pg.FromContext
+// and therefore joins the inbox transaction automatically.
 func DecorateCreateOrderHandler(
 	handler cqrs.HandlerFunc[CreateOrder, CreateOrderResult],
 	auditStore audit.Store,
 ) cqrs.HandlerFunc[CreateOrder, CreateOrderResult] {
-	// Tracing is OUTERMOST so Logging runs inside the span and log records
-	// carry trace_id/span_id — see the cqrs package doc.
-	return cqrs.Decorate(
-		handler,
-		cqrs.Tracing[CreateOrder, CreateOrderResult]("CreateOrder"),
-		cqrs.Logging[CreateOrder, CreateOrderResult]("CreateOrder"),
-		cqrs.Metrics[CreateOrder, CreateOrderResult]("CreateOrder"),
-		cqrs.Validation[CreateOrder, CreateOrderResult](),
-		audit.Audit[CreateOrder, CreateOrderResult](auditStore, "order:create", func(cmd CreateOrder) string {
+	return cqrs.StandardPipeline[CreateOrder, CreateOrderResult]("CreateOrder").
+		Use(audit.Audit[CreateOrder, CreateOrderResult](auditStore, "order:create", func(cmd CreateOrder) string {
 			return cmd.OrderID
-		}),
-	)
+		})).
+		Decorate(handler)
 }

@@ -346,6 +346,44 @@ func TestRateLimitPer_XFFRightToLeftSkipsTrustedHops(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, rec2.Code, "same client IP must reuse the same bucket")
 }
 
+// stubLimiter is a Limiter returning a fixed Result, for deterministic
+// header-emission tests.
+type stubLimiter struct{ res ratelimit.Result }
+
+func (l stubLimiter) Allow(context.Context, string) (ratelimit.Result, error) {
+	return l.res, nil
+}
+
+// TestRateLimitPer_ResetHeader: a known Reset delta is emitted as
+// RateLimit-Reset in ceiled whole seconds.
+func TestRateLimitPer_ResetHeader(t *testing.T) {
+	h := httpserver.RateLimitPer(stubLimiter{res: ratelimit.Result{
+		Allowed: true, Limit: 5, Remaining: 3, Reset: 1500 * time.Millisecond,
+	}}, httpserver.ClientIPKey(nil))(okHandler)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, newReq("1.2.3.4:50001", ""))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "2", rec.Header().Get("RateLimit-Reset"),
+		"Reset must be emitted as delta seconds, rounded up")
+}
+
+// TestRateLimitPer_UnknownBudgetHeadersOmitted: the unified unknown sentinel
+// (-1 for Limit and Remaining, 0 for Reset) suppresses the corresponding
+// headers — better absent than lied about.
+func TestRateLimitPer_UnknownBudgetHeadersOmitted(t *testing.T) {
+	h := httpserver.RateLimitPer(stubLimiter{res: ratelimit.Result{
+		Allowed: true, Limit: -1, Remaining: -1,
+	}}, httpserver.ClientIPKey(nil))(okHandler)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, newReq("1.2.3.4:50001", ""))
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Empty(t, rec.Header().Get("RateLimit-Limit"))
+	require.Empty(t, rec.Header().Get("RateLimit-Remaining"))
+	require.Empty(t, rec.Header().Get("RateLimit-Reset"))
+}
+
 // errLimiter is a Limiter stub whose Allow always fails (fail-closed limiter
 // surfacing an infrastructure error, e.g. Redis down with fail-open disabled).
 type errLimiter struct{ err error }

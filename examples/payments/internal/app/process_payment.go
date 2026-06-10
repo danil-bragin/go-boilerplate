@@ -7,6 +7,7 @@ import (
 
 	"go-boilerplate/examples/payments/internal/store/gen"
 	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/security/audit"
 	"go-boilerplate/platform/storage/pg"
@@ -18,10 +19,11 @@ import (
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
-// Versioned event types emitted by the payments service on payments.events.
-const (
-	PaymentProcessedEventType = "orders.PaymentProcessed.v1"
-	PaymentFailedEventType    = "orders.PaymentFailed.v1"
+// Versioned event types emitted by the payments service on payments.events
+// (derived from the proto messages via consume.EventTypeFor).
+var (
+	PaymentProcessedEventType = consume.EventTypeFor[*ordersv1.PaymentProcessed](1)
+	PaymentFailedEventType    = consume.EventTypeFor[*ordersv1.PaymentFailed](1)
 )
 
 // DeclineThresholdCents is the deterministic demo decline rule: payments with
@@ -105,29 +107,20 @@ func paymentOutcome(cmd ProcessPayment, paymentID uuid.UUID) (status, eventType 
 	}
 }
 
-// DecorateProcessPaymentHandler wraps the raw handler with Logging, Tracing,
-// Metrics, Validation, and Audit behaviors.
+// DecorateProcessPaymentHandler wraps the raw handler with the standard
+// pipeline (Tracing → Logging → Metrics → Validation) plus the Audit behavior.
 //
-// NOTE: Transaction behavior is intentionally omitted. The consumer uses
-// inbox.ProcessOnce which opens its own RunInTx; the handler runs inside that
-// transaction. Adding Transaction here would create a redundant savepoint
-// (pgx v5 would open a SAVEPOINT on the already-open tx) — not incorrect, but
-// unnecessary. The Audit behavior uses pg.FromContext and therefore joins the
-// inbox transaction automatically.
+// WithTransaction is intentionally NOT used: the consumer runs this handler
+// inside inbox.ProcessOnce, which owns the transaction (see the
+// cqrs.Pipeline.WithTransaction godoc). The Audit behavior uses pg.FromContext
+// and therefore joins the inbox transaction automatically.
 func DecorateProcessPaymentHandler(
 	handler cqrs.HandlerFunc[ProcessPayment, ProcessPaymentResult],
 	auditStore audit.Store,
 ) cqrs.HandlerFunc[ProcessPayment, ProcessPaymentResult] {
-	// Tracing is OUTERMOST so Logging runs inside the span and log records
-	// carry trace_id/span_id — see the cqrs package doc.
-	return cqrs.Decorate(
-		handler,
-		cqrs.Tracing[ProcessPayment, ProcessPaymentResult]("ProcessPayment"),
-		cqrs.Logging[ProcessPayment, ProcessPaymentResult]("ProcessPayment"),
-		cqrs.Metrics[ProcessPayment, ProcessPaymentResult]("ProcessPayment"),
-		cqrs.Validation[ProcessPayment, ProcessPaymentResult](),
-		audit.Audit[ProcessPayment, ProcessPaymentResult](auditStore, "payment:process", func(cmd ProcessPayment) string {
+	return cqrs.StandardPipeline[ProcessPayment, ProcessPaymentResult]("ProcessPayment").
+		Use(audit.Audit[ProcessPayment, ProcessPaymentResult](auditStore, "payment:process", func(cmd ProcessPayment) string {
 			return cmd.OrderID
-		}),
-	)
+		})).
+		Decorate(handler)
 }

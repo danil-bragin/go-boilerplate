@@ -13,8 +13,9 @@ import (
 )
 
 // OrderCreatedEventType is the versioned event-type header value for
-// OrderCreated records on the orders.events topic.
-const OrderCreatedEventType = "orders.OrderCreated.v1"
+// OrderCreated records on the orders.events topic
+// ("orders.OrderCreated.v1", derived from the proto message).
+var OrderCreatedEventType = consume.EventTypeFor[*ordersv1.OrderCreated](1)
 
 // NewEventHandler returns a kafka.HandlerFunc that decodes an OrderCreated
 // event from the record, deduplicates via the inbox, and dispatches to the
@@ -26,7 +27,7 @@ func NewEventHandler(
 	opts ...consume.Option,
 ) kafka.HandlerFunc {
 	return consume.New(pool, "payments", opts...).Handler(
-		consume.Typed(OrderCreatedEventType, func(ctx context.Context, evt *ordersv1.OrderCreated) error {
+		consume.TypedFor(1, func(ctx context.Context, evt *ordersv1.OrderCreated) error {
 			_, err := handler(ctx, app.ProcessPayment{
 				OrderID:     evt.GetOrderId(),
 				AmountCents: evt.GetAmountCents(),

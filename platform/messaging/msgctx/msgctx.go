@@ -26,21 +26,21 @@ const (
 	HeaderCausationID = "causation-id"
 )
 
-type ctxKey int
-
-const (
-	correlationIDKey ctxKey = iota
-	parentMessageIDKey
+// Context keys use the empty-struct style shared across the repo
+// (auth, log, pg): distinct types cost zero bytes and cannot collide.
+type (
+	correlationIDKey   struct{}
+	parentMessageIDKey struct{}
 )
 
 // WithCorrelationID returns a ctx carrying the chain correlation id.
 func WithCorrelationID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, correlationIDKey, id)
+	return context.WithValue(ctx, correlationIDKey{}, id)
 }
 
 // CorrelationID returns the chain correlation id, or "" when none is set.
 func CorrelationID(ctx context.Context) string {
-	v, _ := ctx.Value(correlationIDKey).(string)
+	v, _ := ctx.Value(correlationIDKey{}).(string)
 	return v
 }
 
@@ -48,12 +48,12 @@ func CorrelationID(ctx context.Context) string {
 // currently being processed — the causation parent for anything the handler
 // emits.
 func WithParentMessageID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, parentMessageIDKey, id)
+	return context.WithValue(ctx, parentMessageIDKey{}, id)
 }
 
 // ParentMessageID returns the current message id (causation parent), or ""
 // when none is set (e.g. outside a consumer).
 func ParentMessageID(ctx context.Context) string {
-	v, _ := ctx.Value(parentMessageIDKey).(string)
+	v, _ := ctx.Value(parentMessageIDKey{}).(string)
 	return v
 }

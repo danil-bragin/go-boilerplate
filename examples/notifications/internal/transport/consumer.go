@@ -11,12 +11,13 @@ import (
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
-// Versioned event-type header values consumed from the payments.events topic.
-const (
+// Versioned event-type header values consumed from the payments.events topic
+// (derived from the proto messages via consume.EventTypeFor).
+var (
 	// PaymentProcessedEventType is the success branch of the payment choreography.
-	PaymentProcessedEventType = "orders.PaymentProcessed.v1"
+	PaymentProcessedEventType = consume.EventTypeFor[*ordersv1.PaymentProcessed](1)
 	// PaymentFailedEventType is the failure branch (declined/failed payments).
-	PaymentFailedEventType = "orders.PaymentFailed.v1"
+	PaymentFailedEventType = consume.EventTypeFor[*ordersv1.PaymentFailed](1)
 )
 
 // Notifier is a function called when a payment notification should be sent.
@@ -32,11 +33,11 @@ type Notifier func(orderID, paymentID, status string)
 // come from consume.Typed.
 func NewEventHandler(pool *pg.Pool, notifier Notifier, opts ...consume.Option) kafka.HandlerFunc {
 	return consume.New(pool, "notifications", opts...).Handler(
-		consume.Typed(PaymentProcessedEventType, func(_ context.Context, evt *ordersv1.PaymentProcessed) error {
+		consume.TypedFor(1, func(_ context.Context, evt *ordersv1.PaymentProcessed) error {
 			notifier(evt.GetOrderId(), evt.GetPaymentId(), evt.GetStatus())
 			return nil
 		}),
-		consume.Typed(PaymentFailedEventType, func(_ context.Context, evt *ordersv1.PaymentFailed) error {
+		consume.TypedFor(1, func(_ context.Context, evt *ordersv1.PaymentFailed) error {
 			// Failure notification: no payment id exists; the status is the
 			// terminal "failed" outcome (the reason travels in the event and
 			// is logged by the default notifier wiring).

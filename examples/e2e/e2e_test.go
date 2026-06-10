@@ -172,9 +172,9 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	t.Setenv("HTTP_ADDR", "127.0.0.1:0") // random port
 	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
 	t.Setenv("GATEWAY_AUTH_DISABLED", "true")
-	t.Setenv("GATEWAY_COMMANDS_TOPIC", "orders.commands")
-	t.Setenv("GATEWAY_ORDERS_EVENTS_TOPIC", "orders.events")
-	t.Setenv("GATEWAY_PAYMENTS_EVENTS_TOPIC", "payments.events")
+	t.Setenv("ORDERS_COMMANDS_TOPIC", "orders.commands")
+	t.Setenv("ORDERS_EVENTS_TOPIC", "orders.events")
+	t.Setenv("PAYMENTS_EVENTS_TOPIC", "payments.events")
 	t.Setenv("OTEL_ENABLED", "false")
 	t.Setenv("LOG_LEVEL", "error")
 

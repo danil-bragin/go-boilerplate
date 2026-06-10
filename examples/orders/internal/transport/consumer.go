@@ -13,8 +13,9 @@ import (
 )
 
 // CommandEventType is the versioned event-type header value for
-// CreateOrderCommand records on the orders.commands topic.
-const CommandEventType = "orders.CreateOrderCommand.v1"
+// CreateOrderCommand records on the orders.commands topic
+// ("orders.CreateOrderCommand.v1", derived from the proto message).
+var CommandEventType = consume.EventTypeFor[*ordersv1.CreateOrderCommand](1)
 
 // NewCommandHandler returns a kafka.HandlerFunc that decodes a
 // CreateOrderCommand from the record, deduplicates via the inbox, and
@@ -27,7 +28,7 @@ func NewCommandHandler(
 	opts ...consume.Option,
 ) kafka.HandlerFunc {
 	return consume.New(pool, "orders", opts...).Handler(
-		consume.Typed(CommandEventType, func(ctx context.Context, cmd *ordersv1.CreateOrderCommand) error {
+		consume.TypedFor(1, func(ctx context.Context, cmd *ordersv1.CreateOrderCommand) error {
 			_, err := handler(ctx, app.CreateOrder{
 				OrderID:     cmd.GetOrderId(),
 				CustomerID:  cmd.GetCustomerId(),

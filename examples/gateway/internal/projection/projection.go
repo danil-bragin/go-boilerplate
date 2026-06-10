@@ -22,12 +22,13 @@ import (
 
 const consumerGroup = "gateway-projection"
 
-// Versioned event types consumed by the projection.
-const (
-	OrderCreatedEventType         = "orders.OrderCreated.v1"
-	PaymentProcessedEventType     = "orders.PaymentProcessed.v1"
-	PaymentFailedEventType        = "orders.PaymentFailed.v1"
-	OrderPaymentTimedOutEventType = "orders.OrderPaymentTimedOut.v1"
+// Versioned event types consumed by the projection (derived from the proto
+// messages via consume.EventTypeFor).
+var (
+	OrderCreatedEventType         = consume.EventTypeFor[*ordersv1.OrderCreated](1)
+	PaymentProcessedEventType     = consume.EventTypeFor[*ordersv1.PaymentProcessed](1)
+	PaymentFailedEventType        = consume.EventTypeFor[*ordersv1.PaymentFailed](1)
+	OrderPaymentTimedOutEventType = consume.EventTypeFor[*ordersv1.OrderPaymentTimedOut](1)
 )
 
 // NewHandler returns a kafka.HandlerFunc that handles both "orders.events"
@@ -43,7 +44,7 @@ const (
 func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, opts ...consume.Option) kafka.HandlerFunc {
 	opts = append([]consume.Option{consume.WithLogger(logger)}, opts...)
 	return consume.New(pool, consumerGroup, opts...).Handler(
-		consume.Typed(OrderCreatedEventType,
+		consume.TypedFor(1,
 			func(ctx context.Context, evt *ordersv1.OrderCreated) error {
 				orderID, err := parseOrderID(evt.GetOrderId())
 				if err != nil {
@@ -61,11 +62,11 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, opts ...co
 				logger.Debug("projection: upserted OrderCreated", "order_id", orderID)
 				return nil
 			},
-			func(ctx context.Context, evt *ordersv1.OrderCreated) {
+			consume.OnCommitted(func(ctx context.Context, evt *ordersv1.OrderCreated) {
 				bustOrderCache(ctx, cache, logger, evt.GetOrderId())
-			},
+			}),
 		),
-		consume.Typed(PaymentProcessedEventType,
+		consume.TypedFor(1,
 			func(ctx context.Context, evt *ordersv1.PaymentProcessed) error {
 				orderID, err := parseOrderID(evt.GetOrderId())
 				if err != nil {
@@ -87,11 +88,11 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, opts ...co
 				logger.Debug("projection: marked paid", "order_id", orderID)
 				return nil
 			},
-			func(ctx context.Context, evt *ordersv1.PaymentProcessed) {
+			consume.OnCommitted(func(ctx context.Context, evt *ordersv1.PaymentProcessed) {
 				bustOrderCache(ctx, cache, logger, evt.GetOrderId())
-			},
+			}),
 		),
-		consume.Typed(OrderPaymentTimedOutEventType,
+		consume.TypedFor(1,
 			func(ctx context.Context, evt *ordersv1.OrderPaymentTimedOut) error {
 				orderID, err := parseOrderID(evt.GetOrderId())
 				if err != nil {
@@ -110,11 +111,11 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, opts ...co
 				logger.Debug("projection: marked payment_timeout", "order_id", orderID)
 				return nil
 			},
-			func(ctx context.Context, evt *ordersv1.OrderPaymentTimedOut) {
+			consume.OnCommitted(func(ctx context.Context, evt *ordersv1.OrderPaymentTimedOut) {
 				bustOrderCache(ctx, cache, logger, evt.GetOrderId())
-			},
+			}),
 		),
-		consume.Typed(PaymentFailedEventType,
+		consume.TypedFor(1,
 			func(ctx context.Context, evt *ordersv1.PaymentFailed) error {
 				orderID, err := parseOrderID(evt.GetOrderId())
 				if err != nil {
@@ -134,9 +135,9 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, opts ...co
 					"order_id", orderID, "reason", evt.GetReason())
 				return nil
 			},
-			func(ctx context.Context, evt *ordersv1.PaymentFailed) {
+			consume.OnCommitted(func(ctx context.Context, evt *ordersv1.PaymentFailed) {
 				bustOrderCache(ctx, cache, logger, evt.GetOrderId())
-			},
+			}),
 		),
 	)
 }

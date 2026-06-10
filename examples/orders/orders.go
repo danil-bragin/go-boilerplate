@@ -83,7 +83,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if err := svc.RegisterSchema(ctx, cfg.CommandsTopic, transport.CommandEventType, &ordersv1.CreateOrderCommand{}); err != nil {
 		return nil, err
 	}
-	if err := svc.RegisterSchema(ctx, "orders.events", "orders.OrderCreated.v1", &ordersv1.OrderCreated{}); err != nil {
+	if err := svc.RegisterSchema(ctx, "orders.events", app.OrderCreatedEventType, &ordersv1.OrderCreated{}); err != nil {
 		return nil, err
 	}
 	if err := svc.RegisterSchema(ctx, "orders.events", app.OrderPaymentTimedOutEventType, &ordersv1.OrderPaymentTimedOut{}); err != nil {
