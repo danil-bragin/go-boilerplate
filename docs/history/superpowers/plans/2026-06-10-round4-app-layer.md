@@ -1,5 +1,13 @@
 # Round 4 — Application Layer: layering, error codes, i18n, time
 
+> **STATUS: COMPLETE (2026-06-11).** All waves merged (~18 commits). Final verification: full
+> serial suite 55/55 ok, lint 0, errgen in sync (18 codes), doc-test green, e2e asserts
+> codes+params+created_at. Review pass: 1 MUST-FIX (permanent-DLT records lacked
+> x-original-topic — redrive aborted) + 3 SHOULD (malformed payloads now permanent,
+> middleware 401/403/429/503 now carry codes) — all fixed. Noted by-design: decode-stage 422
+> vs command-stage 400 for VALIDATION_FAILED; ORDERS_* codes ship no catalog (never surface
+> at a localized edge); errgen linkage is convention-enforced (adding-a-service checklist).
+
 > Design approved by user 2026-06-10 (brainstorm decisions: layers EVERYWHERE uniformly;
 > ambient-tx formalized; flat UPPER_SNAKE codes; full i18n+time demo).
 > TDD mandatory; one commit per task; normal-English messages +
