@@ -170,6 +170,16 @@ migrate svc:
 token:
     curl -s -d client_id=gateway -d username=demo -d password=demo -d grant_type=password http://localhost:8180/realms/app/protocol/openid-connect/token | jq -r .access_token
 
+# Load test the gateway order flow via dockerized k6 (see docs/operations.md §Load testing)
+# BASE_URL/TOKEN pass through; default BASE_URL targets the HOST's gateway from
+# inside the k6 container. host.docker.internal resolves natively on macOS and
+# Windows; the --add-host flag maps it to the host gateway IP on Linux too.
+load vus='10' duration='30s':
+    docker run --rm -i --add-host=host.docker.internal:host-gateway \
+      -e BASE_URL="${BASE_URL:-http://host.docker.internal:8080}" \
+      -e TOKEN="${TOKEN:-}" \
+      grafana/k6 run --vus {{vus}} --duration {{duration}} - < scripts/k6/order-flow.js
+
 # Install git hooks via lefthook
 hooks:
     lefthook install

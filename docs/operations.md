@@ -242,6 +242,45 @@ When `GATEWAY_AUTH_DISABLED=false`, the gateway verifies bearer JWTs against the
 
 ---
 
+## Load testing (k6)
+
+`scripts/k6/order-flow.js` exercises the full asynchronous order flow:
+`POST /v1/orders` with a unique `Idempotency-Key` per iteration (amount below
+the payments decline threshold), then polls `GET /v1/orders/{id}` until the
+projection reaches `created`/`paid`. Thresholds: `http_req_duration p(99)<500`
+and check success rate > 99% — k6 exits non-zero when either trips.
+
+```bash
+just up-apps            # gateway + services + infra
+just load               # 10 VUs, 30s (dockerized grafana/k6)
+just load 50 2m         # 50 VUs for 2 minutes
+
+# Authenticated run (auth enabled): the script uses the token's `sub` claim
+# as customer_id so the GET ownership check passes.
+TOKEN=$(just token) just load
+
+# Custom target
+BASE_URL=https://staging.example.com just load 20 1m
+```
+
+**Docker networking (macOS vs Linux):** the recipe runs k6 in a container, so
+`localhost` inside the container is the k6 container itself, not your machine.
+The default `BASE_URL` is therefore `http://host.docker.internal:8080`:
+resolved natively by Docker Desktop on macOS/Windows, and mapped on Linux via
+the recipe's `--add-host=host.docker.internal:host-gateway` flag. With a k6
+binary installed on the host you can skip Docker entirely:
+`k6 run --vus 10 --duration 30s scripts/k6/order-flow.js` (plain
+`http://localhost:8080` works there).
+
+**Interpreting failures:** against an absent/unreachable gateway every request
+fails to connect, the `checks` threshold trips, and k6 exits non-zero — that
+is the harness working, not a script bug. A failing
+`order reached created/paid within poll budget` check with passing POSTs means
+the projection lags: check consumer lag and outbox backlog (see the dashboards
+and `rpk group describe`).
+
+---
+
 ## Kafka retry tiers & DLT redrive runbook
 
 The `platform/messaging/retry` package implements tiered retry routing.
