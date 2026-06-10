@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"go-boilerplate/examples/payments/internal/app"
+	"go-boilerplate/examples/payments/internal/domain/payment"
 	"go-boilerplate/examples/payments/internal/migrations"
 	"go-boilerplate/examples/payments/internal/transport"
+	"go-boilerplate/platform/clock"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
@@ -74,8 +76,9 @@ func buildService(t *testing.T, pool *pg.Pool, broker string, eventsTopic string
 	// Audit store.
 	auditStore := audit.NewPgStore(pool)
 
-	// Build and decorate the handler.
-	rawHandler := app.ProcessPaymentHandler(pool, outboxRepo, "payments.events")
+	// Build and decorate the handler (thin adapter over the domain service).
+	domainSvc := payment.NewService(payment.NewPgRepository(pool), outboxRepo, clock.System{}, "payments.events")
+	rawHandler := app.ProcessPaymentHandler(domainSvc)
 	decoratedHandler := app.DecorateProcessPaymentHandler(rawHandler, auditStore)
 
 	// Wire event handler.

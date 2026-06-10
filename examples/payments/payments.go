@@ -18,8 +18,10 @@ import (
 	"time"
 
 	"go-boilerplate/examples/payments/internal/app"
+	"go-boilerplate/examples/payments/internal/domain/payment"
 	"go-boilerplate/examples/payments/internal/migrations"
 	"go-boilerplate/examples/payments/internal/transport"
+	"go-boilerplate/platform/clock"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/outbox"
@@ -76,10 +78,10 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if err := svc.RegisterSchema(ctx, cfg.EventsTopic, transport.OrderCreatedEventType, &ordersv1.OrderCreated{}); err != nil {
 		return nil, err
 	}
-	if err := svc.RegisterSchema(ctx, cfg.OutTopic, app.PaymentProcessedEventType, &ordersv1.PaymentProcessed{}); err != nil {
+	if err := svc.RegisterSchema(ctx, cfg.OutTopic, payment.PaymentProcessedEventType, &ordersv1.PaymentProcessed{}); err != nil {
 		return nil, err
 	}
-	if err := svc.RegisterSchema(ctx, cfg.OutTopic, app.PaymentFailedEventType, &ordersv1.PaymentFailed{}); err != nil {
+	if err := svc.RegisterSchema(ctx, cfg.OutTopic, payment.PaymentFailedEventType, &ordersv1.PaymentFailed{}); err != nil {
 		return nil, err
 	}
 
@@ -91,9 +93,13 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		return nil, err
 	}
 
-	// Build the domain handler.
+	// Domain service: repository + outbox publisher share the ambient
+	// transaction; the clock is injected for the decision rule's occurred_at.
+	domainSvc := payment.NewService(payment.NewPgRepository(svc.Pool()), outboxRepo, clock.System{}, cfg.OutTopic)
+
+	// Build the command handler (thin adapter over the domain service).
 	auditStore := audit.NewPgStore(svc.Pool())
-	rawHandler := app.ProcessPaymentHandler(svc.Pool(), outboxRepo, cfg.OutTopic)
+	rawHandler := app.ProcessPaymentHandler(domainSvc)
 	decoratedHandler := app.DecorateProcessPaymentHandler(rawHandler, auditStore)
 	var consumeOpts []consume.Option
 	if sd := svc.Serde(); sd != nil {

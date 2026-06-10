@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"go-boilerplate/examples/orders/internal/app"
+	"go-boilerplate/examples/orders/internal/domain/order"
 	"go-boilerplate/examples/orders/internal/migrations"
 	"go-boilerplate/examples/orders/internal/transport"
 	"go-boilerplate/platform/config"
@@ -74,7 +75,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	a.svc = svc
 
 	// Ensure topics (commands, events); DLT topics handled by AddConsumer.
-	if err := svc.EnsureTopics(ctx, cfg.CommandsTopic, "orders.events", cfg.PaymentsEventsTopic); err != nil {
+	if err := svc.EnsureTopics(ctx, cfg.CommandsTopic, order.EventsTopic, cfg.PaymentsEventsTopic); err != nil {
 		return nil, err
 	}
 
@@ -83,10 +84,10 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if err := svc.RegisterSchema(ctx, cfg.CommandsTopic, transport.CommandEventType, &ordersv1.CreateOrderCommand{}); err != nil {
 		return nil, err
 	}
-	if err := svc.RegisterSchema(ctx, "orders.events", app.OrderCreatedEventType, &ordersv1.OrderCreated{}); err != nil {
+	if err := svc.RegisterSchema(ctx, order.EventsTopic, order.OrderCreatedEventType, &ordersv1.OrderCreated{}); err != nil {
 		return nil, err
 	}
-	if err := svc.RegisterSchema(ctx, "orders.events", app.OrderPaymentTimedOutEventType, &ordersv1.OrderPaymentTimedOut{}); err != nil {
+	if err := svc.RegisterSchema(ctx, order.EventsTopic, order.OrderPaymentTimedOutEventType, &ordersv1.OrderPaymentTimedOut{}); err != nil {
 		return nil, err
 	}
 	if err := svc.RegisterSchema(ctx, cfg.PaymentsEventsTopic, transport.PaymentProcessedEventType, &ordersv1.PaymentProcessed{}); err != nil {
@@ -104,9 +105,14 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		return nil, err
 	}
 
-	// Build the domain handler.
+	// Domain service: repository + outbox publisher share the ambient
+	// transaction, so row writes and event enqueues commit together.
+	repo := order.NewPgRepository(svc.Pool())
+	domainSvc := order.NewService(repo, outboxRepo, svc.Logger(), cfg.PaymentDeadline)
+
+	// Build the command handler (thin adapter over the domain service).
 	auditStore := audit.NewPgStore(svc.Pool())
-	rawHandler := app.CreateOrderHandler(svc.Pool(), outboxRepo)
+	rawHandler := app.CreateOrderHandler(domainSvc)
 	decoratedHandler := app.DecorateCreateOrderHandler(rawHandler, auditStore)
 	var consumeOpts []consume.Option
 	if sd := svc.Serde(); sd != nil {
@@ -122,7 +128,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	// Payment-outcome consumer: records paid/payment_failed on the local order
 	// rows (inbox-deduped) so the unpaid watcher below never needs to look
 	// beyond this service's own database.
-	paymentsHandler := transport.NewPaymentsEventHandler(svc.Pool(), svc.Logger(), consumeOpts...)
+	paymentsHandler := transport.NewPaymentsEventHandler(svc.Pool(), domainSvc, svc.Logger(), consumeOpts...)
 	if err := svc.AddConsumer(ctx, "orders-payments", []string{cfg.PaymentsEventsTopic}, paymentsHandler); err != nil {
 		return nil, err
 	}
@@ -132,7 +138,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	// singleActive: only one instance scans at a time (advisory-lock leader);
 	// the CAS guard inside the watcher keeps emission exactly-once even
 	// during the brief leader-overlap window.
-	watcher := app.NewUnpaidWatcher(svc.Pool(), outboxRepo, cfg.PaymentDeadline, svc.Logger())
+	watcher := app.NewUnpaidWatcher(svc.Pool(), domainSvc)
 	if err := svc.AddPeriodicWorker("unpaid-watcher", cfg.UnpaidCheckInterval, 0, true, watcher.Poll); err != nil {
 		return nil, err
 	}

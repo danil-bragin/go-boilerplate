@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"go-boilerplate/examples/orders/internal/app"
+	"go-boilerplate/examples/orders/internal/domain/order"
 	"go-boilerplate/examples/orders/internal/migrations"
 	"go-boilerplate/examples/orders/internal/transport"
 	"go-boilerplate/platform/config"
@@ -75,8 +76,9 @@ func buildService(t *testing.T, pool *pg.Pool, broker string, commandsTopic stri
 	// Audit store.
 	auditStore := audit.NewPgStore(pool)
 
-	// Build and decorate the handler.
-	rawHandler := app.CreateOrderHandler(pool, outboxRepo)
+	// Build and decorate the handler (thin adapter over the domain service).
+	domainSvc := order.NewService(order.NewPgRepository(pool), outboxRepo, nil, 15*time.Minute)
+	rawHandler := app.CreateOrderHandler(domainSvc)
 	decoratedHandler := app.DecorateCreateOrderHandler(rawHandler, auditStore)
 
 	// Wire consumer handler.

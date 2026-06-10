@@ -18,6 +18,7 @@ package notifications
 import (
 	"context"
 
+	"go-boilerplate/examples/notifications/internal/domain/notification"
 	"go-boilerplate/examples/notifications/internal/migrations"
 	"go-boilerplate/examples/notifications/internal/transport"
 	"go-boilerplate/platform/config"
@@ -105,7 +106,9 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if sd := svc.Serde(); sd != nil {
 		consumeOpts = append(consumeOpts, consume.WithSerde(sd))
 	}
-	evtHandler := transport.NewEventHandler(svc.Pool(), notifier, consumeOpts...)
+	// Domain service over the delivery channel; the consumer below is a pure
+	// decode+dispatch adapter.
+	evtHandler := transport.NewEventHandler(svc.Pool(), notification.NewService(notifier), consumeOpts...)
 
 	// Register consumer; harness wraps with WithRetry+DLT automatically.
 	if err := svc.AddConsumer(ctx, "notifications", []string{cfg.PaymentsEventsTopic}, evtHandler); err != nil {

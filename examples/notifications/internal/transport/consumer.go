@@ -1,9 +1,14 @@
-// Package transport contains the Kafka consumer transport for the notifications service.
+// Package transport contains the Kafka consumer transport for the
+// notifications service. Transport is DECODE + DISPATCH only: handlers here
+// decode records (via consume.Typed) and dispatch to the domain layer; the
+// notification rules (what gets sent per outcome) live in
+// internal/domain/notification.Service.
 package transport
 
 import (
 	"context"
 
+	"go-boilerplate/examples/notifications/internal/domain/notification"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/storage/pg"
@@ -20,28 +25,25 @@ var (
 	PaymentFailedEventType = consume.EventTypeFor[*ordersv1.PaymentFailed](1)
 )
 
-// Notifier is a function called when a payment notification should be sent.
-// The default implementation logs a structured line; tests can inject a
-// capturing implementation to assert invocations. For failed payments the
-// paymentID is empty (no payment was created) and status is "failed".
-type Notifier func(orderID, paymentID, status string)
+// Notifier is the delivery function for payment notifications — an alias of
+// the domain type, kept here so the service-level option
+// (notifications.WithNotifier) keeps its historical signature.
+type Notifier = notification.Notifier
 
 // NewEventHandler returns a kafka.HandlerFunc that decodes PaymentProcessed
 // and PaymentFailed events from the record, deduplicates via the inbox, and
-// invokes the notifier exactly once per message. All transport-level concerns
-// (event-type dispatch, message-id policy, inbox dedup, principal headers)
-// come from consume.Typed.
-func NewEventHandler(pool *pg.Pool, notifier Notifier, opts ...consume.Option) kafka.HandlerFunc {
+// dispatches to the domain service exactly once per message. All
+// transport-level concerns (event-type dispatch, message-id policy, inbox
+// dedup, principal headers) come from consume.Typed; the per-outcome
+// notification rules live in notification.Service.
+func NewEventHandler(pool *pg.Pool, svc *notification.Service, opts ...consume.Option) kafka.HandlerFunc {
 	return consume.New(pool, "notifications", opts...).Handler(
 		consume.TypedFor(1, func(_ context.Context, evt *ordersv1.PaymentProcessed) error {
-			notifier(evt.GetOrderId(), evt.GetPaymentId(), evt.GetStatus())
+			svc.PaymentProcessed(evt.GetOrderId(), evt.GetPaymentId(), evt.GetStatus())
 			return nil
 		}),
 		consume.TypedFor(1, func(_ context.Context, evt *ordersv1.PaymentFailed) error {
-			// Failure notification: no payment id exists; the status is the
-			// terminal "failed" outcome (the reason travels in the event and
-			// is logged by the default notifier wiring).
-			notifier(evt.GetOrderId(), "", "failed")
+			svc.PaymentFailed(evt.GetOrderId())
 			return nil
 		}),
 	)
