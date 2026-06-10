@@ -76,7 +76,7 @@ The system achieves effectively-once processing over at-least-once Kafka deliver
 
 ### Producer side — transactional outbox
 
-1. The command handler inserts a domain event row into `outbox_messages` inside the same DB transaction as the state change.
+1. The command handler inserts a domain event row into the `outbox` table inside the same DB transaction as the state change.
 2. The `Relay` polls for unpublished rows using `SELECT ... FOR UPDATE SKIP LOCKED`, publishes each to Kafka, and marks it published — all in a single transaction per batch.
 3. If the Kafka `Publish` succeeds but the DB commit fails, the row is re-published later — delivering the message at least once. The relay sets a stable `message-id` header (the outbox row UUID) on every Kafka record.
 
