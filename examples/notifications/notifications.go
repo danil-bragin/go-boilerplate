@@ -21,10 +21,10 @@ import (
 
 	"go-boilerplate/examples/notifications/internal/migrations"
 	"go-boilerplate/examples/notifications/internal/transport"
-	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/run"
+	"go-boilerplate/platform/servicekit"
 
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )

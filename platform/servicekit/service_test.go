@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/messaging/retry"
+	"go-boilerplate/platform/servicekit"
 	"go-boilerplate/platform/storage/pg/pgtest"
 
 	"github.com/google/uuid"

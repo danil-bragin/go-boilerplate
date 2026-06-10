@@ -13,9 +13,9 @@ Practical reference for contributors. Read this before adding a new file, packag
 | Rule | Example |
 |---|---|
 | A type and its constructor live in the same file | `health.go` defines `Health` and `New()` |
-| `Config` structs go in `config.go` | `platform/messaging/kafka/config.go`, `examples/servicekit/config.go` |
+| `Config` structs go in `config.go` | `platform/messaging/kafka/config.go`, `platform/servicekit/config.go` |
 | HTTP handlers (request/response logic) are separate from routing wiring | `handlers.go` vs `routes.go` in `examples/gateway/` |
-| Each sub-system or behaviour gets its own file | `relay.go`, `cleanup.go`, `consumers.go` in `examples/servicekit/` |
+| Each sub-system or behaviour gets its own file | `relay.go`, `cleanup.go`, `consumers.go` in `platform/servicekit/` |
 
 ### Real examples from this repo
 
@@ -27,7 +27,7 @@ Practical reference for contributors. Read this before adding a new file, packag
 | `check.go` | `Check` function type and `CheckFunc` adapter (consumer-defined interface seam) |
 | `handlers.go` | `LivezHandler()`, `ReadyzHandler()`, `Mount()` (HTTP wiring) |
 
-**`examples/servicekit`** — the shared consumer harness split by sub-system (package `servicekit`):
+**`platform/servicekit`** — the shared consumer harness split by sub-system (package `servicekit`):
 
 | File | Owns |
 |---|---|

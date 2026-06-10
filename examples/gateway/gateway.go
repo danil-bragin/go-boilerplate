@@ -4,7 +4,7 @@
 //
 // # Harness
 //
-// Gateway is built on the shared servicekit.Service harness (examples/servicekit)
+// Gateway is built on the shared servicekit.Service harness (platform/servicekit)
 // which handles the common wiring: logger, telemetry+metrics, pg pool+migrations,
 // kafka client+producer, health checks, admin HTTP server (/livez /readyz /metrics).
 // The gateway adds its own public REST server on cfg.HTTP.Addr.
@@ -54,11 +54,11 @@ import (
 	"go-boilerplate/examples/gateway/internal/api"
 	"go-boilerplate/examples/gateway/internal/migrations"
 	"go-boilerplate/examples/gateway/internal/projection"
-	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/run"
 	"go-boilerplate/platform/security/auth"
+	"go-boilerplate/platform/servicekit"
 	"go-boilerplate/platform/web/httpserver"
 
 	gatewayapp "go-boilerplate/examples/gateway/internal/app"

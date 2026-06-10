@@ -3,7 +3,7 @@ package gateway
 import (
 	"time"
 
-	"go-boilerplate/examples/servicekit"
+	"go-boilerplate/platform/servicekit"
 	"go-boilerplate/platform/storage/blob"
 	"go-boilerplate/platform/storage/cache"
 	"go-boilerplate/platform/web/httpserver"

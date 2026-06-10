@@ -6,10 +6,10 @@ import (
 
 	"go-boilerplate/examples/gateway/internal/migrations"
 	"go-boilerplate/examples/gateway/internal/projection"
-	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/run"
+	"go-boilerplate/platform/servicekit"
 
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
