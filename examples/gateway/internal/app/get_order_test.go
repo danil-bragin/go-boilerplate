@@ -14,7 +14,7 @@ import (
 // the cached result shape changes, so old entries become unreachable instead
 // of unmarshalling into the new shape.
 func TestOrderCacheKey_VersionedConvention(t *testing.T) {
-	assert.Equal(t, "gw:v2:order:abc", gatewayapp.OrderCacheKey("abc"))
+	assert.Equal(t, "gw:v3:order:abc", gatewayapp.OrderCacheKey("abc"))
 }
 
 // TestGetOrderHandler_InvalidIDIsNotFound pins the 404-not-500 contract for

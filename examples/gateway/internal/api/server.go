@@ -320,6 +320,13 @@ func (s *Server) rejectIdempotentBodyMismatch(ctx context.Context, orderID strin
 // the read model (keyset over (created_at, order_id) descending). An
 // undecodable cursor maps to 400 problem+json.
 func (s *Server) ListOrders(ctx context.Context, request ListOrdersRequestObject) (ListOrdersResponseObject, error) {
+	// X-Timezone (optional): validated up front so a bad zone is a clean 400
+	// before any read. nil loc = no created_at_local fields.
+	loc, err := parseTimezone(request.Params.XTimezone)
+	if err != nil {
+		return nil, err
+	}
+
 	q := app.ListOrders{}
 	if request.Params.Cursor != nil {
 		q.Cursor = *request.Params.Cursor
@@ -356,6 +363,11 @@ func (s *Server) ListOrders(ctx context.Context, request ListOrdersRequestObject
 			Status:      v.Status,
 			AmountCents: v.AmountCents,
 			Currency:    v.Currency,
+			CreatedAt:   formatCreatedAt(v.CreatedAt),
+		}
+		if loc != nil {
+			local := formatCreatedAtLocal(v.CreatedAt, loc)
+			items[i].CreatedAtLocal = &local
 		}
 	}
 	out := ListOrders200JSONResponse{Items: items}
@@ -376,6 +388,13 @@ func (s *Server) ListOrders(ctx context.Context, request ListOrdersRequestObject
 // as a nonexistent order — 403 would be an existence oracle, letting any
 // authenticated client enumerate which order ids exist.
 func (s *Server) GetOrder(ctx context.Context, request GetOrderRequestObject) (GetOrderResponseObject, error) {
+	// X-Timezone (optional): validated up front so a bad zone is a clean 400
+	// before the read. nil loc = no created_at_local field.
+	loc, err := parseTimezone(request.Params.XTimezone)
+	if err != nil {
+		return nil, err
+	}
+
 	view, err := s.getOrderHandler(ctx, app.GetOrder{OrderID: request.Id})
 	if err != nil {
 		if errors.Is(err, app.ErrOrderNotFound) {
@@ -394,10 +413,16 @@ func (s *Server) GetOrder(ctx context.Context, request GetOrderRequestObject) (G
 		}
 	}
 
-	return GetOrder200JSONResponse{
+	resp := GetOrder200JSONResponse{
 		OrderId:     view.OrderID,
 		Status:      view.Status,
 		AmountCents: view.AmountCents,
 		Currency:    view.Currency,
-	}, nil
+		CreatedAt:   formatCreatedAt(view.CreatedAt),
+	}
+	if loc != nil {
+		local := formatCreatedAtLocal(view.CreatedAt, loc)
+		resp.CreatedAtLocal = &local
+	}
+	return resp, nil
 }

@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -389,6 +390,25 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	assert.Equal(t, "amount_cents", vprob.Params.Fields[0].Field)
 	assert.Equal(t, "gt", vprob.Params.Fields[0].Rule)
 	t.Log("Step 7 OK: invalid body rejected with VALIDATION_FAILED + fields")
+
+	// --- Step 8: time contract — created_at is RFC 3339 UTC ("Z") ---
+	// Proves: the read model's created_at flows through the projection into
+	// the API response in the documented always-UTC format.
+	t.Log("Step 8: asserting created_at on the paid order view")
+	viewResp, err := http.Get(baseURL + "/v1/orders/" + orderID)
+	require.NoError(t, err)
+	defer viewResp.Body.Close()
+	require.Equal(t, http.StatusOK, viewResp.StatusCode)
+	var view struct {
+		CreatedAt string `json:"created_at"`
+	}
+	require.NoError(t, json.NewDecoder(viewResp.Body).Decode(&view))
+	require.NotEmpty(t, view.CreatedAt, "created_at must be present")
+	require.True(t, strings.HasSuffix(view.CreatedAt, "Z"),
+		"created_at must be UTC with Z suffix, got %q", view.CreatedAt)
+	_, err = time.Parse(time.RFC3339, view.CreatedAt)
+	require.NoError(t, err, "created_at must be RFC 3339")
+	t.Log("Step 8 OK: created_at is RFC 3339 UTC")
 }
 
 // consumeRawEvent consumes raw records from topic until one matches the given

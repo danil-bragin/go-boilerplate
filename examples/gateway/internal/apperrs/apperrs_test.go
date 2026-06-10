@@ -23,6 +23,7 @@ func TestRegistry_GatewayCodes(t *testing.T) {
 		{apperrs.CodeInvalidCursor, http.StatusBadRequest},
 		{apperrs.CodeIdempotencyBodyMismatch, http.StatusConflict},
 		{apperrs.CodeMalformedRequest, http.StatusBadRequest},
+		{apperrs.CodeInvalidTimezone, http.StatusBadRequest},
 		{apperrs.CodeAttachmentsDisabled, http.StatusNotFound},
 		{apperrs.CodeAttachmentInvalidOrderID, http.StatusBadRequest},
 		{apperrs.CodeAttachmentInvalidFilename, http.StatusBadRequest},

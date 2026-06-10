@@ -156,6 +156,7 @@ func ListOrdersHandler(pool *pg.Pool) cqrs.HandlerFunc[ListOrders, OrderPage] {
 				Status:      row.Status,
 				AmountCents: row.AmountCents,
 				Currency:    row.Currency,
+				CreatedAt:   row.CreatedAt.Time,
 			}
 		}
 		// A full page may have more results: hand out the keyset position of

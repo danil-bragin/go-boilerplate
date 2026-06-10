@@ -18,6 +18,9 @@ other = "This Idempotency-Key was already used with a different request body. Re
 [GATEWAY_MALFORMED_REQUEST]
 other = "The request could not be parsed: {{.reason}}"
 
+[GATEWAY_INVALID_TIMEZONE]
+other = "The X-Timezone value {{.timezone}} is not a valid IANA time zone name (for example Europe/Kyiv)."
+
 [GATEWAY_ATTACHMENTS_DISABLED]
 other = "Attachments are not available."
 

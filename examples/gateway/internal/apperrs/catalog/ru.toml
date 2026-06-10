@@ -15,6 +15,9 @@ other = "Этот Idempotency-Key уже использовался с друг�
 [GATEWAY_MALFORMED_REQUEST]
 other = "Не удалось разобрать запрос: {{.reason}}"
 
+[GATEWAY_INVALID_TIMEZONE]
+other = "Значение X-Timezone {{.timezone}} не является корректным именем часового пояса IANA (например, Europe/Kyiv)."
+
 [GATEWAY_ATTACHMENTS_DISABLED]
 other = "Вложения недоступны."
 

@@ -1430,3 +1430,87 @@ func TestGateway_I18nLocalizedProblemsOverHTTP(t *testing.T) {
 	require.True(t, ok)
 	assert.NotEmpty(t, vparams["fields"], "structured fields must survive localization")
 }
+
+// TestGateway_CreatedAtAndTimezone proves the time contract over real HTTP:
+// created_at is RFC 3339 UTC ("Z"), X-Timezone adds a display-only
+// created_at_local with the zone's offset, an invalid zone is a coded 400,
+// and list items carry the same fields.
+func TestGateway_CreatedAtAndTimezone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
+	baseURL := startApp(t, broker, dsn)
+
+	orderID := uuid.New().String()
+	produceEvent(t, broker, topicOrdersEvents, "orders.OrderCreated.v1", orderID, func() proto.Message {
+		return &ordersv1.OrderCreated{OrderId: orderID, CustomerId: "cust-tz", AmountCents: 700, Currency: "USD"}
+	})
+	pollOrderStatus(t, baseURL, orderID, "created", 30*time.Second)
+
+	getView := func(tz string) (int, map[string]any) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, baseURL+"/v1/orders/"+orderID, http.NoBody)
+		require.NoError(t, err)
+		if tz != "" {
+			req.Header.Set("X-Timezone", tz)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		var v map[string]any
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&v))
+		return resp.StatusCode, v
+	}
+
+	// No header: created_at present, UTC Z, parseable; no local field.
+	st, v := getView("")
+	require.Equal(t, http.StatusOK, st)
+	createdAt, _ := v["created_at"].(string)
+	require.NotEmpty(t, createdAt, "created_at must be present")
+	assert.True(t, strings.HasSuffix(createdAt, "Z"), "created_at must be UTC with Z suffix, got %q", createdAt)
+	parsed, err := time.Parse(time.RFC3339, createdAt)
+	require.NoError(t, err, "created_at must be RFC 3339")
+	assert.WithinDuration(t, time.Now().UTC(), parsed, 5*time.Minute)
+	_, hasLocal := v["created_at_local"]
+	assert.False(t, hasLocal, "created_at_local must be absent without X-Timezone")
+
+	// Valid zone: created_at unchanged, created_at_local added with offset.
+	st, v = getView("Europe/Kyiv")
+	require.Equal(t, http.StatusOK, st)
+	assert.Equal(t, createdAt, v["created_at"], "contract field is identical with or without X-Timezone")
+	local, _ := v["created_at_local"].(string)
+	require.NotEmpty(t, local)
+	localParsed, err := time.Parse(time.RFC3339, local)
+	require.NoError(t, err)
+	assert.True(t, localParsed.Equal(parsed), "created_at_local must be the same instant")
+	assert.False(t, strings.HasSuffix(local, "Z"), "created_at_local carries the zone offset, got %q", local)
+
+	// Invalid zone: coded 400, offending value in params.
+	st, v = getView("UTC+3")
+	require.Equal(t, http.StatusBadRequest, st)
+	assert.Equal(t, "GATEWAY_INVALID_TIMEZONE", v["code"])
+	params, ok := v["params"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "UTC+3", params["timezone"])
+
+	// List items carry created_at too (and local with the header).
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/v1/orders?limit=5", http.NoBody)
+	require.NoError(t, err)
+	req.Header.Set("X-Timezone", "America/New_York")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&page))
+	require.NotEmpty(t, page.Items)
+	itemCreated, _ := page.Items[0]["created_at"].(string)
+	assert.True(t, strings.HasSuffix(itemCreated, "Z"), "list created_at must be UTC Z, got %q", itemCreated)
+	itemLocal, _ := page.Items[0]["created_at_local"].(string)
+	assert.NotEmpty(t, itemLocal, "list items must carry created_at_local with X-Timezone")
+}

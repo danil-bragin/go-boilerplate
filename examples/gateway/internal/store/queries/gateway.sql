@@ -55,7 +55,7 @@ on conflict (order_id) do update set
 where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout');
 
 -- name: GetOrderView :one
-select order_id, customer_id, amount_cents, currency, status, updated_at
+select order_id, customer_id, amount_cents, currency, status, created_at, updated_at
 from orders_read
 where order_id = $1;
 

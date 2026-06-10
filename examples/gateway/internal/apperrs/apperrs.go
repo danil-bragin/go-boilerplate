@@ -51,6 +51,11 @@ const (
 	// params.reason — it describes the client's own input, safe to echo. 400.
 	CodeMalformedRequest = "GATEWAY_MALFORMED_REQUEST"
 
+	// CodeInvalidTimezone: the X-Timezone header is not a valid IANA tz
+	// database name. Offsets ("UTC+3", "+02:00"), garbage, and the
+	// process-dependent "Local" are all rejected. 400.
+	CodeInvalidTimezone = "GATEWAY_INVALID_TIMEZONE"
+
 	// CodeAttachmentsDisabled: the order-attachments feature flag is off;
 	// the endpoints behave as if they do not exist. 404.
 	CodeAttachmentsDisabled = "GATEWAY_ATTACHMENTS_DISABLED"
@@ -73,6 +78,8 @@ func init() {
 	apperr.Register(CodeIdempotencyBodyMismatch, 409, true,
 		"idempotency key reused with different request body; replay the original request unchanged or use a new key")
 	apperr.Register(CodeMalformedRequest, 400, true, "malformed request: {reason}", "reason")
+	apperr.Register(CodeInvalidTimezone, 400, true,
+		"invalid X-Timezone value {timezone}: must be an IANA tz database name such as Europe/Kyiv", "timezone")
 	apperr.Register(CodeAttachmentsDisabled, 404, true, "attachments disabled")
 	apperr.Register(CodeAttachmentInvalidOrderID, 400, true, "invalid order id")
 	apperr.Register(CodeAttachmentInvalidFilename, 400, true, "invalid filename")
