@@ -320,7 +320,7 @@ func TestTyped_OnCommittedRunsAfterTx(t *testing.T) {
 				require.Zero(t, n, "callback ordering: tx must not be committed yet")
 				return nil
 			},
-			func(_ context.Context, evt *ordersv1.OrderCreated) {
+			consume.OnCommitted(func(_ context.Context, evt *ordersv1.OrderCreated) {
 				committed.Add(1)
 				// After commit the inbox row IS visible.
 				var n int
@@ -328,7 +328,7 @@ func TestTyped_OnCommittedRunsAfterTx(t *testing.T) {
 					`select count(*) from inbox where message_id = 'm-pc'`).Scan(&n))
 				require.Equal(t, 1, n, "onCommitted must run after the inbox tx commits")
 				require.Equal(t, "o1", evt.GetOrderId())
-			},
+			}),
 		),
 	)
 
@@ -397,7 +397,7 @@ func TestTyped_WithoutInbox_FastLane(t *testing.T) {
 				assert.Equal(t, "o1", evt.GetOrderId(), "payload must be decoded")
 				return nil
 			},
-			func(context.Context, *ordersv1.OrderCreated) { committed.Add(1) },
+			consume.OnCommitted(func(context.Context, *ordersv1.OrderCreated) { committed.Add(1) }),
 		),
 	)
 

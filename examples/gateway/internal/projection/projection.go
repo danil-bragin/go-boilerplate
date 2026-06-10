@@ -62,9 +62,9 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, opts ...co
 				logger.Debug("projection: upserted OrderCreated", "order_id", orderID)
 				return nil
 			},
-			func(ctx context.Context, evt *ordersv1.OrderCreated) {
+			consume.OnCommitted(func(ctx context.Context, evt *ordersv1.OrderCreated) {
 				bustOrderCache(ctx, cache, logger, evt.GetOrderId())
-			},
+			}),
 		),
 		consume.TypedFor(1,
 			func(ctx context.Context, evt *ordersv1.PaymentProcessed) error {
@@ -88,9 +88,9 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, opts ...co
 				logger.Debug("projection: marked paid", "order_id", orderID)
 				return nil
 			},
-			func(ctx context.Context, evt *ordersv1.PaymentProcessed) {
+			consume.OnCommitted(func(ctx context.Context, evt *ordersv1.PaymentProcessed) {
 				bustOrderCache(ctx, cache, logger, evt.GetOrderId())
-			},
+			}),
 		),
 		consume.TypedFor(1,
 			func(ctx context.Context, evt *ordersv1.OrderPaymentTimedOut) error {
@@ -111,9 +111,9 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, opts ...co
 				logger.Debug("projection: marked payment_timeout", "order_id", orderID)
 				return nil
 			},
-			func(ctx context.Context, evt *ordersv1.OrderPaymentTimedOut) {
+			consume.OnCommitted(func(ctx context.Context, evt *ordersv1.OrderPaymentTimedOut) {
 				bustOrderCache(ctx, cache, logger, evt.GetOrderId())
-			},
+			}),
 		),
 		consume.TypedFor(1,
 			func(ctx context.Context, evt *ordersv1.PaymentFailed) error {
@@ -135,9 +135,9 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, opts ...co
 					"order_id", orderID, "reason", evt.GetReason())
 				return nil
 			},
-			func(ctx context.Context, evt *ordersv1.PaymentFailed) {
+			consume.OnCommitted(func(ctx context.Context, evt *ordersv1.PaymentFailed) {
 				bustOrderCache(ctx, cache, logger, evt.GetOrderId())
-			},
+			}),
 		),
 	)
 }

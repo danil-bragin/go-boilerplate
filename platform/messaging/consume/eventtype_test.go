@@ -53,6 +53,38 @@ func TestEventTypeFor_PackageWithoutVersionSegment(t *testing.T) {
 	assert.Equal(t, "google.protobuf.Timestamp.v1", consume.EventTypeFor[*timestamppb.Timestamp](1))
 }
 
+// TestTyped_OnCommittedOption: the post-commit callback is supplied via the
+// consume.OnCommitted TypedOption and runs after a successful handle.
+func TestTyped_OnCommittedOption(t *testing.T) {
+	var handled, committed int
+	h := consume.New(nil, "g", consume.WithoutInbox()).Handler(
+		consume.TypedFor(1,
+			func(_ context.Context, _ *ordersv1.OrderCreated) error {
+				handled++
+				return nil
+			},
+			consume.OnCommitted(func(_ context.Context, evt *ordersv1.OrderCreated) {
+				committed++
+				assert.Equal(t, "o-2", evt.GetOrderId())
+			}),
+		),
+	)
+
+	payload, err := proto.Marshal(&ordersv1.OrderCreated{OrderId: "o-2"})
+	require.NoError(t, err)
+	err = h(context.Background(), kafka.Record{
+		Topic: "orders.events",
+		Value: payload,
+		Headers: map[string]string{
+			kafka.HeaderEventType: "orders.OrderCreated.v1",
+			kafka.HeaderMessageID: "m-2",
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, handled)
+	assert.Equal(t, 1, committed, "OnCommitted option callback must run after the handler")
+}
+
 // TestTypedFor_DispatchesOnDerivedEventType: TypedFor registers the handler
 // under the derived name, so a record carrying the existing wire literal in
 // its event-type header is dispatched to it.

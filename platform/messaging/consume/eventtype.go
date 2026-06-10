@@ -65,7 +65,7 @@ func isVersionSegment(s string) bool {
 func TypedFor[T proto.Message](
 	version int,
 	fn func(context.Context, T) error,
-	onCommitted ...func(context.Context, T),
+	opts ...TypedOption[T],
 ) Handler {
-	return Typed(EventTypeFor[T](version), fn, onCommitted...)
+	return Typed(EventTypeFor[T](version), fn, opts...)
 }
