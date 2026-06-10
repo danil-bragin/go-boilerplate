@@ -90,20 +90,8 @@ func (s *Service) Start() error {
 		s.closer.Add("http-server-"+name, func(ctx context.Context) error {
 			return srv.Shutdown(ctx)
 		})
-		// Watch for a fatal serve error after startup: log it and flip
-		// readiness to 503 so the orchestrator stops routing traffic.
 		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			select {
-			case err := <-srv.Notify():
-				if err != nil {
-					s.logger.Error("http server failed", "server", name, "error", err)
-					s.h.SetNotReady()
-				}
-			case <-runCtx.Done():
-			}
-		}()
+		go s.watchServe(name, srv.Notify())
 		s.logger.Info("http server started", "server", name, "addr", srv.Addr())
 	}
 
@@ -128,6 +116,35 @@ func (s *Service) Start() error {
 
 	s.logger.Info("service started", "admin_addr", s.adminServer.Addr())
 	return nil
+}
+
+// watchServe watches one public HTTP server for a fatal serve error after a
+// successful Start (the Notify channel reports a listener that died; it is
+// closed without an error on graceful shutdown). On a fatal error it:
+//
+//  1. logs the failure,
+//  2. flips readiness to 503 so load balancers stop routing immediately,
+//  3. forwards the error to the Fatal channel so servicekit.Main tears the
+//     whole process down and exits non-zero.
+//
+// Step 3 is the one that actually recovers the pod: liveness stays green and
+// readiness only removes the pod from endpoints, so without a process exit
+// the pod would sit NotReady forever. The caller must s.wg.Add(1) first; the
+// watcher exits on runCtx cancellation during normal teardown.
+func (s *Service) watchServe(name string, notify <-chan error) {
+	defer s.wg.Done()
+	select {
+	case err := <-notify:
+		if err != nil {
+			s.logger.Error("http server failed", "server", name, "error", err)
+			s.h.SetNotReady()
+			select {
+			case s.fatal <- err:
+			default: // a fatal error is already pending; one is enough
+			}
+		}
+	case <-s.runCtx.Done():
+	}
 }
 
 // Stop closes all resources via the Closer. Teardown order (see package doc):

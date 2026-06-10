@@ -110,6 +110,10 @@ func (a *app) Stop(ctx context.Context) error {
 // Closer exposes the harness closer for servicekit.Main / run.Run.
 func (a *app) Closer() *run.Closer { return a.svc.Closer() }
 
+// Fatal exposes the harness fatal-error channel: a public-server serve
+// failure makes servicekit.Main tear down and exit non-zero.
+func (a *app) Fatal() <-chan error { return a.svc.Fatal() }
+
 func main() {
 	servicekit.Main(func(ctx context.Context) (servicekit.App, error) {
 		return newApp(ctx)

@@ -6,11 +6,15 @@ package servicekit
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/observability/health"
 	"go-boilerplate/platform/web/httpserver"
 
 	"github.com/stretchr/testify/assert"
@@ -115,4 +119,66 @@ func TestAddHTTPServer_PartialStartFailureShutsStartedServers(t *testing.T) {
 
 	_, err = http.Get("http://" + first.Addr() + "/ping") //nolint:noctx,bodyclose
 	require.Error(t, err, "first server must be shut down by the closer after a partial-start failure")
+}
+
+// TestWatchServe_ForwardsFatalServeError: the per-server watcher must flip
+// readiness AND forward the error to the Fatal channel, so servicekit.Main
+// can tear the process down (exit non-zero) instead of leaving a NotReady
+// zombie pod behind.
+func TestWatchServe_ForwardsFatalServeError(t *testing.T) {
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s := &Service{
+		logger: slog.Default(),
+		h:      health.New(),
+		fatal:  make(chan error, 1),
+		runCtx: runCtx,
+	}
+
+	notify := make(chan error, 1)
+	s.wg.Add(1)
+	go s.watchServe("public", notify)
+
+	notify <- errors.New("accept tcp: use of closed network connection")
+
+	select {
+	case err := <-s.Fatal():
+		require.ErrorContains(t, err, "closed network connection")
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve error was not forwarded to the Fatal channel")
+	}
+
+	// Readiness must have flipped too (LB stops routing while Main tears down).
+	rec := httptest.NewRecorder()
+	s.h.ReadyzHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody))
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+
+	s.wg.Wait() // watcher must exit after reporting
+}
+
+// TestWatchServe_GracefulShutdownIsNotFatal: Notify() is CLOSED on graceful
+// shutdown (nil error) — that must not be reported as fatal.
+func TestWatchServe_GracefulShutdownIsNotFatal(t *testing.T) {
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	s := &Service{
+		logger: slog.Default(),
+		h:      health.New(),
+		fatal:  make(chan error, 1),
+		runCtx: runCtx,
+	}
+
+	notify := make(chan error)
+	s.wg.Add(1)
+	go s.watchServe("public", notify)
+	close(notify) // graceful shutdown closes the channel
+
+	s.wg.Wait()
+	select {
+	case err := <-s.Fatal():
+		t.Fatalf("graceful shutdown must not be fatal, got: %v", err)
+	default:
+	}
 }

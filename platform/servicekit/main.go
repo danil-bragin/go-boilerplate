@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"go-boilerplate/platform/run"
@@ -32,6 +33,24 @@ type App interface {
 	// Closer returns the app's run.Closer; run.Run closes it (LIFO) on
 	// SIGINT/SIGTERM within the shutdown timeout.
 	Closer() *run.Closer
+}
+
+// FatalNotifier is optionally implemented by Apps (and by *Service) to
+// surface fatal errors that occur AFTER a successful Start — e.g. a public
+// HTTP listener dying. When the channel receives an error, Main tears the
+// app down via its Closer and exits non-zero so the orchestrator restarts
+// the process.
+//
+// Why a process exit and not just readiness: flipping /readyz to 503 only
+// removes the pod from service endpoints; the liveness probe stays green, so
+// nothing would ever restart a pod whose serve loop is dead. Exiting is the
+// recovery path.
+//
+// App wrappers around *Service get this for free by delegating:
+//
+//	func (a *App) Fatal() <-chan error { return a.svc.Fatal() }
+type FatalNotifier interface {
+	Fatal() <-chan error
 }
 
 // mainShutdownTimeout bounds the closer run on shutdown — generous enough
@@ -77,11 +96,39 @@ func runMain(build func(ctx context.Context) (App, error)) int {
 		return 1
 	}
 
-	// run.Run blocks until SIGINT/SIGTERM (or ctx cancellation), then closes
-	// the app's closer LIFO within the shutdown timeout. The closer is the
-	// ONLY teardown path — no Stop call afterwards.
+	// Fatal-error watch: when the app reports a fatal post-start error (e.g.
+	// a public listener died), cancel ctx so run.Run below unblocks and runs
+	// the closer — then exit non-zero. The goroutine is leak-safe: it exits
+	// via watchDone when runMain returns.
+	var fatalSeen atomic.Bool
+	if fn, ok := a.(FatalNotifier); ok {
+		watchDone := make(chan struct{})
+		defer close(watchDone)
+		go func() {
+			select {
+			case err := <-fn.Fatal():
+				if err != nil {
+					fatalSeen.Store(true)
+					slog.Error("fatal server error — shutting down", "error", err)
+					cancel()
+				}
+			case <-watchDone:
+			}
+		}()
+	}
+
+	// run.Run blocks until SIGINT/SIGTERM (or ctx cancellation, including the
+	// fatal-error cancel above), then closes the app's closer LIFO within the
+	// shutdown timeout. The closer is the ONLY teardown path — no Stop call
+	// afterwards.
 	if err := run.Run(ctx, run.Options{ShutdownTimeout: mainShutdownTimeout}, a.Closer()); err != nil {
 		slog.Error("shutdown completed with errors", "error", err)
+		return 1
+	}
+
+	if fatalSeen.Load() {
+		// Teardown was clean, but the cause was a fatal server error: exit
+		// non-zero so the orchestrator restarts the process.
 		return 1
 	}
 
