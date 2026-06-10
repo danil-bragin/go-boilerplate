@@ -137,9 +137,10 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 	// expired) after its inbox row was cleaned up, the duplicate is no longer
 	// detected. WARN loudly instead of failing — dev setups may not care.
 	if cfg.TopicRetention > 0 && cfg.InboxRetention < cfg.TopicRetention {
-		logger.Warn("INBOX_RETENTION is shorter than TOPIC_RETENTION: "+
-			"redelivered records older than the inbox window will NOT be deduplicated; "+
-			"set INBOX_RETENTION >= TOPIC_RETENTION",
+		logger.Warn(
+			"INBOX_RETENTION is shorter than TOPIC_RETENTION: "+
+				"redelivered records older than the inbox window will NOT be deduplicated; "+
+				"set INBOX_RETENTION >= TOPIC_RETENTION",
 			"inbox_retention", cfg.InboxRetention,
 			"topic_retention", cfg.TopicRetention,
 		)

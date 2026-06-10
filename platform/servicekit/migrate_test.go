@@ -34,7 +34,8 @@ func markerTableExists(t *testing.T, dsn string) bool {
 	defer func() { _ = pool.Close(ctx) }()
 
 	var exists bool
-	require.NoError(t, pool.Writer().QueryRow(ctx,
+	require.NoError(t, pool.Writer().QueryRow(
+		ctx,
 		`select exists (select 1 from information_schema.tables where table_name='kit_migrate_marker')`,
 	).Scan(&exists))
 	return exists

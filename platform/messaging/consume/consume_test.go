@@ -311,7 +311,8 @@ func TestTyped_OnCommittedRunsAfterTx(t *testing.T) {
 
 	var committed atomic.Int64
 	h := consume.New(pool, "grp").Handler(
-		consume.Typed("orders.OrderCreated.v1",
+		consume.Typed(
+			"orders.OrderCreated.v1",
 			func(ctx context.Context, _ *ordersv1.OrderCreated) error {
 				// Inside the inbox tx the row is not yet visible to other conns.
 				var n int
@@ -390,7 +391,8 @@ func TestTyped_WithoutInbox_FastLane(t *testing.T) {
 	var calls, committed atomic.Int32
 	var gotCorr string
 	h := consume.New(nil, "grp", consume.WithoutInbox()).Handler(
-		consume.Typed("orders.OrderCreated.v1",
+		consume.Typed(
+			"orders.OrderCreated.v1",
 			func(ctx context.Context, evt *ordersv1.OrderCreated) error {
 				calls.Add(1)
 				gotCorr = msgctx.CorrelationID(ctx)

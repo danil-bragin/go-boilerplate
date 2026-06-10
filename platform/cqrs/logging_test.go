@@ -47,7 +47,8 @@ func TestLogging_CarriesTraceID(t *testing.T) {
 	t.Cleanup(func() { _ = sync() })
 
 	handler := func(_ context.Context, _ string) (string, error) { return "ok", nil }
-	decorated := cqrs.Decorate(handler,
+	decorated := cqrs.Decorate(
+		handler,
 		cqrs.Tracing[string, string]("TestHandler"), // outermost: creates the span
 		cqrs.Logging[string, string]("TestHandler"), // inside: logs WITH the span ctx
 	)
@@ -78,7 +79,8 @@ func TestLogging_ErrorPathCarriesTraceID(t *testing.T) {
 
 	boom := errors.New("boom")
 	handler := func(_ context.Context, _ string) (string, error) { return "", boom }
-	decorated := cqrs.Decorate(handler,
+	decorated := cqrs.Decorate(
+		handler,
 		cqrs.Tracing[string, string]("FailingHandler"),
 		cqrs.Logging[string, string]("FailingHandler"),
 	)

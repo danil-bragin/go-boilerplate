@@ -17,7 +17,8 @@ import "go.uber.org/goleak"
 // goleak.IgnoreCurrent()) are appended after the defaults.
 func Default(extra ...goleak.Option) []goleak.Option {
 	opts := make([]goleak.Option, 0, 3+len(extra))
-	opts = append(opts,
+	opts = append(
+		opts,
 		goleak.IgnoreTopFunction("github.com/testcontainers/testcontainers-go.(*Reaper).connect.func1"),
 		goleak.IgnoreTopFunction("github.com/twmb/franz-go/pkg/kgo.(*Client).updateMetadataLoop"),
 		goleak.IgnoreTopFunction("github.com/twmb/franz-go/pkg/kgo.(*Client).reapConnectionsLoop"),

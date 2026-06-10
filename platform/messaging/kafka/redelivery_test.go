@@ -47,7 +47,8 @@ func TestRedeliveryOnHandlerFailure(t *testing.T) {
 	defer adminCl.Close()
 	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, topic))
 
-	produceManual(t, broker,
+	produceManual(
+		t, broker,
 		&kgo.Record{Topic: topic, Partition: 0, Key: []byte("r1"), Value: []byte("v1")},
 		&kgo.Record{Topic: topic, Partition: 0, Key: []byte("r2"), Value: []byte("v2")},
 		&kgo.Record{Topic: topic, Partition: 0, Key: []byte("r3"), Value: []byte("v3")},
@@ -118,7 +119,8 @@ func TestNoCommitPastFailure(t *testing.T) {
 	defer adminCl.Close()
 	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, topic))
 
-	produceManual(t, broker,
+	produceManual(
+		t, broker,
 		&kgo.Record{Topic: topic, Partition: 0, Key: []byte("r1"), Value: []byte("v1")},
 		&kgo.Record{Topic: topic, Partition: 0, Key: []byte("r2"), Value: []byte("v2")},
 		&kgo.Record{Topic: topic, Partition: 0, Key: []byte("r3"), Value: []byte("v3")},

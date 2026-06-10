@@ -56,7 +56,8 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 	}
 	opts = append([]consume.Option{consume.WithLogger(logger)}, opts...)
 	return consume.New(pool, consumerGroup, opts...).Handler(
-		consume.TypedFor(1,
+		consume.TypedFor(
+			1,
 			func(ctx context.Context, evt *ordersv1.OrderCreated) error {
 				orderID, err := parseOrderID(evt.GetOrderId())
 				if err != nil {
@@ -78,7 +79,8 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 				committed(ctx, evt.GetOrderId())
 			}),
 		),
-		consume.TypedFor(1,
+		consume.TypedFor(
+			1,
 			func(ctx context.Context, evt *ordersv1.PaymentProcessed) error {
 				orderID, err := parseOrderID(evt.GetOrderId())
 				if err != nil {
@@ -104,7 +106,8 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 				committed(ctx, evt.GetOrderId())
 			}),
 		),
-		consume.TypedFor(1,
+		consume.TypedFor(
+			1,
 			func(ctx context.Context, evt *ordersv1.OrderPaymentTimedOut) error {
 				orderID, err := parseOrderID(evt.GetOrderId())
 				if err != nil {
@@ -127,7 +130,8 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 				committed(ctx, evt.GetOrderId())
 			}),
 		),
-		consume.TypedFor(1,
+		consume.TypedFor(
+			1,
 			func(ctx context.Context, evt *ordersv1.PaymentFailed) error {
 				orderID, err := parseOrderID(evt.GetOrderId())
 				if err != nil {

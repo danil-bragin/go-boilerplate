@@ -98,7 +98,8 @@ func buildSSE(cfg Config, svc *servicekit.Service) *sse.Streamer {
 	} else {
 		svc.Logger().Info("gateway: REDIS_ADDRS not set — SSE falls back to projection-store polling")
 	}
-	return sse.New(client, svc.Pool(), svc.Logger(), cfg.AuthDisabled,
+	return sse.New(
+		client, svc.Pool(), svc.Logger(), cfg.AuthDisabled,
 		sse.WithHeartbeat(cfg.SSEHeartbeat),
 		sse.WithPollInterval(cfg.SSEPollInterval),
 	)

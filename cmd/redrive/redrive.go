@@ -181,7 +181,8 @@ func redriveRecord(ctx context.Context, cl *kgo.Client, cfg Config, out io.Write
 	if origTopic == "" {
 		return fmt.Errorf(
 			"redrive: record %s[%d]@%d has neither x-original-topic nor retry-orig-topic header — cannot determine destination (aborting; nothing committed past the previous record)",
-			rec.Topic, rec.Partition, rec.Offset)
+			rec.Topic, rec.Partition, rec.Offset,
+		)
 	}
 
 	// Dedup caveat: without a message-id header the consumer-side inbox falls

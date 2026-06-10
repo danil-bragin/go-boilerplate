@@ -436,7 +436,8 @@ func TestCache_L2Breaker_RedisDownNoLatencyCliff(t *testing.T) {
 	// on container restart, but a real outage+recovery happens at a stable
 	// address — which is exactly what the breaker's half-open probe needs.
 	hostPort := freeLocalPort(t)
-	rc, err := tcredis.Run(ctx, "redis:7-alpine",
+	rc, err := tcredis.Run(
+		ctx, "redis:7-alpine",
 		testcontainers.CustomizeRequest(testcontainers.GenericContainerRequest{
 			ContainerRequest: testcontainers.ContainerRequest{
 				HostConfigModifier: func(hc *container.HostConfig) {

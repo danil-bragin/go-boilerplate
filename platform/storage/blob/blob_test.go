@@ -73,7 +73,8 @@ func newStore(t *testing.T) *blob.S3Store {
 func createTestBucket(ctx context.Context, t *testing.T, cfg blob.Config) {
 	t.Helper()
 
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
+	awsCfg, err := awsconfig.LoadDefaultConfig(
+		ctx,
 		awsconfig.WithRegion(cfg.Region),
 		awsconfig.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey.Reveal(), ""),

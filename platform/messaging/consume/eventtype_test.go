@@ -58,7 +58,8 @@ func TestEventTypeFor_PackageWithoutVersionSegment(t *testing.T) {
 func TestTyped_OnCommittedOption(t *testing.T) {
 	var handled, committed int
 	h := consume.New(nil, "g", consume.WithoutInbox()).Handler(
-		consume.TypedFor(1,
+		consume.TypedFor(
+			1,
 			func(_ context.Context, _ *ordersv1.OrderCreated) error {
 				handled++
 				return nil

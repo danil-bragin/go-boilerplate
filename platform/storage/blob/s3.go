@@ -28,7 +28,8 @@ type S3Store struct {
 // New creates an S3Store from cfg, connects to the endpoint, and ensures the
 // configured bucket exists (creating it if necessary).
 func New(ctx context.Context, cfg Config) (*S3Store, error) {
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
+	awsCfg, err := awsconfig.LoadDefaultConfig(
+		ctx,
 		awsconfig.WithRegion(cfg.Region),
 		awsconfig.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey.Reveal(), ""),

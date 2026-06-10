@@ -38,7 +38,8 @@ func Middleware(v Verifier) func(http.Handler) http.Handler {
 				detail := "invalid token"
 				if !errors.Is(err, ErrInvalidToken) {
 					detail = "authentication failed"
-					log.From(r.Context()).ErrorContext(r.Context(),
+					log.From(r.Context()).ErrorContext(
+						r.Context(),
 						"auth: token verification failed with non-token error",
 						"error", err,
 					)

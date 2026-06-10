@@ -24,7 +24,8 @@ import (
 // client's own input, so the message is safe to echo.
 func requestErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	ctx := r.Context()
-	log.From(ctx).InfoContext(ctx, "gateway: request binding error",
+	log.From(ctx).InfoContext(
+		ctx, "gateway: request binding error",
 		"error", err,
 		"request_id", httpserver.RequestIDFromContext(ctx),
 	)
@@ -45,7 +46,8 @@ func responseErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 	ctx := r.Context()
-	log.From(ctx).ErrorContext(ctx, "gateway: handler error",
+	log.From(ctx).ErrorContext(
+		ctx, "gateway: handler error",
 		"error", err,
 		"request_id", httpserver.RequestIDFromContext(ctx),
 	)

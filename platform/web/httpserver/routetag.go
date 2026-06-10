@@ -141,7 +141,8 @@ func RouteTag() func(http.Handler) http.Handler {
 				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 					status = http.StatusServiceUnavailable
 				}
-				duration.Record(ctx,
+				duration.Record(
+					ctx,
 					float64(time.Since(start))/float64(time.Millisecond),
 					metric.WithAttributes(
 						attribute.String("http.request.method", r.Method),
