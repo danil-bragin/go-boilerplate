@@ -190,7 +190,7 @@ func (c *Consumer) Run(ctx context.Context, h HandlerFunc) error {
 						// rest — the seek-back below rewinds to firstBad.
 						return
 					}
-					r := recordFromKGO(rec)
+					r := RecordFromKGO(rec)
 					if err := h(ctx, r); err != nil {
 						firstBad = rec
 						return
@@ -293,21 +293,5 @@ func (c *Consumer) commit(ctx context.Context, recs []*kgo.Record) {
 			c.metrics.addCommitFailure(ctx, rec.Topic)
 		}
 		c.onError(ctx, StageCommit, err)
-	}
-}
-
-// recordFromKGO converts a *kgo.Record to the broker-agnostic Record type.
-func recordFromKGO(rec *kgo.Record) Record {
-	headers := make(map[string]string, len(rec.Headers))
-	for _, h := range rec.Headers {
-		headers[h.Key] = string(h.Value)
-	}
-	return Record{
-		Topic:     rec.Topic,
-		Key:       rec.Key,
-		Value:     rec.Value,
-		Headers:   headers,
-		Partition: rec.Partition,
-		Offset:    rec.Offset,
 	}
 }

@@ -359,7 +359,7 @@ func (c *Consumer) processRecords(
 	}
 
 	for i, rec := range recs {
-		r := recordFromKGO(rec)
+		r := kafka.RecordFromKGO(rec)
 		_, _, due, ok := ParseRetryHeaders(r)
 
 		if !ok {
@@ -372,7 +372,7 @@ func (c *Consumer) processRecords(
 				Topic:   DLTTopic(base),
 				Key:     rec.Key,
 				Value:   rec.Value,
-				Headers: headersFromKGO(rec.Headers),
+				Headers: kafka.HeadersFromKGO(rec.Headers),
 			}
 			dltRec.Headers[HeaderLastError] = "malformed: missing retry headers"
 			// Fix 3: only commit when DLT produce succeeded. On failure, HOLD
@@ -445,7 +445,7 @@ func (c *Consumer) holdRecords(tp topicPartition, records []*kgo.Record, due tim
 // for a delayed retry — it is NOT safe to continue, because committing any
 // later record would advance past this one and lose it.
 func (c *Consumer) handleRecord(ctx context.Context, rec *kgo.Record, toCommit []*kgo.Record) (_ []*kgo.Record, failed bool) {
-	r := recordFromKGO(rec)
+	r := kafka.RecordFromKGO(rec)
 	_, orig, _, ok := ParseRetryHeaders(r)
 	if !ok {
 		orig = rec.Topic
@@ -479,31 +479,4 @@ func (c *Consumer) Close(_ context.Context) error {
 		c.client.Close()
 	})
 	return nil
-}
-
-// recordFromKGO converts a *kgo.Record to a kafka.Record.
-// This mirrors the identical function in kafka/run.go; it is reproduced here
-// to avoid importing an unexported symbol.
-func recordFromKGO(rec *kgo.Record) kafka.Record {
-	headers := make(map[string]string, len(rec.Headers))
-	for _, h := range rec.Headers {
-		headers[h.Key] = string(h.Value)
-	}
-	return kafka.Record{
-		Topic:     rec.Topic,
-		Key:       rec.Key,
-		Value:     rec.Value,
-		Headers:   headers,
-		Partition: rec.Partition,
-		Offset:    rec.Offset,
-	}
-}
-
-// headersFromKGO converts kgo header slice to map.
-func headersFromKGO(hs []kgo.RecordHeader) map[string]string {
-	m := make(map[string]string, len(hs))
-	for _, h := range hs {
-		m[h.Key] = string(h.Value)
-	}
-	return m
 }

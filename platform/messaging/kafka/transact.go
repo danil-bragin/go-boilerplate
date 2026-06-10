@@ -193,7 +193,7 @@ func (t *TransactConsumer) Run(ctx context.Context, fn ProcessFn) error {
 				return // batch already poisoned; skip remaining records
 			}
 
-			outs, err := fn(ctx, recordFromKGO(rec))
+			outs, err := fn(ctx, RecordFromKGO(rec))
 			if err != nil {
 				ok = false
 				t.onError(fmt.Errorf("kafka: TransactConsumer: ProcessFn: %w", err))
