@@ -87,6 +87,37 @@ jobs:
       - name: squawk lint migrations
         run: squawk $(git ls-files '*/migrations/*.sql' '*/migrations/sql/*.sql')
 
+  # ── Prometheus rules + config validation (promtool) ──────────────────────
+  # BLOCKING: checks all rule files, the scrape config, and runs the rule
+  # unit tests (SLO burn-rate arithmetic incl. the total-outage scenarios)
+  # against the same prom/prometheus image the compose stack pins.
+  # Keep in sync with the `just promtool` recipe (justfile).
+  promtool:
+    name: Promtool (rules + config + rule tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: promtool check rules
+        run: |
+          docker run --rm -v "$PWD/deploy/prometheus:/r:ro" --entrypoint promtool prom/prometheus:v3.12.0 \
+            check rules /r/rules.yaml /r/rules-latency.yaml /r/slo.yaml
+
+      - name: promtool check config
+        run: |
+          docker run --rm \
+            -v "$PWD/deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro" \
+            -v "$PWD/deploy/prometheus/rules.yaml:/etc/prometheus/rules.yaml:ro" \
+            -v "$PWD/deploy/prometheus/rules-latency.yaml:/etc/prometheus/rules-latency.yaml:ro" \
+            -v "$PWD/deploy/prometheus/slo.yaml:/etc/prometheus/slo.yaml:ro" \
+            --entrypoint promtool prom/prometheus:v3.12.0 \
+            check config /etc/prometheus/prometheus.yml
+
+      - name: promtool test rules
+        run: |
+          docker run --rm -v "$PWD/deploy/prometheus:/r:ro" --entrypoint promtool prom/prometheus:v3.12.0 \
+            test rules /r/tests/slo_test.yaml
+
   # ── Vulnerability scan ────────────────────────────────────────────────────
   govulncheck:
     name: govulncheck
