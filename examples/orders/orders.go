@@ -129,8 +129,13 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 
 	// Unpaid-order watcher: emits OrderPaymentTimedOut (via outbox, exactly
 	// once per order) for orders still 'created' past the payment deadline.
-	watcher := app.NewUnpaidWatcher(svc.Pool(), outboxRepo, cfg.UnpaidCheckInterval, cfg.PaymentDeadline, svc.Logger())
-	svc.AddWorker("unpaid-watcher", watcher.Run)
+	// singleActive: only one instance scans at a time (advisory-lock leader);
+	// the CAS guard inside the watcher keeps emission exactly-once even
+	// during the brief leader-overlap window.
+	watcher := app.NewUnpaidWatcher(svc.Pool(), outboxRepo, cfg.PaymentDeadline, svc.Logger())
+	if err := svc.AddPeriodicWorker("unpaid-watcher", cfg.UnpaidCheckInterval, 0, true, watcher.Poll); err != nil {
+		return nil, err
+	}
 
 	// Launch audit_log cleanup; defaults to 90-day retention / 6-hour interval.
 	svc.AddAuditCleanup(auditStore, cfg.AuditCleanupInterval, cfg.AuditRetention)

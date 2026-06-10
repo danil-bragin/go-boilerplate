@@ -47,48 +47,33 @@ const unpaidBatchLimit = 100
 type UnpaidWatcher struct {
 	pool       *pg.Pool
 	outboxRepo *outbox.Repository
-	interval   time.Duration
 	deadline   time.Duration
 	logger     *slog.Logger
 }
 
-// NewUnpaidWatcher builds a watcher. interval is the poll cadence
-// (ORDERS_UNPAID_CHECK_INTERVAL) and deadline the payment window
-// (ORDERS_PAYMENT_DEADLINE).
+// NewUnpaidWatcher builds a watcher. deadline is the payment window
+// (ORDERS_PAYMENT_DEADLINE). The poll cadence is owned by the caller:
+// register Poll via servicekit's Service.AddPeriodicWorker with
+// ORDERS_UNPAID_CHECK_INTERVAL as the interval.
 func NewUnpaidWatcher(
 	pool *pg.Pool,
 	outboxRepo *outbox.Repository,
-	interval, deadline time.Duration,
+	deadline time.Duration,
 	logger *slog.Logger,
 ) *UnpaidWatcher {
 	return &UnpaidWatcher{
 		pool:       pool,
 		outboxRepo: outboxRepo,
-		interval:   interval,
 		deadline:   deadline,
 		logger:     logger,
 	}
 }
 
-// Run polls until ctx is cancelled. Intended to be registered via
-// servicekit's Service.AddWorker.
-func (w *UnpaidWatcher) Run(ctx context.Context) {
-	ticker := time.NewTicker(w.interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if err := w.poll(ctx); err != nil && ctx.Err() == nil {
-				w.logger.Error("unpaid watcher: poll failed", "error", err)
-			}
-		}
-	}
-}
-
-// poll drains all currently-expired unpaid orders in batches.
-func (w *UnpaidWatcher) poll(ctx context.Context) error {
+// Poll drains all currently-expired unpaid orders in batches. It is the
+// per-tick body for servicekit's AddPeriodicWorker — typically registered
+// singleActive so only one instance scans, though the compare-and-set guard
+// in emitTimeout keeps concurrent polls exactly-once anyway.
+func (w *UnpaidWatcher) Poll(ctx context.Context) error {
 	for {
 		rows, err := gen.New(w.pool.Writer()).ListUnpaidExpired(ctx, gen.ListUnpaidExpiredParams{
 			DeadlineSeconds: w.deadline.Seconds(),

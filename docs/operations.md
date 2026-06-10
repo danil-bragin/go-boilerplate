@@ -274,6 +274,43 @@ The gateway applies a per-client-IP token-bucket rate limiter at the edge. Confi
 
 ---
 
+## Background workers (periodic & single-active)
+
+Services register ticker-driven background work via
+`servicekit.AddPeriodicWorker(name, interval, jitter, singleActive, fn)`:
+
+- **interval** — the tick cadence. **jitter** adds a uniformly random extra
+  delay in `[0, jitter)` per tick so replicas don't hammer shared
+  dependencies in lock-step (`0` = none).
+- **fn errors are logged, never fatal** — the loop keeps ticking. A worker
+  that wants to stop the service should not exist; workers are maintenance
+  loops.
+- **singleActive=true** runs the loop under `pg.RunAsLeader`: a session-scoped
+  Postgres advisory lock (key `leader:<name>:<schema>`) elects ONE instance
+  across all replicas; the others stay hot-standby and re-try every second.
+  The leader health-checks its lock connection every second — on a lost
+  session the worker's context is cancelled and leadership is re-contested
+  (failover within a few seconds). This is leader *election*, not fencing:
+  a brief overlap window (≤ one health-check interval) is possible, so the
+  worker body must still be idempotent (CAS guards, upserts).
+- **singleActive=false** runs the worker on EVERY instance — right for
+  naturally concurrency-safe loops.
+
+The harness uses it internally:
+
+| Worker | singleActive | Why |
+|---|---|---|
+| `inbox-cleanup` (`INBOX_CLEANUP_INTERVAL`) | `false` | age-based DELETE is idempotent; concurrent replicas delete disjoint rows |
+| `audit-cleanup` (`AUDIT_CLEANUP_INTERVAL`) | `false` | same idempotent DELETE |
+| `unpaid-watcher` (orders, `ORDERS_UNPAID_CHECK_INTERVAL`) | `true` | one scanner is enough; the CAS guard covers the overlap window |
+
+The outbox relay keeps its own (pre-existing) advisory-lock leader mode
+(`OUTBOX_SINGLE_ACTIVE`, lock key `outbox_relay:<schema>`): its leadership is
+re-verified *between batches* of a drain — a tighter dual-publish bound than
+the generic worker offers — so it intentionally does not use `RunAsLeader`.
+
+---
+
 ## JWKS outage semantics (gateway auth)
 
 When `GATEWAY_AUTH_DISABLED=false`, the gateway verifies bearer JWTs against the IdP's JWKS. The key set is fetched once at startup (startup FAILS fast if the initial fetch cannot complete) and then cached and refreshed in the background (`jwk.Cache`). During an IdP/JWKS outage:
