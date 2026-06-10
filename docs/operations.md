@@ -275,14 +275,14 @@ After the last tier a record lands on `<base>.DLT`.
    commits nothing:
 
    ```bash
-   go run ./cmd/redrive --brokers localhost:19092 --dlt orders.commands.DLT --dry-run
+   just redrive --dlt orders.commands.DLT --dry-run
    ```
 
 4. **Live run** (add `--limit N` to canary a bounded batch first):
 
    ```bash
-   go run ./cmd/redrive --brokers localhost:19092 --dlt orders.commands.DLT --limit 100
-   go run ./cmd/redrive --brokers localhost:19092 --dlt orders.commands.DLT
+   just redrive --dlt orders.commands.DLT --limit 100
+   just redrive --dlt orders.commands.DLT
    ```
 
 Semantics worth knowing (see `cmd/redrive` package docs):

@@ -165,6 +165,11 @@ doc-test:
 migrate svc:
     go run ./cmd/migrate -service {{svc}}
 
+# Redrive DLT records back to their original topics (brokers default from KAFKA_BROKERS)
+# Usage: just redrive --dlt orders.commands.DLT --dry-run
+redrive *ARGS:
+    go run ./cmd/redrive {{ARGS}}
+
 # Fetch a Keycloak access token (demo/demo) for manual API calls — requires jq
 # Usage: curl -H "Authorization: Bearer $(just token)" http://localhost:8080/v1/orders/<id>
 token:

@@ -103,8 +103,8 @@ func Run(ctx context.Context, cfg Config) (Stats, error) {
 		out = io.Discard
 	}
 
-	cl, err := kgo.NewClient(
-		kgo.SeedBrokers(cfg.Brokers...),
+	cl, err := kafka.NewClient(
+		kafka.Config{Brokers: cfg.Brokers, ClientID: "redrive"},
 		kgo.ConsumeTopics(cfg.DLT),
 		kgo.ConsumerGroup(group),
 		kgo.DisableAutoCommit(),
