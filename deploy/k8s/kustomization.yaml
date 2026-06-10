@@ -1,0 +1,8 @@
+# REFERENCE — groups the reference manifests for a one-shot dry-run:
+#   kubectl apply --dry-run=client -k deploy/k8s/
+# Not a production overlay structure (no bases/overlays, no image pinning).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - gateway-deployment.yaml
+  - migrate-job.yaml

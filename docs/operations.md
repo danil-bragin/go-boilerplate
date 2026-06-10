@@ -1,4 +1,7 @@
-# Operations: Go runtime tuning
+# Operations
+
+Runtime tuning, runbooks (DLT redrive, projection rebuild, migrations,
+backup/DR), scaling guidance, and the Kubernetes reference manifests.
 
 ---
 
@@ -46,7 +49,7 @@ docker compose --profile apps up -d --build gateway
 
 # Option B — local development (run one service on the host, rest in containers)
 just up          # starts only core infra
-go run ./examples/gateway/cmd/gateway  # runs against postgres/redpanda/redis/minio/keycloak on localhost
+go run ./examples/gateway/cmd/gateway  # runs against postgres/redpanda/redis/seaweedfs/keycloak on localhost
 # or with hot-reload:
 just dev gateway
 
@@ -202,16 +205,132 @@ The gateway applies a per-client-IP token-bucket rate limiter at the edge. Confi
 
 ---
 
-## Retry-topics runbook (Kafka)
+## Kafka retry tiers & DLT redrive runbook
 
-The `platform/messaging/retry` package implements tiered retry routing. Topics are named `<base>.retry.<dur>` (e.g. `orders.commands.retry.5s`, `orders.commands.retry.30s`). The consumer group for retry topics is `<group>.retry`.
+The `platform/messaging/retry` package implements tiered retry routing.
+Tier topics are **index-named**: `<base>.retry.0`, `<base>.retry.1`, … — the
+tier's delay travels in the `retry-due-at` record header, never in the topic
+name, so retry policies can be retuned without stranding in-flight records.
+The consumer group for all of a service's retry tiers is `<group>.retry`.
+After the last tier a record lands on `<base>.DLT`.
+
+### Day-2 checks
 
 | Step | Action |
 |---|---|
-| Check lag | `kafka-consumer-groups.sh --describe --group <group>.retry` — watch lag on each retry tier |
-| DLT redrive | `go run ./cmd/redrive --brokers <b> --dlt <topic>.DLT` republishes each record to its `x-original-topic`/`retry-orig-topic` header destination with retry/diagnostic headers stripped. `--dry-run` lists only; `--limit N` bounds the batch. Progress is committed (group `redrive`) only after a successful republish, so interrupted runs resume safely |
-| Replay modes | Default preserves `message-id` → consumers that already processed the message dedup via the inbox (safe redelivery). `--fresh-ids` mints new message-ids → inbox dedup is bypassed and side effects run again on purpose (projection rebuild). A DLT record with neither orig-topic header aborts the run — nothing is guessed |
-| Tuning tiers | Edit `platform/messaging/retry` tier definitions and redeploy — each tier is a separate consumer group with its own lag metric |
+| Check tier lag | `rpk group describe <group>.retry` (or `kafka-consumer-groups.sh --describe --group <group>.retry`) — lag per `.retry.<idx>` topic |
+| Check DLT depth | `rpk topic describe orders.commands.DLT -p` (high watermarks) — alert when > 0 for longer than your triage SLO |
+| Tune tiers | Edit the `retry.Policy` passed to `AddConsumerWithRetry` and redeploy. Topic names do not change (index-named); in-flight records keep their original `retry-due-at` |
+
+### DLT redrive procedure
+
+1. **Inspect** what dead-lettered and why (the last error is on the record):
+
+   ```bash
+   rpk topic consume orders.commands.DLT --format json -n 10 \
+     | jq '{key: .key, headers: (.headers | map({(.key): .value}) | add)}'
+   ```
+
+2. **Fix the underlying cause** (bad deploy, schema mismatch, downstream outage).
+
+3. **Dry-run** the redrive — lists destination, key, message-id per record,
+   commits nothing:
+
+   ```bash
+   go run ./cmd/redrive --brokers localhost:19092 --dlt orders.commands.DLT --dry-run
+   ```
+
+4. **Live run** (add `--limit N` to canary a bounded batch first):
+
+   ```bash
+   go run ./cmd/redrive --brokers localhost:19092 --dlt orders.commands.DLT --limit 100
+   go run ./cmd/redrive --brokers localhost:19092 --dlt orders.commands.DLT
+   ```
+
+Semantics worth knowing (see `cmd/redrive` package docs):
+
+- Each record is republished to the topic named by its `x-original-topic`
+  (set by `kafka.WithRetry`) or `retry-orig-topic` (set by the tiered
+  escalator) header, with all retry/diagnostic headers stripped — it re-enters
+  the pipeline as a clean first attempt. A record with **neither** header
+  aborts the run; nothing is guessed and nothing past the previous record is
+  committed.
+- Progress is tracked in consumer group `redrive` (override `--group`) and
+  committed only **after** a successful republish — an interrupted run resumes
+  where it left off (at-least-once; duplicates collapse in consumer inboxes).
+- `--fresh-ids` mints a new `message-id` per record, **bypassing inbox dedup**
+  so side effects run again on purpose. Default (no flag) preserves the
+  original id: consumers that already processed the message before it
+  dead-lettered skip it via the inbox.
+
+### Record headers reference
+
+| Header | Written by | Meaning |
+|---|---|---|
+| `message-id` | outbox publisher (row UUID) / gateway (order id) | inbox dedup key; `topic:partition:offset` fallback when absent |
+| `event-type` | producer | versioned type, e.g. `orders.OrderCreated.v1`; `consume.Typed` dispatch key |
+| `correlation-id` | gateway (chain root) / propagated | constant across one chain; == root command's message id |
+| `causation-id` | outbox enqueue (from ctx) | message id of the direct parent message |
+| `principal-sub`, `principal-roles` | `auth.InjectHeaders` at the edge | propagated actor for audit; transport metadata, NOT authentication |
+| `retry-attempt` | retry escalator | escalations performed so far |
+| `retry-orig-topic` | retry escalator | original base topic |
+| `retry-due-at` | retry escalator | unix-millis redelivery due time |
+| `retry-last-error` | retry escalator | last handler error (truncated to 512 bytes) |
+| `x-error`, `x-attempts`, `x-original-topic` | `kafka.WithRetry` on DLT produce | last error / attempt count / source topic for in-process-retry DLTs |
+
+---
+
+## Projection rebuild / replay runbook (gateway read model)
+
+The gateway's `orders_read` projection is derived state — it can be rebuilt
+from the event topics, **within topic retention only** (`TOPIC_RETENTION`,
+default 168 h; events older than that are gone — DB rows are the source of
+truth, ADR-0011). Two distinct situations:
+
+### A. Reconverge / repair (preferred — no data loss window)
+
+Projection upserts are idempotent and reorder-safe (`pending < created <
+terminal` precedence), so a full re-consume converges to the same state
+without truncating anything. Procedure:
+
+1. Stop the projection consumers (gateway replicas in embedded mode, or the
+   `cmd/projection` deployment when split).
+2. **Clear the inbox window for the projection group** — this is the critical
+   step: replayed records carry their original `message-id`, and any record
+   still inside the inbox dedup window (`INBOX_RETENTION`, default 168 h)
+   would otherwise be silently skipped:
+
+   ```sql
+   DELETE FROM inbox WHERE consumer = 'gateway-projection';
+   ```
+
+3. Rewind the consumer group to the start of retention:
+
+   ```bash
+   rpk group seek gateway-projection --to start \
+     --topics orders.events,payments.events
+   ```
+
+4. Restart the consumers and watch lag drain:
+   `rpk group describe gateway-projection`.
+
+### B. Rebuild from scratch (schema change in the read model)
+
+Same as A, plus `TRUNCATE orders_read;` between steps 1 and 2. **Accept the
+consequence first:** rows whose source events have already aged out of topic
+retention are lost from the read model permanently. If that is not acceptable,
+backfill `orders_read` from the owning services' databases instead (they are
+the system of record), or raise `TOPIC_RETENTION` ahead of planned rebuilds.
+
+### What `cmd/redrive` does and does not do here
+
+`cmd/redrive` reads **DLT topics only** and routes records by their
+orig-topic headers — it cannot replay an ordinary event topic (records there
+have no `x-original-topic`/`retry-orig-topic` header, and redrive aborts by
+design). Its `--fresh-ids` mode exists for the DLT case of this same inbox
+caveat: redriving records the consumer already inboxed, when you explicitly
+want the side effects to run again. For projection rebuilds use consumer-group
+seek (above), not redrive.
 
 ---
 
@@ -227,7 +346,7 @@ goose statements.
 | Mode | How | When to use |
 |---|---|---|
 | On startup (default) | `MIGRATE_ON_START=true` — servicekit applies migrations in `New` | dev, tests, small single-team deploys |
-| Migrate job (prod) | `MIGRATE_ON_START=false` on app replicas; run `just migrate <svc>` / `go run ./cmd/migrate -service <svc>` as a pre-deploy job | production rollouts — replicas never race a long migration |
+| Migrate job (prod) | `MIGRATE_ON_START=false` on app replicas; run `just migrate <svc>` / `go run ./cmd/migrate -service <svc>` as a pre-deploy job (Kubernetes reference: `deploy/k8s/migrate-job.yaml`) | production rollouts — replicas never race a long migration |
 
 ### PgBouncer / pooled DSNs
 
@@ -266,3 +385,81 @@ dev-only noise rules are excluded, everything else (table rewrites,
 lock-heavy ALTERs, volatile defaults, …) is blocking. Suppress a deliberate
 violation per-statement with `-- squawk-ignore <rule>` on the line above it,
 plus a comment explaining why it is safe.
+
+---
+
+## Backup & disaster recovery
+
+The boilerplate ships a **dev topology** (one Postgres container, one volume —
+see ADR-0009); nothing below is wired out of the box. For production:
+
+### What to back up
+
+| Data | System of record? | Backup approach |
+|---|---|---|
+| Service databases (orders, payments, …) | **YES** (ADR-0011: rows are truth) | Continuous WAL archiving + base backups → PITR (managed Postgres does this for you; self-hosted: pgBackRest / WAL-G) |
+| Gateway `orders_read` projection | No — derived | Restore by rebuild/reconverge (runbook above) or restore its DB like any other; cheaper to rebuild |
+| Kafka topics | No — transport with finite retention | Do not treat as backup; analytics/archive goes through CDC-to-warehouse (ADR-0011) |
+| Keycloak realm, Grafana dashboards | Config | Keep as IaC/exports in git (`deploy/keycloak`, `deploy/grafana`) |
+
+### Restore-ordering concern: the outbox re-publishes after restore
+
+A restored service database contains whatever was in its `outbox` table at the
+backup instant — including rows already published between the backup and the
+failure, now marked unpublished again (or published rows whose effects already
+propagated). When the service starts, the relay will (re-)publish them: **a
+restore is a burst of stale, duplicate events.**
+
+Mitigations, in order:
+
+1. **Keep relay startup gated after a restore.** Start the restored service
+   with the relay effectively disabled (e.g. a deploy variant that skips
+   `AddOutboxRelay`, or network-isolate Kafka) until you have reconciled.
+2. **Reconcile the outbox against the topic** before re-enabling: compare the
+   newest `published_at IS NOT NULL` rows with the topic's tail (`rpk topic
+   consume`), and mark rows that demonstrably made it to Kafka as published
+   (`UPDATE outbox SET published_at = now() WHERE id IN (…)`).
+3. **Rely on consumer inboxes for the remainder** — duplicates with preserved
+   `message-id`s are dropped by every consumer **whose inbox window still
+   covers them**. This is the hard constraint: if the restore point is older
+   than the consumers' `INBOX_RETENTION` (default 168 h), inbox rows for those
+   messages may already be cleaned up and duplicates WILL re-run side effects.
+   Keep `INBOX_RETENTION` ≥ your worst-case restore age, or accept and handle
+   the replays.
+
+The same reasoning applies to the **inbox** after restore: inbox rows lost to
+the restore window mean already-processed messages still on the topic will be
+processed again (at-least-once). Handlers are idempotent by design
+(inbox + upserts), but money-grade side effects deserve a manual check.
+
+### Recovery order
+
+Restore and verify the **system-of-record service(s)** first (orders,
+payments), then notifications, then rebuild/reconverge the gateway projection
+last (runbook above) — it derives from the others' events.
+
+---
+
+## Scaling guide (per component)
+
+| Component | Scale how | Hard limits / caveats |
+|---|---|---|
+| Gateway (HTTP edge) | Horizontal replicas behind the LB; `deploy/k8s/gateway-deployment.yaml` includes an HPA sketch | Stateless. With `RATELIMIT_REDIS=true` the per-IP limit is shared across replicas; in-memory mode multiplies the effective limit by replica count. In embedded-projection mode every replica is also a consumer-group member — see next row |
+| Gateway projection / any consumer group | More members in the consumer group — embedded: more gateway replicas; split: scale `cmd/projection` | **Members beyond the partition count idle** (`TOPIC_PARTITIONS`, default 6, is the parallelism ceiling). Repartitioning later is an ops event — size partitions for target parallelism up front. Split the projection (ADR-0008) before scaling the edge aggressively |
+| Orders / payments / notifications consumers | Replicas up to partition count per topic | Same partition ceiling. Per-key order is per-partition; tiered retry breaks per-key order unless key parking is enabled (`retry.Policy.KeyParkingWindow`) |
+| Outbox relay | Do NOT scale for throughput by default: `OUTBOX_SINGLE_ACTIVE=true` runs one active relay per service (advisory-lock leader); extra replicas are warm standbys (takeover ≤ ~2× poll interval) | The single relay drains the table until empty per tick and batch-publishes; if it still lags, raise `OUTBOX_BATCH_SIZE`, lower `OUTBOX_POLL_INTERVAL`, then consider the LISTEN/NOTIFY tier (ADR-0004 amendment). Setting `OUTBOX_SINGLE_ACTIVE=false` trades per-aggregate ordering for parallel publish — only with reorder-safe consumers |
+| Postgres | Per-service instances first (ADR-0009), then read replicas (`PG_READ_DSN` reader pool), PgBouncer in front (set `PG_MIGRATE_URL` for migrations) | Writer is per-service vertical + partitioning territory; the platform's reader/writer split is already plumbed |
+| Redis (cache L2 + rate limit) | Standard Redis scaling; rueidis supports clustering | Every cache `Set`/`Delete` publishes an invalidation message; **every app instance subscribes** — pub/sub fan-out grows O(instances × writes). At high replica counts consider shorter L1 TTLs instead of chatty invalidation. L2 outage is absorbed by the circuit breaker (L1-only mode), so Redis HA is a latency/coherence concern, not availability |
+| Kafka/Redpanda | Cluster sizing per vendor guidance | Topics here are created with `TOPIC_RF` (default 1 — dev only); production needs RF ≥ 3 and `ENSURE_TOPICS=false` with topics as IaC |
+
+---
+
+## Kubernetes reference manifests
+
+`deploy/k8s/` contains **reference manifests — not production-ready**: a
+gateway Deployment/Service/HPA (probes on the admin port, preStop drain
+matching `DRAIN_GRACE`, `GOMEMLIMIT` from the memory limit) and a migrate Job
+(`MIGRATE_ON_START=false` pattern). They encode the lifecycle contracts this
+repo's code actually implements; secrets management, network policies, TLS,
+and registry plumbing are deliberately out of scope. Validate with
+`kubectl apply --dry-run=client -k deploy/k8s/`.

@@ -1,0 +1,144 @@
+# ============================================================================
+# REFERENCE MANIFEST — NOT PRODUCTION-READY.
+#
+# Shows how the gateway's lifecycle contracts map onto Kubernetes:
+#   - liveness/readiness probes hit the admin server (/livez, /readyz on 9090)
+#   - preStop sleep matches DRAIN_GRACE: the drain-gate flips /readyz to 503
+#     and keeps serving while the endpoint controller stops routing traffic
+#   - terminationGracePeriodSeconds > preStop + servicekit's 15 s shutdown cap
+#   - GOMEMLIMIT derived from the container memory limit (90% rule, see
+#     docs/operations.md); GOMAXPROCS handled by automaxprocs/cgroup awareness
+#
+# Deliberately out of scope: Secrets management (PG_DSN is a placeholder
+# secretKeyRef), TLS/ingress, NetworkPolicies, PodDisruptionBudgets, topology
+# spread, image registry/pinning. Add all of these before production use.
+# ============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway
+    spec:
+      # DRAIN_GRACE (5 s) + servicekit shutdown timeout (15 s) + margin.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: gateway
+          # Built by the parametric Dockerfile:
+          #   docker build --build-arg SERVICE=gateway -t <registry>/gateway:<tag> .
+          image: ghcr.io/yourorg/gateway:latest # CHANGEME: pin a digest
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: admin
+              containerPort: 9090
+          env:
+            - name: HTTP_ADDR
+              value: ":8080"
+            - name: ADMIN_HTTP_ADDR
+              value: ":9090"
+            # Readiness-first drain: /readyz goes 503, then this long a pause
+            # before any teardown begins. Must match the preStop sleep below.
+            - name: DRAIN_GRACE
+              value: "5s"
+            # Production: schema changes are owned by the migrate Job
+            # (migrate-job.yaml), never by app replicas racing at rollout.
+            - name: MIGRATE_ON_START
+              value: "false"
+            # Production: topics are IaC, not app-startup side effects.
+            - name: ENSURE_TOPICS
+              value: "false"
+            - name: GOMEMLIMIT
+              valueFrom:
+                resourceFieldRef:
+                  resource: limits.memory
+                  divisor: "1" # bytes; ~90% sizing is the GOGC-friendly target,
+                  # use a static value (e.g. "460MiB") if you want the margin
+            - name: KAFKA_BROKERS
+              value: "kafka:9092" # CHANGEME
+            - name: PG_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-db # CHANGEME: provision this Secret
+                  key: dsn
+            # Behind PgBouncer? Also set PG_MIGRATE_URL (direct-Postgres DSN).
+            - name: OTEL_SERVICE_NAME
+              value: "gateway"
+          resources:
+            requests:
+              cpu: "1" # request == limit → Guaranteed QoS, no CFS surprises
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          # Liveness: process is alive (always 200 while up). Keep it dumb —
+          # restarting a pod does not fix its dependencies.
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: admin
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # Readiness: gates on pg + kafka (+ redis when cache configured).
+          # Flips to 503 first thing during shutdown (drain-gate), and the
+          # admin server is shut down LAST so 503 keeps being served.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            periodSeconds: 5
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              # Belt-and-suspenders with the in-process drain-gate: hold the
+              # SIGTERM until kube-proxy/endpoints have observed NotReady.
+              # Keep equal to DRAIN_GRACE.
+              exec:
+                command: ["sleep", "5"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  labels:
+    app.kubernetes.io/name: gateway
+spec:
+  selector:
+    app.kubernetes.io/name: gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+# HPA sketch. NOTE (ADR-0008): in embedded-projection mode every gateway
+# replica joins the gateway-projection consumer group — autoscaling the edge
+# churns the group (rebalances) and idles members beyond the partition count.
+# Split the projection (cmd/projection + GATEWAY_EMBEDDED_PROJECTION=false)
+# before relying on aggressive HPA ranges.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gateway
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

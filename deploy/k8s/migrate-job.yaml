@@ -1,0 +1,58 @@
+# ============================================================================
+# REFERENCE MANIFEST — NOT PRODUCTION-READY.
+#
+# The production migration pattern (docs/operations.md § Database migrations):
+# app replicas run with MIGRATE_ON_START=false; this Job applies a service's
+# embedded goose migrations BEFORE the new app version rolls out (CI pre-deploy
+# step, or a per-release Job with a unique name). cmd/migrate takes the same
+# advisory lock as servicekit startup, so concurrent runs serialize safely.
+#
+# Image note: the repo's parametric Dockerfile builds example-service binaries
+# (./examples/$SERVICE/cmd/$SERVICE). cmd/migrate needs its own small image —
+# same builder stage with `go build ./cmd/migrate` as the build command.
+# ============================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Use a unique name per release (e.g. migrate-orders-<git-sha>) so reruns
+  # are new Jobs, not mutations of a completed one.
+  name: migrate-orders
+  labels:
+    app.kubernetes.io/name: migrate
+spec:
+  backoffLimit: 2
+  # Clean up finished Jobs automatically.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/yourorg/migrate:latest # CHANGEME: see image note above
+          args: ["-service", "orders"] # or "all" on the shared dev topology
+          env:
+            # cmd/migrate loads pg.Config from the environment.
+            - name: PG_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: orders-db # CHANGEME
+                  key: dsn
+            # REQUIRED behind PgBouncer transaction pooling: advisory locks
+            # are session-scoped, so migrations need a direct-Postgres DSN.
+            # MigrateDSN() prefers PG_MIGRATE_URL automatically.
+            - name: PG_MIGRATE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: orders-db
+                  key: direct-dsn
+                  optional: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
