@@ -6,14 +6,14 @@
 #   • Use Docker Swarm secrets, Kubernetes Secrets (prefer sealed-secrets or
 #     external-secrets-operator), HashiCorp Vault, or a cloud secret manager
 #     (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault).
-#   • Mount secrets as files (not env vars) and read them at startup using the
-#     caarlos0/env `file:"true"` tag, e.g.:
+#   • Mount secrets as files (not env vars) and read them at startup via the
+#     <NAME>_FILE convention built into platform/config.Load, e.g.:
 #
 #       PG_DSN_FILE=/run/secrets/pg_dsn   (container mounts the secret here)
 #
-#     With `file:"true"` caarlos0/env reads the file at *_FILE and populates
-#     the struct field, keeping the raw credential out of the process env.
-#     See https://github.com/caarlos0/env#from-file for details.
+#     When PG_DSN is unset and PG_DSN_FILE is set, config.Load reads the file
+#     (trailing newline trimmed) into the config.Secret field, keeping the raw
+#     credential out of the process env. See docs/operations.md §Secrets sourcing.
 #
 #   • Never commit .env files, credentials, or private keys to version control.
 #   • Rotate all default passwords before any production deployment.

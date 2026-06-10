@@ -187,6 +187,48 @@ constraint here: the wiring sequence is inherently order-dependent.
 
 ---
 
+## Secrets sourcing
+
+`config.Secret` fields support two file-based sourcing mechanisms; both keep
+raw credentials out of the process environment (`/proc/<pid>/environ`, crash
+dumps, `docker inspect`):
+
+1. **`<NAME>_FILE` convention (preferred)** — implemented in
+   `platform/config.Load`: when `NAME` is unset but `NAME_FILE` is set, the
+   secret is read from that file with the trailing newline trimmed.
+   Precedence: explicit `NAME` env var > `NAME_FILE` > `envDefault`. A set
+   but unreadable `NAME_FILE` fails startup (fail-fast — an empty credential
+   would otherwise surface as confusing auth errors much later). No struct-tag
+   changes needed; it works for every `config.Secret` field automatically,
+   including nested/embedded configs (`servicekit.Config` → `pg.Config`).
+2. **caarlos0 `,file` tag modifier** — `env:"PG_DSN,file"` makes `PG_DSN`
+   itself hold a *path*. Works, but changes the meaning of the variable for
+   every environment (local dev must then also point at a file), so the
+   boilerplate's own configs do not use it.
+
+How the platforms map onto `_FILE`:
+
+- **Docker (Swarm secrets / compose `secrets:`):** the secret is mounted at
+  `/run/secrets/<name>`; set `PG_DSN_FILE=/run/secrets/pg_dsn`. Same shape for
+  plain bind-mounted credential files.
+- **Kubernetes:** mount a `Secret` as a volume and point `PG_DSN_FILE` at the
+  mounted key (e.g. `/var/run/secrets/app/pg-dsn`). With
+  [external-secrets-operator](https://external-secrets.io) the `Secret` object
+  is synced from AWS Secrets Manager / Vault / GCP SM — the pod spec stays
+  identical. Prefer the volume + `_FILE` route over `secretKeyRef` env
+  injection: volume-mounted secrets are updated in place on rotation and never
+  appear in the pod's environment.
+- **SOPS (encrypted files in git):** decrypt at deploy time
+  (`sops -d secrets.enc.yaml`) into a mounted file or a K8s `Secret` (via
+  ksops/FluxCD's SOPS integration); the service still just reads `_FILE`. Do
+  not decrypt into `.env` files on long-lived hosts.
+
+`.env` files remain the local-dev path: insecure defaults live in
+`.env.example`, and `config.Secret` keeps whatever arrives out of logs and
+`%v` dumps (audit leak points with `git grep "\.Reveal()"`).
+
+---
+
 ## Logging
 
 Every service logs structured JSON to **stdout** (`LOG_LEVEL`, `LOG_FORMAT`);
@@ -239,6 +281,127 @@ When `GATEWAY_AUTH_DISABLED=false`, the gateway verifies bearer JWTs against the
 - Tokens verifiable with the **cached** keys keep working — a short JWKS outage is invisible to clients.
 - If verification needs a key fetch that fails (e.g. unknown `kid` after a key rotation mid-outage), the request is rejected with **401** and the generic detail `authentication failed`. This is **by design**: the edge never fails open, and infrastructure details (JWKS URL, network errors) are never echoed to clients.
 - The real cause is logged at **ERROR** (`auth: token verification failed with non-token error`). Alert on a sustained rate of this log line — a spike means JWKS trouble, not bad client tokens (those produce plain `invalid token` 401s with no ERROR log).
+
+### Machine-to-machine (service account) tokens
+
+Non-interactive callers (cron jobs, sibling systems, smoke tests) use the
+`gateway-m2m` confidential client (client-credentials grant, no user). The dev
+realm ships it with secret `gateway-m2m-dev-secret` — **rotate for anything
+non-local**. Its service account carries the realm role `user`, and the same
+`oidc-audience-mapper` as the interactive `gateway` client stamps `aud:
+gateway`, so M2M tokens pass the gateway's verifier (`GATEWAY_JWKS_AUDIENCE`)
+and RBAC unchanged:
+
+```bash
+TOKEN=$(just token-m2m)   # client_credentials against localhost:8180
+curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"customer_id":"batch-42","amount_cents":1234,"currency":"USD"}' \
+  http://localhost:8080/v1/orders
+```
+
+Note the ownership consequence: the principal's subject is the *service
+account's* user id, not a customer's — so non-admin M2M callers can only read
+back orders whose `customer_id` equals that subject (same read-path ownership
+rule as human users). Grant the `admin` realm role to the service account if
+the integration legitimately needs cross-customer reads.
+
+---
+
+## Load testing (k6)
+
+`scripts/k6/order-flow.js` exercises the full asynchronous order flow:
+`POST /v1/orders` with a unique `Idempotency-Key` per iteration (amount below
+the payments decline threshold), then polls `GET /v1/orders/{id}` until the
+projection reaches `created`/`paid`. Thresholds: `http_req_duration p(99)<500`
+and check success rate > 99% — k6 exits non-zero when either trips.
+
+```bash
+just up-apps            # gateway + services + infra
+just load               # 10 VUs, 30s (dockerized grafana/k6)
+just load 50 2m         # 50 VUs for 2 minutes
+
+# Authenticated run (auth enabled): the script uses the token's `sub` claim
+# as customer_id so the GET ownership check passes.
+TOKEN=$(just token) just load
+
+# Custom target
+BASE_URL=https://staging.example.com just load 20 1m
+```
+
+**Docker networking (macOS vs Linux):** the recipe runs k6 in a container, so
+`localhost` inside the container is the k6 container itself, not your machine.
+The default `BASE_URL` is therefore `http://host.docker.internal:8080`:
+resolved natively by Docker Desktop on macOS/Windows, and mapped on Linux via
+the recipe's `--add-host=host.docker.internal:host-gateway` flag. With a k6
+binary installed on the host you can skip Docker entirely:
+`k6 run --vus 10 --duration 30s scripts/k6/order-flow.js` (plain
+`http://localhost:8080` works there).
+
+**Interpreting failures:** against an absent/unreachable gateway every request
+fails to connect, the `checks` threshold trips, and k6 exits non-zero — that
+is the harness working, not a script bug. A failing
+`order reached created/paid within poll budget` check with passing POSTs means
+the projection lags: check consumer lag and outbox backlog (see the dashboards
+and `rpk group describe`).
+
+---
+
+## Feature flags (flagd)
+
+`platform/featureflags` wraps the OpenFeature SDK; the in-memory provider is
+wired today (see the package godoc). To evaluate flags from a real backend
+without code changes beyond provider registration, run
+[flagd](https://flagd.dev) next to the stack. Nothing in the repo depends on
+it, so the compose wiring ships commented-out — paste into
+`docker-compose.yml` and create the flags file when you need it:
+
+```yaml
+#  flagd:
+#    image: ghcr.io/open-feature/flagd:v0.11.8
+#    restart: unless-stopped
+#    profiles: ["flags"]      # opt-in: docker compose --profile flags up -d
+#    command: ["start", "--uri", "file:/etc/flagd/flags.json"]
+#    volumes:
+#      - ./deploy/flagd/flags.json:/etc/flagd/flags.json:ro
+#    ports:
+#      - "8013:8013"          # gRPC evaluation API (the Go provider's default)
+```
+
+`deploy/flagd/flags.json` (flagd's file syntax; hot-reloaded on change):
+
+```json
+{
+  "$schema": "https://flagd.dev/schema/v0/flags.json",
+  "flags": {
+    "new-checkout": {
+      "state": "ENABLED",
+      "variants": { "on": true, "off": false },
+      "defaultVariant": "off",
+      "targeting": {
+        "if": [{ "in": [{ "var": "tier" }, ["beta", "internal"]] }, "on", "off"]
+      }
+    },
+    "checkout-banner": {
+      "state": "ENABLED",
+      "variants": { "spring": "spring-sale", "none": "" },
+      "defaultVariant": "none"
+    }
+  }
+}
+```
+
+Go wiring (replaces `featureflags.NewInMemory`; requires adding the
+`open-feature/go-sdk-contrib` flagd provider module):
+
+```go
+provider := flagd.NewProvider(flagd.WithHost("localhost"), flagd.WithPort(8013))
+_ = openfeature.SetProviderAndWait(ctx, provider, openfeature.WithDomain("gateway"))
+flags := featureflags.New(openfeature.NewClient(openfeature.WithDomain("gateway")))
+```
+
+Evaluation context (the `tier` in the targeting rule above) comes from the
+`featureflags.BoolValue(ctx, …, map[string]any{"tier": …})` call sites; flag
+*definitions* stay in flagd, so toggles do not require a deploy.
 
 ---
 

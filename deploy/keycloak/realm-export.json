@@ -122,6 +122,37 @@
           }
         }
       ]
+    },
+    {
+      "id": "gateway-m2m-client",
+      "clientId": "gateway-m2m",
+      "name": "Gateway M2M (service account)",
+      "description": "Machine-to-machine client: client-credentials grant only. DEV SECRET — rotate for any non-local deployment.",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "gateway-m2m-dev-secret",
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocol": "openid-connect",
+      "redirectUris": [],
+      "webOrigins": [],
+      "protocolMappers": [
+        {
+          "id": "gateway-m2m-audience-mapper",
+          "name": "gateway-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "gateway",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
     }
   ],
   "users": [
@@ -139,6 +170,14 @@
           "temporary": false
         }
       ],
+      "realmRoles": ["user"],
+      "clientRoles": {}
+    },
+    {
+      "id": "gateway-m2m-service-account",
+      "username": "service-account-gateway-m2m",
+      "enabled": true,
+      "serviceAccountClientId": "gateway-m2m",
       "realmRoles": ["user"],
       "clientRoles": {}
     }

@@ -166,6 +166,36 @@ jobs:
       - name: go test
         run: go test -race -p 1 -timeout 25m ./...
 
+  # ── Fuzz smoke (non-blocking) ─────────────────────────────────────────────
+  # 30s per target over the attacker-facing parsers (client-IP/XFF extraction,
+  # JSON body decode, retry headers, pagination cursor). Non-blocking: fuzzing
+  # is probabilistic — a new finding should open an issue (with the corpus
+  # file from testdata/fuzz/ in the job log), not flake every PR red.
+  # Reproduce/extend locally: `just fuzz [fuzztime]`.
+  fuzz:
+    name: Fuzz (non-blocking, 30s/target)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: FuzzClientIPKey
+        run: go test -fuzz=FuzzClientIPKey -fuzztime=30s -run='^$' ./platform/web/httpserver
+
+      - name: FuzzHTTPXDecode
+        run: go test -fuzz=FuzzHTTPXDecode -fuzztime=30s -run='^$' ./platform/web/httpx
+
+      - name: FuzzParseRetryHeaders
+        run: go test -fuzz=FuzzParseRetryHeaders -fuzztime=30s -run='^$' ./platform/messaging/retry
+
+      - name: FuzzCursorDecode
+        run: go test -fuzz=FuzzCursorDecode -fuzztime=30s -run='^$' ./examples/gateway/internal/app
+
   # ── gofumpt format gate ───────────────────────────────────────────────────
   # Fails if any non-generated Go file is not formatted with gofumpt.
   # Generated files (gen/, *.pb.go, *_mock.go) are excluded.

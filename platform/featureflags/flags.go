@@ -21,6 +21,9 @@
 //	client := openfeature.NewClient(openfeature.WithDomain("my-app"))
 //	flags  := featureflags.New(client)
 //
+// A ready-to-paste flagd docker-compose snippet and flags.json example live
+// in docs/operations.md ("Feature flags (flagd)").
+//
 // # Provider isolation
 //
 // This package uses the domain API (openfeature.WithDomain on both provider

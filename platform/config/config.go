@@ -22,6 +22,12 @@ type Validator interface {
 // Struct fields use caarlos0/env tags: `env:"NAME"`, `envDefault:"x"`,
 // `env:"NAME,required"`, `envSeparator:","`.
 //
+// Secret fields additionally honour the NAME_FILE convention: when NAME is
+// not set in the environment but NAME_FILE is, the secret is read from that
+// file (trailing newline trimmed) — see applyFileSecrets for the precedence
+// rules. This is the standard pattern for Docker secrets and Kubernetes
+// secret volume mounts.
+//
 // T must be a struct type. If T (or *T) implements Validator, the hook runs
 // after parsing.
 func Load[T any]() (T, error) {
@@ -31,6 +37,9 @@ func Load[T any]() (T, error) {
 	}
 	if err := env.Parse(&cfg); err != nil {
 		return cfg, fmt.Errorf("config: parse env: %w", err)
+	}
+	if err := applyFileSecrets(reflect.ValueOf(&cfg)); err != nil {
+		return cfg, err
 	}
 	if err := validateHook(&cfg); err != nil {
 		return cfg, err
@@ -52,6 +61,9 @@ func LoadFromFile[T any](path string) (T, error) {
 	}
 	if err := env.Parse(&cfg); err != nil {
 		return cfg, fmt.Errorf("config: parse env: %w", err)
+	}
+	if err := applyFileSecrets(reflect.ValueOf(&cfg)); err != nil {
+		return cfg, err
 	}
 	if err := validateHook(&cfg); err != nil {
 		return cfg, err
