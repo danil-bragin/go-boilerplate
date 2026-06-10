@@ -292,6 +292,7 @@ func startAppAuthEnabled(t *testing.T, broker, dsn string) string {
 	t.Setenv("KAFKA_BROKERS", broker)
 	t.Setenv("KAFKA_CLIENT_ID", "gateway-test-auth-"+uuid.New().String())
 	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
 	t.Setenv("GATEWAY_AUTH_DISABLED", "false")
 	t.Setenv("LOG_LEVEL", "error")
 
@@ -358,6 +359,7 @@ func TestGateway_AuthEnabledNoVerifierFailsClosed(t *testing.T) {
 	t.Setenv("GATEWAY_JWKS_ISSUER", "test")
 	t.Setenv("GATEWAY_JWKS_AUDIENCE", "test")
 	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
 	t.Setenv("LOG_LEVEL", "error")
 
 	ctx := context.Background()
@@ -502,6 +504,7 @@ func TestGateway_GetOrderCachedSecondCallSkipsDB(t *testing.T) {
 		t.Setenv("KAFKA_BROKERS", broker)
 		t.Setenv("KAFKA_CLIENT_ID", "gateway-cache-test-"+uuid.New().String())
 		t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+		t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
 		t.Setenv("GATEWAY_AUTH_DISABLED", "true")
 		t.Setenv("LOG_LEVEL", "error")
 		t.Setenv("REDIS_ADDRS", redisAddr)
@@ -678,6 +681,7 @@ func TestGateway_AuthzForbidsWithoutRole(t *testing.T) {
 	t.Setenv("KAFKA_BROKERS", broker)
 	t.Setenv("KAFKA_CLIENT_ID", "gateway-authz-test-"+uuid.New().String())
 	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
 	t.Setenv("GATEWAY_AUTH_DISABLED", "false")
 	t.Setenv("LOG_LEVEL", "error")
 
@@ -714,6 +718,7 @@ func TestGateway_AuthzForbidsWithoutRole(t *testing.T) {
 	// Now start a second gateway instance with a verifier that includes the "user" role.
 	t.Setenv("KAFKA_CLIENT_ID", "gateway-authz-test2-"+uuid.New().String())
 	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
 
 	a2, err := gateway.NewApp(ctx, gateway.WithVerifier(stubVerifier{}))
 	require.NoError(t, err)
