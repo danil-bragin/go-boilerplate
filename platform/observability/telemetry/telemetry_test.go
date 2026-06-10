@@ -74,9 +74,10 @@ func TestShutdown_FlushesEvenWithCancelledContext(t *testing.T) {
 // behavior, so this test deliberately records none.
 func TestSetup_EnabledWiresSDKProviderAndShutsDown(t *testing.T) {
 	shutdown, err := telemetry.Setup(context.Background(), telemetry.Config{
-		ServiceName:  "enabled-svc",
-		OTLPEndpoint: "127.0.0.1:4317", // nothing listening; lazy dial
-		Enabled:      true,
+		ServiceName:     "enabled-svc",
+		OTLPEndpoint:    "127.0.0.1:4317", // usually nothing listening; lazy dial
+		Enabled:         true,
+		ShutdownTimeout: 100 * time.Millisecond, // test-only: a live local collector must not slow the flush
 	})
 	require.NoError(t, err)
 	require.NotNil(t, shutdown)
@@ -97,9 +98,10 @@ func TestSetup_EnabledWiresSDKProviderAndShutsDown(t *testing.T) {
 // tp.Shutdown, which would cause it to fail immediately.
 func TestShutdown_EnabledFlushesWithCancelledContext(t *testing.T) {
 	shutdown, err := telemetry.Setup(context.Background(), telemetry.Config{
-		ServiceName:  "enabled-flush",
-		OTLPEndpoint: "127.0.0.1:4317", // nothing listening; lazy dial
-		Enabled:      true,
+		ServiceName:     "enabled-flush",
+		OTLPEndpoint:    "127.0.0.1:4317", // usually nothing listening; lazy dial
+		Enabled:         true,
+		ShutdownTimeout: 100 * time.Millisecond, // test-only: a live local collector must not slow the flush
 	})
 	require.NoError(t, err)
 	require.NotNil(t, shutdown)
