@@ -55,7 +55,7 @@ type OrderView struct {
 	// OrderId The unique identifier of the order.
 	OrderId string `json:"order_id"`
 
-	// Status The current status of the order ("pending", "created", "paid").
+	// Status The current status of the order ("pending", "created", "paid", "payment_failed", "payment_timeout").
 	Status string `json:"status"`
 }
 
@@ -79,6 +79,9 @@ type Problem struct {
 
 // BadRequest RFC 7807 problem details.
 type BadRequest = Problem
+
+// Conflict RFC 7807 problem details.
+type Conflict = Problem
 
 // Forbidden RFC 7807 problem details.
 type Forbidden = Problem
@@ -104,6 +107,8 @@ type ListOrdersParams struct {
 // CreateOrderParams defines parameters for CreateOrder.
 type CreateOrderParams struct {
 	// IdempotencyKey Client-chosen key making the request retry-safe: the order id is derived deterministically (UUIDv5) from this key, so retries with the same key return the same order id and downstream consumers deduplicate the command. Omit for a fresh id per request.
+	// Scope: keys are namespaced per authenticated principal (token subject) — two clients may use the same key without colliding. When the gateway runs with auth disabled there is no principal to scope by, so keys share one global namespace and are only collision-safe between cooperating clients.
+	// Reuse: replaying a key with a DIFFERENT request body (customer_id, amount_cents or currency changed) is rejected with 409 Conflict — a key identifies one logical request, not a slot to overwrite. Note that order ids are derived deterministically from the (principal, key) pair — key alone when auth is disabled — so they are predictable to whoever knows both; treat keys as secrets shared only between the client and the gateway.
 	IdempotencyKey *string `json:"Idempotency-Key,omitempty"`
 }
 
@@ -426,6 +431,8 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 
 type BadRequestApplicationProblemPlusJSONResponse Problem
 
+type ConflictApplicationProblemPlusJSONResponse Problem
+
 type ForbiddenApplicationProblemPlusJSONResponse Problem
 
 type NotFoundApplicationProblemPlusJSONResponse Problem
@@ -554,6 +561,17 @@ type CreateOrder403ApplicationProblemPlusJSONResponse struct {
 func (response CreateOrder403ApplicationProblemPlusJSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type CreateOrder409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response CreateOrder409ApplicationProblemPlusJSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
 
 	return json.NewEncoder(w).Encode(response)
 }

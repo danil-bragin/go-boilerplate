@@ -20,6 +20,7 @@ import (
 	"go-boilerplate/platform/web/httpx"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"google.golang.org/protobuf/proto"
 
 	storegen "go-boilerplate/examples/gateway/internal/store/gen"
@@ -122,9 +123,29 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 	// Idempotency: a client-supplied key maps deterministically (UUIDv5) to
 	// the order id, so a retried POST produces the same id and the same
 	// command message-id — downstream inbox dedup collapses the duplicate.
+	//
+	// The UUIDv5 input is scoped by the authenticated principal
+	// (sub + "\x00" + key): without scoping, client B reusing client A's key
+	// would silently receive A's order id and B's order would never exist.
+	// When auth is disabled there is no principal to scope by — keys then
+	// share one global namespace and are only collision-safe between
+	// cooperating clients (documented in openapi.yaml).
 	var orderID string
 	if key := request.Params.IdempotencyKey; key != nil && *key != "" {
-		orderID = uuid.NewSHA1(idempotencyNS, []byte(*key)).String()
+		seed := *key
+		if p, ok := auth.From(ctx); ok && p.Subject != "" {
+			seed = p.Subject + "\x00" + *key
+		}
+		orderID = uuid.NewSHA1(idempotencyNS, []byte(seed)).String()
+
+		// Key reuse with a DIFFERENT body is a client bug, not a retry:
+		// absorbing it would silently drop the second order. Compare against
+		// the existing pending/projection row and reject mismatches.
+		if resp, err := s.rejectIdempotentBodyMismatch(ctx, orderID, body); err != nil {
+			return nil, err
+		} else if resp != nil {
+			return resp, nil
+		}
 	} else {
 		orderID = uuid.New().String()
 	}
@@ -199,6 +220,47 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 		Body:    CreateOrderResponse{OrderId: orderID},
 		Headers: CreateOrder202ResponseHeaders{Location: "/v1/orders/" + orderID},
 	}, nil
+}
+
+// rejectIdempotentBodyMismatch checks whether the deterministic orderID
+// derived from an Idempotency-Key already has a read-model row whose
+// (customer_id, amount_cents, currency) differ from the incoming body. A
+// mismatch yields a 409 problem+json response; a match (true retry), a
+// missing row, or a placeholder row written by a payment event before
+// OrderCreated (empty customer/currency) yields (nil, nil) — proceed.
+//
+// The check reads the WRITER so an immediately preceding POST's pending row
+// is visible (no replica lag window). A read failure degrades gracefully:
+// the request proceeds exactly as before this guard existed (logged).
+func (s *Server) rejectIdempotentBodyMismatch(ctx context.Context, orderID string, body *CreateOrderRequest) (CreateOrderResponseObject, error) {
+	id, err := uuid.Parse(orderID)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: parse derived order id: %w", err)
+	}
+	row, err := storegen.New(s.pool.Writer()).GetOrderView(ctx, id)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			s.logger.WarnContext(ctx, "gateway: idempotency body-mismatch check skipped (read failed)",
+				"order_id", orderID, "error", err)
+		}
+		return nil, nil //nolint:nilnil // nil response + nil error = proceed
+	}
+	if row.CustomerID == "" && row.Currency == "" && row.AmountCents == 0 {
+		// Placeholder row upserted by a payment-outcome event that raced
+		// ahead of OrderCreated — nothing meaningful to compare against.
+		return nil, nil //nolint:nilnil // nil response + nil error = proceed
+	}
+	if row.CustomerID != body.CustomerId || row.AmountCents != body.AmountCents || row.Currency != body.Currency {
+		detail := "idempotency key reused with different request body; replay the original request unchanged or use a new key"
+		return CreateOrder409ApplicationProblemPlusJSONResponse{
+			ConflictApplicationProblemPlusJSONResponse(Problem{
+				Title:  http.StatusText(http.StatusConflict),
+				Status: http.StatusConflict,
+				Detail: &detail,
+			}),
+		}, nil
+	}
+	return nil, nil //nolint:nilnil // nil response + nil error = proceed
 }
 
 // ListOrders implements StrictServerInterface: cursor-paginated listing of
