@@ -1,8 +1,10 @@
 package httpserver_test
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"testing"
@@ -102,4 +104,36 @@ func TestShutdown_DoubleConcurrentShutdownNoPanic(t *testing.T) {
 	}
 
 	require.NotPanics(t, func() { wg.Wait() })
+}
+
+// TestStart_WarnsWhenNoServerWideMaxBytes: a server built WithoutMaxBytes
+// has no server-wide request-body cap — Start must emit a WARN reminding the
+// operator that every route group needs its own httpserver.MaxBytes.
+func TestStart_WarnsWhenNoServerWideMaxBytes(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	srv := httpserver.New(httpserver.Config{Addr: "127.0.0.1:0"}, httpserver.WithoutMaxBytes())
+	require.NoError(t, srv.Start())
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+	require.Contains(t, buf.String(), "WithoutMaxBytes",
+		"Start must warn when no server-wide request-body cap is installed")
+}
+
+// TestStart_NoWarnWithServerWideMaxBytes: the default stack (server-wide
+// MaxBytes installed) must not warn.
+func TestStart_NoWarnWithServerWideMaxBytes(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	srv := httpserver.New(httpserver.Config{Addr: "127.0.0.1:0"})
+	require.NoError(t, srv.Start())
+	t.Cleanup(func() { _ = srv.Shutdown(context.Background()) })
+
+	require.NotContains(t, buf.String(), "WithoutMaxBytes")
 }
