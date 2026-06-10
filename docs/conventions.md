@@ -85,14 +85,18 @@ Split when a file mixes two or more responsibilities **or** exceeds ~200–250 l
 examples/<service>/
 ├── cmd/<service>/main.go
 ├── internal/
-│   ├── app/           command/query handlers + Decorate wiring
-│   ├── transport/     Kafka consumers (inbox.ProcessOnce wrapping)
+│   ├── domain/<agg>/  THE business layer: error codes (codes.go), Repository
+│   │                  interface (consumer-side) + pg implementation, Service
+│   │                  owning every business rule (see §9 Layering)
+│   ├── app/           command/query handlers — thin adapters over the domain
+│   │                  Service + Decorate pipeline wiring
+│   ├── transport/     Kafka consumers — decode + dispatch to the Service
 │   ├── store/         sqlc queries + pgx; never opens transactions
 │   └── migrations/    goose embed SQL
 └── <service>.go       NewApp / Start / Stop / Closer
 ```
 
-Role-specific extras: `gateway` adds `internal/api/` (oapi-codegen), `internal/attachments/`, `internal/projection/`; `notifications` is terminal (transport + inbox only, no app layer).
+Role-specific extras: `gateway` adds `internal/api/` (oapi-codegen), `internal/apperrs/` (its `GATEWAY_*` codes + i18n catalogs), `internal/attachments/`, `internal/projection/`; `notifications` is terminal — transport + a minimal `internal/domain/notification.Service`, no app or store layer.
 
 Deleting `examples/`, `proto/`, and `gen/` leaves a clean `platform/`-only starter — this works because the boundary is enforced.
 
@@ -188,6 +192,8 @@ return fmt.Errorf("orders: create order: %w", err)
 var ErrNotFound = errors.New("not found")
 ```
 
+**Coded application errors.** Errors that surface to API clients or drive retry/DLT semantics are not plain sentinels — they carry a registered `platform/apperr` code. See §10.
+
 **Godoc.** Every exported symbol must have a doc comment beginning with the symbol name (enforced by the `revive` linter):
 
 ```go
@@ -266,3 +272,127 @@ Why: each container has its own env namespace, so several services reading
 the same env name is not a conflict — it is the point. "Same topic = same
 env name everywhere" means one compose/.env line per topic per service, no
 mental mapping table, and a single-process test (e2e) sets each name once.
+
+---
+
+## 9. Layering: domain service + repository, uniformly
+
+**Decision: every example service has the same `internal/domain/<aggregate>` layer — service + repository — no matter how little logic it holds today.** Notifications' service is a few lines; that is correct, not a smell. The examples are *templates*: people copy them to start real services, and a copied template with a ready seam beats one where the first business rule lands in a Kafka handler because there was nowhere else to put it. Uniformity beats YAGNI here.
+
+### What lives where
+
+| Piece | Location | Rule |
+|---|---|---|
+| Error codes | `internal/domain/<agg>/codes.go` | const block + `apperr.Register` in `init()` (see §10) |
+| Repository interface | `internal/domain/<agg>` (next to the Service) | defined **consumer-side**: the Service declares what it needs; storage adapters satisfy it (`pg.go`) |
+| Business rules | `internal/domain/<agg>/service.go` | state machines, decision rules, outbox event enqueueing — ALL of it |
+| cqrs handlers | `internal/app/` | thin adapters: validate-tag the command, decorate with the pipeline, delegate to the Service |
+| Kafka consumers | `internal/transport/` | thin adapters: decode + dispatch to the Service, nothing else |
+| Background loops | `internal/app/` (e.g. the orders unpaid watcher) | own the loop + transaction boundary (`pg.RunInTx`), delegate decisions to the Service |
+
+Reference implementations: `examples/orders/internal/domain/order` (full: state machine, codes, repository, service), `examples/payments/internal/domain/payment` (decision rule + injected clock), `examples/notifications/internal/domain/notification` (deliberately minimal).
+
+### cmd never calls cmd
+
+A command handler never invokes another command handler. Logic that two entry points both need lives in the domain Service — that is exactly why the Service exists. Handler-calls-handler creates hidden pipelines-inside-pipelines (double validation, double tx semantics, double audit) and untestable coupling. The orders payment-outcome logic moved from the transport consumer into `order.Service.ApplyPaymentOutcome` for precisely this reason.
+
+### Ambient transaction, formalized
+
+Repositories resolve their query surface from the **context**, never from a stored connection and never by opening transactions:
+
+```go nocompile
+func (r *PgRepository) q(ctx context.Context) *gen.Queries {
+    return gen.New(pg.FromContext(ctx, r.pool))
+}
+```
+
+`pg.FromContext` returns the transaction bound to ctx, or the writer pool when none is active. The same repository therefore works unchanged under all three transaction owners:
+
+1. **`inbox.ProcessOnce`** — the production consumer path: domain write + outbox enqueue + inbox dedup marker commit atomically.
+2. **`cqrs.Transaction` / `Pipeline.WithTransaction`** — command handlers invoked outside a consumer.
+3. **explicit `pg.RunInTx`** — background loops (the unpaid watcher wraps each order in its own transaction).
+
+**Writer-fallback hazard:** with no transaction in ctx the fallback is the writer pool with per-statement auto-commit — atomicity silently disappears. Every command path must run under one of the three owners above; this is enforced by convention and by integration tests asserting outbox atomicity (see the `pg.FromContext` godoc).
+
+**Goroutine gotcha: a new goroutine is a new transaction boundary.** Never pass a ctx carrying a transaction into a spawned goroutine: `pgx.Tx` is bound to a single connection and is not safe for concurrent use, and the parent may commit or roll back while the goroutine still holds the tx. If concurrent work needs the database, each goroutine opens its own `pg.RunInTx` with a fresh (non-transactional) context — and accepts that it commits independently of the parent.
+
+---
+
+## 10. Error model
+
+The application error model is `platform/apperr`: a **flat UPPER_SNAKE code** with an HTTP status, a permanence flag, structured params, and a developer message template. Codes owned by a service carry its prefix (`ORDERS_*`, `PAYMENTS_*`, `GATEWAY_*`); cross-cutting codes (`INTERNAL`, `VALIDATION_FAILED`, `AUTH_UNAUTHENTICATED`, `AUTH_FORBIDDEN`) are owned and registered by `platform/apperr` itself.
+
+### Registry process (adding a code)
+
+1. Add the const to the owning package's codes block (`internal/domain/<agg>/codes.go`, or `internal/apperrs` for the gateway).
+2. `apperr.Register(code, status, permanent, msgTemplate, params...)` in that package's `init()`. Duplicate registration panics at startup.
+3. `just errgen` → regenerates [`docs/errors.md`](errors.md) from the live registry.
+4. Commit the regenerated file — CI regenerates and fails on `git diff docs/errors.md`.
+
+If the package is in a NEW service, blank-import the service's root package in `cmd/errgen/main.go` first (the root package transitively links the codes package).
+
+The registry is **additive-only**: codes are never renamed or removed once shipped — clients switch on them. A different status or permanence is a new code, not an edit.
+
+### Params rule (Google AIP-193)
+
+Every `{placeholder}` in a message template must be declared in the registration's params, and the params travel verbatim to clients in the problem+json `params` member — so clients can build their own messages without parsing English. Enforced by a vet-style test over the registry (`TestRegistry_MessageTemplateInvariant` in `platform/apperr`). Params are stable API: add, never rename/remove/repurpose.
+
+### Permanent semantics
+
+`Permanent: true` means **no retry can succeed** (malformed payload, forbidden state transition). Messaging layers short-circuit on `apperr.IsPermanent`:
+
+- `kafka.WithRetry` stops the in-process attempt loop on the first permanent failure and produces straight to the DLT;
+- the tiered-retry escalator (`platform/messaging/retry`) skips every remaining tier and routes the record to `<topic>.DLT` directly.
+
+Both stamp the `x-error-code` header with the apperr code so DLT triage can group by code (see `docs/operations.md` § DLT runbook).
+
+### Wire shape (RFC 9457)
+
+HTTP errors are `application/problem+json` (`httpx.Problem`): the standard members `type`/`title`/`status`/`detail`/`instance` plus the extension members that form the machine-readable contract:
+
+```json
+{
+  "title": "Conflict",
+  "status": 409,
+  "detail": "order cannot transition from paid to created",
+  "instance": "/v1/orders/1b4e28ba-…",
+  "code": "ORDERS_INVALID_STATUS_TRANSITION",
+  "params": {"from": "paid", "to": "created"}
+}
+```
+
+`httpx.FromError` maps any `*apperr.Error` in the chain to its status/code/params; request-decode validation failures map to `VALIDATION_FAILED` with `params.fields = [{field, rule, param}]` (plus the legacy `errors` field-map); **anything else becomes a bare 500 `INTERNAL` — unknown error text is never leaked to clients**. Handlers answer errors with `httpx.WriteError(w, r, err)` and never construct problem bodies inline.
+
+The full code catalog lives in [`docs/errors.md`](errors.md) (generated — see above).
+
+---
+
+## 11. Time
+
+Everything is UTC, end to end. The rules:
+
+| Concern | Rule | Where enforced |
+|---|---|---|
+| DB columns | `timestamptz` only, never `timestamp` | migrations (squawk-linted) |
+| Row timestamps | DB time: `DEFAULT now()` set by SQL — transactional, consistent across replicas | table DDL; repositories ignore caller-supplied creation times |
+| Scanning | pgx registers `pgtype.TimestamptzCodec{ScanLocation: time.UTC}` on every connection of BOTH pools — scanned `time.Time` values are UTC regardless of the session/server TZ | `platform/storage/pg` (config.go AfterConnect) |
+| API responses | RFC 3339 UTC with the `Z` suffix, always (`created_at`) | gateway views (`.UTC().Format(time.RFC3339)`) |
+| Display zones | `X-Timezone` request header (IANA name, tzdb-validated, else 400 `GATEWAY_INVALID_TIMEZONE`) adds a display-only `created_at_local`; the contract field stays UTC | gateway API |
+| Business "now" | inject `platform/clock.Clock` ONLY where business logic reads the current time to decide something (payments' `occurred_at`); orders injects no clock at all | `platform/clock` godoc |
+| Cutoffs/expiry | computed in SQL against the DATABASE clock (`now()`), never an app clock — every instance agrees regardless of host skew, and the compared column is DB time too | e.g. orders `ListUnpaidExpired` |
+| Tests | `testing/synctest` bubbles make `time.Now` (and `clock.System`) fake and deterministic — prefer over fake-clock implementations | `platform/clock` tests |
+
+**DST / civil dates (future seam).** UTC instants are unambiguous, so nothing in the current system cares about DST — `created_at_local` rendering just follows the tzdb offset for that instant. But a **civil date** (birthday, business day, "end of the local month") is *not* an instant: if a feature ever needs one, store it as date + IANA zone and convert at the edges — do not store a midnight UTC timestamp, which shifts by an hour across DST transitions.
+
+---
+
+## 12. i18n
+
+**The API contract is `code` + `params`, and the client localizes.** Server-side localization of problem `title`/`detail` via `Accept-Language` is a courtesy for humans reading raw responses — clients must never parse those strings, and `code`/`params` are never localized.
+
+Mechanics (`platform/i18n`, built on go-i18n v2 + `x/text` matching):
+
+- **Message IDs** are apperr codes (`GATEWAY_ORDER_NOT_FOUND`), optional `<code>.title` title overrides, and `validation.<rule>` keys for per-field validator rules (`validation.required`, `validation.min`, …).
+- **Catalogs are TOML** files embedded with the package that OWNS the codes: `platform/i18n/catalog/` ships en (base) + ru for the platform codes and the common validation rules; the gateway embeds en + ru for its `GATEWAY_*` codes in `internal/apperrs/catalog/` and merges them via `Bundle.Load` at startup. A service whose codes never surface on localized HTTP responses (orders' `ORDERS_*` consumer-side codes today) ships no catalog until they do.
+- **Negotiation**: `i18n.Middleware` parses `Accept-Language` (q-weights honored, unsupported → en) and installs the locale + localizer into the request context.
+- **The seam**: `httpx` stays free of i18n imports — it owns a `ProblemLocalizer` context key; the i18n middleware installs an implementation, and `httpx.WriteError` localizes title/detail when one is present, falling back to the registered developer message when the key is missing from the catalog.
