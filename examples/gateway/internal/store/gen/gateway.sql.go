@@ -123,6 +123,67 @@ func (q *Queries) ListOrders(ctx context.Context, arg ListOrdersParams) ([]ListO
 	return items, nil
 }
 
+const listOrdersByCustomer = `-- name: ListOrdersByCustomer :many
+select order_id, customer_id, amount_cents, currency, status, created_at, updated_at
+from orders_read
+where customer_id = $1::text
+  and (created_at, order_id) < ($2::timestamptz, $3::uuid)
+order by created_at desc, order_id desc
+limit $4::int
+`
+
+type ListOrdersByCustomerParams struct {
+	CustomerID      string
+	CursorCreatedAt pgtype.Timestamptz
+	CursorOrderID   uuid.UUID
+	PageLimit       int32
+}
+
+type ListOrdersByCustomerRow struct {
+	OrderID     uuid.UUID
+	CustomerID  string
+	AmountCents int64
+	Currency    string
+	Status      string
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+// Ownership-scoped variant of ListOrders: same keyset pagination, restricted
+// to one customer's rows. Used for non-admin principals (customer_id = sub).
+func (q *Queries) ListOrdersByCustomer(ctx context.Context, arg ListOrdersByCustomerParams) ([]ListOrdersByCustomerRow, error) {
+	rows, err := q.db.Query(ctx, listOrdersByCustomer,
+		arg.CustomerID,
+		arg.CursorCreatedAt,
+		arg.CursorOrderID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOrdersByCustomerRow
+	for rows.Next() {
+		var i ListOrdersByCustomerRow
+		if err := rows.Scan(
+			&i.OrderID,
+			&i.CustomerID,
+			&i.AmountCents,
+			&i.Currency,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markPaid = `-- name: MarkPaid :execrows
 
 insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)

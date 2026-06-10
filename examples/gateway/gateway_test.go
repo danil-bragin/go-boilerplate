@@ -1051,6 +1051,72 @@ func TestGateway_IdempotentRetrySinglePendingRow(t *testing.T) {
 	assert.Equal(t, 1, count, "retried POST with the same Idempotency-Key must yield one read-model row")
 }
 
+// TestGateway_ReadOwnership proves the read path is scoped to the order's
+// owner when auth is enabled:
+//   - GET: owner → 200, another principal → 404 (not 403 — no existence
+//     oracle), admin → 200.
+//   - LIST: each non-admin principal sees only rows whose customer_id equals
+//     its subject; admin sees all.
+func TestGateway_ReadOwnership(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+	baseURL := startAppWithVerifier(t, broker, dsn, multiUserVerifier{})
+
+	get := func(token, orderID string) int {
+		req, err := http.NewRequest(http.MethodGet, baseURL+"/v1/orders/"+orderID, http.NoBody)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	list := func(token string) []string {
+		req, err := http.NewRequest(http.MethodGet, baseURL+"/v1/orders", http.NoBody)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		var out struct {
+			Items []struct {
+				OrderID string `json:"order_id"`
+			} `json:"items"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+		ids := make([]string, len(out.Items))
+		for i, it := range out.Items {
+			ids[i] = it.OrderID
+		}
+		return ids
+	}
+
+	st, aliceOrder := postOrderRaw(t, baseURL, "", "alice",
+		[]byte(`{"customer_id":"alice","amount_cents":100,"currency":"USD"}`))
+	require.Equal(t, http.StatusAccepted, st)
+	st, bobOrder := postOrderRaw(t, baseURL, "", "bob",
+		[]byte(`{"customer_id":"bob","amount_cents":200,"currency":"USD"}`))
+	require.Equal(t, http.StatusAccepted, st)
+
+	// GET: owner 200, non-owner 404 (no existence oracle), admin 200.
+	require.Equal(t, http.StatusOK, get("alice", aliceOrder), "owner must read own order")
+	require.Equal(t, http.StatusNotFound, get("bob", aliceOrder),
+		"another principal must get 404 — same response as a nonexistent order")
+	require.Equal(t, http.StatusOK, get("root", aliceOrder), "admin must read any order")
+
+	// LIST: non-admins see only their own rows; admin sees all.
+	assert.ElementsMatch(t, []string{aliceOrder}, list("alice"), "alice must list only her orders")
+	assert.ElementsMatch(t, []string{bobOrder}, list("bob"), "bob must list only his orders")
+	adminSeen := list("root")
+	assert.Contains(t, adminSeen, aliceOrder, "admin list must include alice's order")
+	assert.Contains(t, adminSeen, bobOrder, "admin list must include bob's order")
+}
+
 // TestGateway_ListOrdersKeysetPagination verifies GET /v1/orders cursor
 // pagination: newest first, stable page boundaries, exhaustion, bad cursor →
 // 400 problem+json, limit capping.

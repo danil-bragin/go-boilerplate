@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"go-boilerplate/examples/gateway/internal/app"
+	"go-boilerplate/examples/gateway/internal/attachments"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/msgctx"
@@ -275,6 +277,19 @@ func (s *Server) ListOrders(ctx context.Context, request ListOrdersRequestObject
 		q.Limit = *request.Params.Limit
 	}
 
+	// Read-path ownership: non-admin principals list only their own rows
+	// (customer_id = subject); admins list everything. Same role constant as
+	// the attachments ownership bypass.
+	if !s.authDisabled {
+		p, ok := auth.From(ctx)
+		if !ok {
+			return nil, &authError{status: http.StatusUnauthorized, msg: "no authenticated principal"}
+		}
+		if !slices.Contains(p.Roles, attachments.AdminRole) {
+			q.CustomerID = p.Subject
+		}
+	}
+
 	page, err := s.listOrdersHandler(ctx, q)
 	if err != nil {
 		if errors.Is(err, app.ErrInvalidCursor) {
@@ -309,20 +324,39 @@ func (s *Server) ListOrders(ctx context.Context, request ListOrdersRequestObject
 // GetOrder implements StrictServerInterface.
 // It delegates to the decorated CQRS query handler (Logging+Tracing+Metrics+
 // optional Caching), mapping ErrOrderNotFound → 404.
+//
+// Ownership: when auth is enabled, non-admin principals may only read orders
+// whose customer_id equals their subject. A non-owner receives the SAME 404
+// as a nonexistent order — 403 would be an existence oracle, letting any
+// authenticated client enumerate which order ids exist.
 func (s *Server) GetOrder(ctx context.Context, request GetOrderRequestObject) (GetOrderResponseObject, error) {
+	notFound := func() GetOrderResponseObject {
+		detail := "order " + request.Id + " not found"
+		return GetOrder404ApplicationProblemPlusJSONResponse{
+			NotFoundApplicationProblemPlusJSONResponse(Problem{
+				Title:  http.StatusText(http.StatusNotFound),
+				Status: http.StatusNotFound,
+				Detail: &detail,
+			}),
+		}
+	}
+
 	view, err := s.getOrderHandler(ctx, app.GetOrder{OrderID: request.Id})
 	if err != nil {
 		if errors.Is(err, app.ErrOrderNotFound) {
-			detail := "order " + request.Id + " not found"
-			return GetOrder404ApplicationProblemPlusJSONResponse{
-				NotFoundApplicationProblemPlusJSONResponse(Problem{
-					Title:  http.StatusText(http.StatusNotFound),
-					Status: http.StatusNotFound,
-					Detail: &detail,
-				}),
-			}, nil
+			return notFound(), nil
 		}
 		return nil, fmt.Errorf("gateway: get order: %w", err)
+	}
+
+	if !s.authDisabled {
+		p, ok := auth.From(ctx)
+		if !ok {
+			return nil, &authError{status: http.StatusUnauthorized, msg: "no authenticated principal"}
+		}
+		if !slices.Contains(p.Roles, attachments.AdminRole) && view.CustomerID != p.Subject {
+			return notFound(), nil
+		}
 	}
 
 	return GetOrder200JSONResponse{

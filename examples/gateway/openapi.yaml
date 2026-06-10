@@ -84,6 +84,11 @@ paths:
         (keyset) pagination over (created_at, order_id). Pass the next_cursor
         value from the previous page to fetch the following page; an empty
         next_cursor means the listing is exhausted.
+
+        Ownership: non-admin callers see only orders whose customer_id equals
+        their token subject; callers with the admin role see all orders.
+        (With auth disabled there is no principal, so the listing is
+        unscoped.)
       operationId: listOrders
       parameters:
         - name: cursor
@@ -121,6 +126,11 @@ paths:
       description: >
         Returns the current view of an order from the read model projection.
         Status lifecycle: pending → created → paid.
+
+        Ownership: non-admin callers may only read orders whose customer_id
+        equals their token subject; any other existing order returns the same
+        404 as a nonexistent one (no existence oracle). Callers with the
+        admin role may read any order.
       operationId: getOrder
       parameters:
         - name: id

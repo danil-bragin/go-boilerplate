@@ -68,3 +68,13 @@ from orders_read
 where (created_at, order_id) < (sqlc.arg(cursor_created_at)::timestamptz, sqlc.arg(cursor_order_id)::uuid)
 order by created_at desc, order_id desc
 limit sqlc.arg(page_limit)::int;
+
+-- name: ListOrdersByCustomer :many
+-- Ownership-scoped variant of ListOrders: same keyset pagination, restricted
+-- to one customer's rows. Used for non-admin principals (customer_id = sub).
+select order_id, customer_id, amount_cents, currency, status, created_at, updated_at
+from orders_read
+where customer_id = sqlc.arg(customer_id)::text
+  and (created_at, order_id) < (sqlc.arg(cursor_created_at)::timestamptz, sqlc.arg(cursor_order_id)::uuid)
+order by created_at desc, order_id desc
+limit sqlc.arg(page_limit)::int;
