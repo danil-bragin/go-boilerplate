@@ -1,0 +1,302 @@
+{
+  "uid": "latency-tails",
+  "title": "Latency tails (p50/p95/p99)",
+  "description": "Per-signal latency quantiles from the rules-latency.yaml recording rules plus native-histogram heatmaps (raw series). All duration metrics are Prometheus NATIVE histograms — heatmap panels consume them directly (calculate: false), no le buckets involved. Exemplar toggle is on for raw-series queries: with OTEL_METRICS_EXEMPLAR_FILTER=trace_based and classic histograms exemplars pivot to Jaeger traces; the collector's pull exporter does not yet attach exemplars to NATIVE histograms, so expect them only in classic-fallback environments. SLO burn row mirrors deploy/prometheus/slo.yaml.",
+  "tags": ["boilerplate", "latency", "slo"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "editable": true,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "HTTP (edge)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "panels": []
+    },
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "HTTP p50/p95/p99 by route (recording rules)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "job_route:http_server_duration_milliseconds:p50_5m", "legendFormat": "p50 {{job}} {{http_route}}" },
+        { "refId": "B", "expr": "job_route:http_server_duration_milliseconds:p95_5m", "legendFormat": "p95 {{job}} {{http_route}}" },
+        { "refId": "C", "expr": "job_route:http_server_duration_milliseconds:p99_5m", "legendFormat": "p99 {{job}} {{http_route}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "heatmap",
+      "title": "HTTP duration heatmap (native histogram)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "options": {
+        "calculate": false,
+        "yAxis": { "unit": "ms" },
+        "color": { "mode": "scheme", "scheme": "Spectral", "steps": 64 },
+        "cellGap": 1
+      },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(otel_http_server_duration_milliseconds[$__rate_interval]))", "exemplar": true, "format": "heatmap" }
+      ]
+    },
+    {
+      "id": 101,
+      "type": "row",
+      "title": "CQRS handlers",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "panels": []
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "CQRS handler p50/p95/p99 (recording rules)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "job_handler:cqrs_handler_duration_milliseconds:p50_5m", "legendFormat": "p50 {{job}} {{handler}}" },
+        { "refId": "B", "expr": "job_handler:cqrs_handler_duration_milliseconds:p95_5m", "legendFormat": "p95 {{job}} {{handler}}" },
+        { "refId": "C", "expr": "job_handler:cqrs_handler_duration_milliseconds:p99_5m", "legendFormat": "p99 {{job}} {{handler}}" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "heatmap",
+      "title": "CQRS handler duration heatmap (native histogram)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "options": {
+        "calculate": false,
+        "yAxis": { "unit": "ms" },
+        "color": { "mode": "scheme", "scheme": "Spectral", "steps": 64 },
+        "cellGap": 1
+      },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(otel_cqrs_handler_duration_ms_milliseconds[$__rate_interval]))", "exemplar": true, "format": "heatmap" }
+      ]
+    },
+    {
+      "id": 102,
+      "type": "row",
+      "title": "Kafka (consumer handler + producer publish) — lane-B instruments",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "panels": []
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Consumer handler p50/p95/p99 by topic",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 19 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "job_topic:kafka_consumer_handler_duration_seconds:p50_5m", "legendFormat": "p50 {{job}} {{topic}}" },
+        { "refId": "B", "expr": "job_topic:kafka_consumer_handler_duration_seconds:p95_5m", "legendFormat": "p95 {{job}} {{topic}}" },
+        { "refId": "C", "expr": "job_topic:kafka_consumer_handler_duration_seconds:p99_5m", "legendFormat": "p99 {{job}} {{topic}}" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Producer publish p50/p95/p99 by topic",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 19 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "job_topic:kafka_producer_publish_duration_seconds:p50_5m", "legendFormat": "p50 {{job}} {{topic}}" },
+        { "refId": "B", "expr": "job_topic:kafka_producer_publish_duration_seconds:p95_5m", "legendFormat": "p95 {{job}} {{topic}}" },
+        { "refId": "C", "expr": "job_topic:kafka_producer_publish_duration_seconds:p99_5m", "legendFormat": "p99 {{job}} {{topic}}" }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "heatmap",
+      "title": "Consumer handler duration heatmap",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 19 },
+      "options": {
+        "calculate": false,
+        "yAxis": { "unit": "s" },
+        "color": { "mode": "scheme", "scheme": "Spectral", "steps": 64 },
+        "cellGap": 1
+      },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(otel_kafka_consumer_handler_duration_seconds[$__rate_interval]))", "exemplar": true, "format": "heatmap" }
+      ]
+    },
+    {
+      "id": 103,
+      "type": "row",
+      "title": "Outbox publish lag (DB row → Kafka) — lane-B instrument",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+      "panels": []
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Outbox publish lag p50/p95/p99",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "job:outbox_publish_lag_seconds:p50_5m", "legendFormat": "p50 {{job}}" },
+        { "refId": "B", "expr": "job:outbox_publish_lag_seconds:p95_5m", "legendFormat": "p95 {{job}}" },
+        { "refId": "C", "expr": "job:outbox_publish_lag_seconds:p99_5m", "legendFormat": "p99 {{job}}" }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "heatmap",
+      "title": "Outbox publish lag heatmap",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "options": {
+        "calculate": false,
+        "yAxis": { "unit": "s" },
+        "color": { "mode": "scheme", "scheme": "Spectral", "steps": 64 },
+        "cellGap": 1
+      },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(otel_outbox_publish_lag_seconds[$__rate_interval]))", "exemplar": true, "format": "heatmap" }
+      ]
+    },
+    {
+      "id": 104,
+      "type": "row",
+      "title": "Postgres queries (sqlc name) — lane-B instrument",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 },
+      "panels": []
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "pg query p99 by sqlc query name",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 37 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "job_query:pg_query_duration_seconds:p99_5m", "legendFormat": "p99 {{job}} {{query}} ({{pool}})" },
+        { "refId": "B", "expr": "job_query:pg_query_duration_seconds:p50_5m", "legendFormat": "p50 {{job}} {{query}} ({{pool}})" }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "heatmap",
+      "title": "pg query duration heatmap",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 37 },
+      "options": {
+        "calculate": false,
+        "yAxis": { "unit": "s" },
+        "color": { "mode": "scheme", "scheme": "Spectral", "steps": 64 },
+        "cellGap": 1
+      },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(otel_pg_query_duration_seconds[$__rate_interval]))", "exemplar": true, "format": "heatmap" }
+      ]
+    },
+    {
+      "id": 105,
+      "type": "row",
+      "title": "Order lifecycle (created → terminal) — lane-B instrument",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 },
+      "panels": []
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Order lifecycle p50/p95/p99 by terminal status",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 46 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        { "refId": "A", "expr": "terminal_status:orders_lifecycle_duration_seconds:p50_5m", "legendFormat": "p50 {{terminal_status}}" },
+        { "refId": "B", "expr": "terminal_status:orders_lifecycle_duration_seconds:p95_5m", "legendFormat": "p95 {{terminal_status}}" },
+        { "refId": "C", "expr": "terminal_status:orders_lifecycle_duration_seconds:p99_5m", "legendFormat": "p99 {{terminal_status}}" }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "heatmap",
+      "title": "Order lifecycle duration heatmap",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 46 },
+      "options": {
+        "calculate": false,
+        "yAxis": { "unit": "s" },
+        "color": { "mode": "scheme", "scheme": "Spectral", "steps": 64 },
+        "cellGap": 1
+      },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(otel_orders_lifecycle_duration_seconds[$__rate_interval]))", "exemplar": true, "format": "heatmap" }
+      ]
+    },
+    {
+      "id": 106,
+      "type": "row",
+      "title": "SLO error-budget burn (deploy/prometheus/slo.yaml)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 54 },
+      "panels": []
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "HTTP SLO error ratio (5m/1h/6h) — fast burn at 0.144, slow at 0.06",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 55 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.06 },
+              { "color": "red", "value": 0.144 }
+            ]
+          },
+          "custom": { "thresholdsStyle": { "mode": "line" } }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "expr": "job:slo_http_error_ratio:rate5m", "legendFormat": "5m {{job}}" },
+        { "refId": "B", "expr": "job:slo_http_error_ratio:rate1h", "legendFormat": "1h {{job}}" },
+        { "refId": "C", "expr": "job:slo_http_error_ratio:rate6h", "legendFormat": "6h {{job}}" }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Order lifecycle SLO error ratio (5m/1h/6h)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 55 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.06 },
+              { "color": "red", "value": 0.144 }
+            ]
+          },
+          "custom": { "thresholdsStyle": { "mode": "line" } }
+        },
+        "overrides": []
+      },
+      "targets": [
+        { "refId": "A", "expr": "global:slo_orders_lifecycle_error_ratio:rate5m", "legendFormat": "5m" },
+        { "refId": "B", "expr": "global:slo_orders_lifecycle_error_ratio:rate1h", "legendFormat": "1h" },
+        { "refId": "C", "expr": "global:slo_orders_lifecycle_error_ratio:rate6h", "legendFormat": "6h" }
+      ]
+    }
+  ]
+}
