@@ -120,6 +120,15 @@ func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handl
 			return nil, nil, fmt.Errorf("telemetry: otlp trace exporter: %w", err)
 		}
 
+		// Hand-built Configs (no config.Load) get TraceRatio's zero value,
+		// which silently samples NOTHING. Announce it loudly at startup so
+		// "where are my traces?" is answered by one log line.
+		if cfg.TraceRatio <= 0 {
+			slog.Warn("telemetry: effective TELEMETRY_TRACE_RATIO is 0 — no root spans will be sampled "+
+				"(spans with a sampled remote parent still follow the parent decision)",
+				"service", cfg.ServiceName)
+		}
+
 		tp := sdktrace.NewTracerProvider(
 			sdktrace.WithResource(res),
 			sdktrace.WithBatcher(traceExp),
