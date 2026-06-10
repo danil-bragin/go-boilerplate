@@ -1,5 +1,11 @@
 # Round 3 — Gateway Scale Fixes
 
+> **STATUS: COMPLETE (2026-06-10).** All 4 tasks merged (~7 commits). Verification: full serial
+> suite 47/47 ok, gateway+e2e green, lint 0, pgbouncer profile validated. 1500-concurrent-SSE-streams
+> test proves the 1024 wall is gone (<50 redis conns). Review pass: 1 MUST-FIX (Notify read the
+> replica — stale/lost terminal status under PG_READER_DSN) + 2 SHOULD (batcher shutdown drain race,
+> flush-failure metric) + NITs — all fixed.
+
 > Source: gateway scaling-boundary analysis + AWS hosting research (2026-06-10).
 > TDD for behavior changes; one commit per task; normal-English messages +
 > "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"; `--no-verify`.
