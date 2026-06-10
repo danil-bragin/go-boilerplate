@@ -177,6 +177,10 @@ migrate svc:
 token:
     curl -s -d client_id=gateway -d username=demo -d password=demo -d grant_type=password http://localhost:8180/realms/app/protocol/openid-connect/token | jq -r .access_token
 
+# Fetch a machine-to-machine token (client-credentials, gateway-m2m service account) — requires jq
+token-m2m:
+    curl -s -d client_id=gateway-m2m -d client_secret=gateway-m2m-dev-secret -d grant_type=client_credentials http://localhost:8180/realms/app/protocol/openid-connect/token | jq -r .access_token
+
 # Load test the gateway order flow via dockerized k6 (see docs/operations.md §Load testing)
 # BASE_URL/TOKEN pass through; default BASE_URL targets the HOST's gateway from
 # inside the k6 container. host.docker.internal resolves natively on macOS and

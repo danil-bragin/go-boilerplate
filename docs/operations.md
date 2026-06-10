@@ -282,6 +282,29 @@ When `GATEWAY_AUTH_DISABLED=false`, the gateway verifies bearer JWTs against the
 - If verification needs a key fetch that fails (e.g. unknown `kid` after a key rotation mid-outage), the request is rejected with **401** and the generic detail `authentication failed`. This is **by design**: the edge never fails open, and infrastructure details (JWKS URL, network errors) are never echoed to clients.
 - The real cause is logged at **ERROR** (`auth: token verification failed with non-token error`). Alert on a sustained rate of this log line — a spike means JWKS trouble, not bad client tokens (those produce plain `invalid token` 401s with no ERROR log).
 
+### Machine-to-machine (service account) tokens
+
+Non-interactive callers (cron jobs, sibling systems, smoke tests) use the
+`gateway-m2m` confidential client (client-credentials grant, no user). The dev
+realm ships it with secret `gateway-m2m-dev-secret` — **rotate for anything
+non-local**. Its service account carries the realm role `user`, and the same
+`oidc-audience-mapper` as the interactive `gateway` client stamps `aud:
+gateway`, so M2M tokens pass the gateway's verifier (`GATEWAY_JWKS_AUDIENCE`)
+and RBAC unchanged:
+
+```bash
+TOKEN=$(just token-m2m)   # client_credentials against localhost:8180
+curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"customer_id":"batch-42","amount_cents":1234,"currency":"USD"}' \
+  http://localhost:8080/v1/orders
+```
+
+Note the ownership consequence: the principal's subject is the *service
+account's* user id, not a customer's — so non-admin M2M callers can only read
+back orders whose `customer_id` equals that subject (same read-path ownership
+rule as human users). Grant the `admin` realm role to the service account if
+the integration legitimately needs cross-customer reads.
+
 ---
 
 ## Load testing (k6)

@@ -162,6 +162,23 @@ func TestGateway_KeycloakRealToken(t *testing.T) {
 	bodyResp, _ := io.ReadAll(respOK.Body)
 	require.Equal(t, http.StatusAccepted, respOK.StatusCode,
 		"POST /v1/orders with valid Keycloak token (demo user, role=user) must return 202; body: %s", string(bodyResp))
+
+	// ── Assertion 4: M2M client-credentials token (service account) → 202 ───
+	// The gateway-m2m service account carries the realm role "user" and the
+	// same audience mapper as the interactive client, so a token obtained
+	// WITHOUT any user must pass verification and RBAC identically.
+	m2mToken := fetchKeycloakM2MToken(t, tokenURL)
+	req3, err := http.NewRequest(http.MethodPost, appBaseURL+"/v1/orders", bytes.NewReader(bodyBytes))
+	require.NoError(t, err)
+	req3.Header.Set("Content-Type", "application/json")
+	req3.Header.Set("Authorization", "Bearer "+m2mToken)
+
+	respM2M, err := http.DefaultClient.Do(req3)
+	require.NoError(t, err)
+	defer respM2M.Body.Close()
+	bodyM2M, _ := io.ReadAll(respM2M.Body)
+	require.Equal(t, http.StatusAccepted, respM2M.StatusCode,
+		"POST /v1/orders with client-credentials token (gateway-m2m service account, role=user) must return 202; body: %s", string(bodyM2M))
 }
 
 // fetchKeycloakToken obtains an access token for demo/demo via the password grant.
@@ -173,6 +190,26 @@ func fetchKeycloakToken(t *testing.T, tokenURL string) string {
 	form.Set("username", "demo")
 	form.Set("password", "demo")
 	form.Set("grant_type", "password")
+
+	return postTokenForm(t, tokenURL, form)
+}
+
+// fetchKeycloakM2MToken obtains an access token for the gateway-m2m service
+// account via the client-credentials grant (no user involved).
+func fetchKeycloakM2MToken(t *testing.T, tokenURL string) string {
+	t.Helper()
+
+	form := url.Values{}
+	form.Set("client_id", "gateway-m2m")
+	form.Set("client_secret", "gateway-m2m-dev-secret")
+	form.Set("grant_type", "client_credentials")
+
+	return postTokenForm(t, tokenURL, form)
+}
+
+// postTokenForm POSTs an OAuth2 token request and returns the access token.
+func postTokenForm(t *testing.T, tokenURL string, form url.Values) string {
+	t.Helper()
 
 	resp, err := http.Post(tokenURL, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
 	require.NoError(t, err, "token endpoint POST failed")
