@@ -33,35 +33,6 @@ func (s *Service) Start() error {
 	s.runCtx = runCtx
 	s.cancelRun = cancelRun
 
-	// Public HTTP servers (AddHTTPServer): bind failure is fatal — same
-	// contract as the admin server above (no half-alive pods). Their shutdown
-	// closers are registered AFTER consumers-cancel and BEFORE the drain-gate
-	// (see below), so in LIFO teardown they shut right after the drain-gate
-	// flipped readiness and before consumers/kafka/pg go away.
-	for _, ns := range s.httpServers {
-		if err := ns.srv.Start(); err != nil {
-			cancelRun()
-			return fmt.Errorf("servicekit: http server %q failed to start on %s: %w",
-				ns.name, ns.srv.Addr(), err)
-		}
-		// Watch for a fatal serve error after startup: log it and flip
-		// readiness to 503 so the orchestrator stops routing and restarts.
-		srv, name := ns.srv, ns.name
-		s.wg.Add(1)
-		go func() {
-			defer s.wg.Done()
-			select {
-			case err := <-srv.Notify():
-				if err != nil {
-					s.logger.Error("http server failed", "server", name, "error", err)
-					s.h.SetNotReady()
-				}
-			case <-runCtx.Done():
-			}
-		}()
-		s.logger.Info("http server started", "server", name, "addr", srv.Addr())
-	}
-
 	// Launch inbox cleanup if configured (interval > 0). All services that use
 	// the harness migrate the inbox table, so this is safe to launch
 	// unconditionally. Future services with no inbox table will simply log a
@@ -78,10 +49,10 @@ func (s *Service) Start() error {
 	}
 
 	// Register cancelRun near the end → fires early in LIFO teardown (right
-	// after the drain-gate), stopping goroutines before the pg pool and kafka
-	// client are released. WAITS for the goroutines to actually exit: a
-	// consumer's final detached offset commit must complete before the next
-	// closer entry closes the kgo client.
+	// after the drain-gate and the public HTTP servers), stopping goroutines
+	// before the pg pool and kafka client are released. WAITS for the
+	// goroutines to actually exit: a consumer's final detached offset commit
+	// must complete before the next closer entry closes the kgo client.
 	s.closer.Add("consumers-cancel", func(ctx context.Context) error {
 		cancelRun()
 		done := make(chan struct{})
@@ -97,16 +68,43 @@ func (s *Service) Start() error {
 		}
 	})
 
-	// Public HTTP server shutdowns: registered between consumers-cancel and
-	// the drain-gate, so in LIFO teardown each public server drains its
+	// Public HTTP servers (AddHTTPServer): bind failure is fatal — same
+	// contract as the admin server above (no half-alive pods). Each server's
+	// shutdown closer is registered IMMEDIATELY after its successful Start:
+	// when server N fails to bind, servers 0..N-1 already have closers, so
+	// the teardown Main runs after the failed Start shuts them down instead
+	// of leaking live listeners.
+	//
+	// The registrations land between consumers-cancel (above) and the
+	// drain-gate (below), so in LIFO teardown each public server drains its
 	// in-flight requests AFTER /readyz flipped to 503 (no new traffic routed)
 	// and BEFORE consumers are cancelled and kafka/pg close (handlers may
 	// still use the producer/pool while draining).
 	for _, ns := range s.httpServers {
-		srv := ns.srv
-		s.closer.Add("http-server-"+ns.name, func(ctx context.Context) error {
+		if err := ns.srv.Start(); err != nil {
+			cancelRun()
+			return fmt.Errorf("servicekit: http server %q failed to start on %s: %w",
+				ns.name, ns.srv.Addr(), err)
+		}
+		srv, name := ns.srv, ns.name
+		s.closer.Add("http-server-"+name, func(ctx context.Context) error {
 			return srv.Shutdown(ctx)
 		})
+		// Watch for a fatal serve error after startup: log it and flip
+		// readiness to 503 so the orchestrator stops routing traffic.
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			select {
+			case err := <-srv.Notify():
+				if err != nil {
+					s.logger.Error("http server failed", "server", name, "error", err)
+					s.h.SetNotReady()
+				}
+			case <-runCtx.Done():
+			}
+		}()
+		s.logger.Info("http server started", "server", name, "addr", srv.Addr())
 	}
 
 	// Drain-gate is registered LAST → fires FIRST in LIFO teardown, BEFORE
