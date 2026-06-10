@@ -341,6 +341,27 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	assert.Equal(t, orderCreatedRec.Headers["message-id"], paymentProcessedRec.Headers["causation-id"],
 		"PaymentProcessed's causation must be OrderCreated's message id")
 	t.Log("Step 5 OK: correlation/causation chain verified")
+
+	// --- Step 6: coded problem+json contract on the edge ---
+	// Proves: error responses carry the machine-readable (code, params) pair
+	// alongside the RFC 9457 members — clients switch on code, not on detail.
+	t.Log("Step 6: asserting coded problem payload for an unknown order")
+	unknownID := uuid.New().String()
+	nf, err := http.Get(baseURL + "/v1/orders/" + unknownID)
+	require.NoError(t, err)
+	defer nf.Body.Close()
+	require.Equal(t, http.StatusNotFound, nf.StatusCode)
+	require.Contains(t, nf.Header.Get("Content-Type"), "application/problem+json")
+	var prob struct {
+		Status int            `json:"status"`
+		Code   string         `json:"code"`
+		Params map[string]any `json:"params"`
+	}
+	require.NoError(t, json.NewDecoder(nf.Body).Decode(&prob))
+	assert.Equal(t, http.StatusNotFound, prob.Status)
+	assert.Equal(t, "GATEWAY_ORDER_NOT_FOUND", prob.Code)
+	assert.Equal(t, unknownID, prob.Params["order_id"])
+	t.Log("Step 6 OK: problem payload carries code and params")
 }
 
 // consumeRawEvent consumes raw records from topic until one matches the given

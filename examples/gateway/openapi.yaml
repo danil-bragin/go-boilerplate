@@ -297,7 +297,11 @@ components:
   schemas:
     Problem:
       type: object
-      description: RFC 7807 problem details.
+      description: >
+        RFC 9457 problem details. The machine-readable API contract is the
+        extension pair (code, params): clients switch on code and read
+        params; title and detail are human-readable, may be localized via
+        Accept-Language, and must not be parsed.
       required:
         - title
         - status
@@ -318,6 +322,21 @@ components:
         instance:
           type: string
           description: URI reference identifying this specific occurrence.
+        code:
+          type: string
+          description: >
+            Flat UPPER_SNAKE application error code (e.g.
+            "GATEWAY_ORDER_NOT_FOUND", "VALIDATION_FAILED"). Stable contract;
+            never localized. See docs/errors.md for the registry.
+        params:
+          type: object
+          additionalProperties: true
+          description: >
+            Structured parameters of the error. Every variable referenced by
+            the human-readable message appears here so clients can render
+            their own messages (e.g. {"order_id": "..."} for
+            GATEWAY_ORDER_NOT_FOUND, {"fields": [{field, rule, param}]} for
+            VALIDATION_FAILED).
 
     CreateOrderRequest:
       type: object

@@ -59,13 +59,19 @@ type OrderView struct {
 	Status string `json:"status"`
 }
 
-// Problem RFC 7807 problem details.
+// Problem RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type Problem struct {
+	// Code Flat UPPER_SNAKE application error code (e.g. "GATEWAY_ORDER_NOT_FOUND", "VALIDATION_FAILED"). Stable contract; never localized. See docs/errors.md for the registry.
+	Code *string `json:"code,omitempty"`
+
 	// Detail Human-readable explanation specific to this occurrence.
 	Detail *string `json:"detail,omitempty"`
 
 	// Instance URI reference identifying this specific occurrence.
 	Instance *string `json:"instance,omitempty"`
+
+	// Params Structured parameters of the error. Every variable referenced by the human-readable message appears here so clients can render their own messages (e.g. {"order_id": "..."} for GATEWAY_ORDER_NOT_FOUND, {"fields": [{field, rule, param}]} for VALIDATION_FAILED).
+	Params *map[string]interface{} `json:"params,omitempty"`
 
 	// Status HTTP status code.
 	Status int `json:"status"`
@@ -77,25 +83,25 @@ type Problem struct {
 	Type *string `json:"type,omitempty"`
 }
 
-// BadRequest RFC 7807 problem details.
+// BadRequest RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type BadRequest = Problem
 
-// Conflict RFC 7807 problem details.
+// Conflict RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type Conflict = Problem
 
-// Forbidden RFC 7807 problem details.
+// Forbidden RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type Forbidden = Problem
 
-// NotFound RFC 7807 problem details.
+// NotFound RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type NotFound = Problem
 
-// ServiceUnavailable RFC 7807 problem details.
+// ServiceUnavailable RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type ServiceUnavailable = Problem
 
-// TooManyRequests RFC 7807 problem details.
+// TooManyRequests RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type TooManyRequests = Problem
 
-// Unauthorized RFC 7807 problem details.
+// Unauthorized RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type Unauthorized = Problem
 
 // ListOrdersParams defines parameters for ListOrders.

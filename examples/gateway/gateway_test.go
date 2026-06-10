@@ -156,6 +156,20 @@ func TestGateway_GetUnknownOrder404(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "application/problem+json")
+	var prob struct {
+		Status   int            `json:"status"`
+		Code     string         `json:"code"`
+		Detail   string         `json:"detail"`
+		Instance string         `json:"instance"`
+		Params   map[string]any `json:"params"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&prob))
+	assert.Equal(t, http.StatusNotFound, prob.Status)
+	assert.Equal(t, "GATEWAY_ORDER_NOT_FOUND", prob.Code)
+	assert.Equal(t, "order "+unknownID+" not found", prob.Detail)
+	assert.Equal(t, "/v1/orders/"+unknownID, prob.Instance)
+	assert.Equal(t, unknownID, prob.Params["order_id"], "AIP-193: message variables must be params")
 }
 
 // consumeCreateOrderCommand consumes from orders.commands until a CreateOrderCommand
@@ -728,6 +742,11 @@ func TestGateway_AuthzForbidsWithoutRole(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusForbidden, resp.StatusCode, "expected 403 when principal lacks required role")
+	var forbidden struct {
+		Code string `json:"code"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&forbidden))
+	assert.Equal(t, "AUTH_FORBIDDEN", forbidden.Code, "platform auth code must flow through FromError")
 
 	// Now start a second gateway instance with a verifier that includes the "user" role.
 	t.Setenv("KAFKA_CLIENT_ID", "gateway-authz-test2-"+uuid.New().String())
@@ -917,9 +936,11 @@ func TestGateway_IdempotencyKeyBodyMismatch409(t *testing.T) {
 		"key reuse with a different body must be rejected, not absorbed into the first order")
 	assert.Contains(t, resp.Header.Get("Content-Type"), "application/problem+json")
 	var prob struct {
+		Code   string `json:"code"`
 		Detail string `json:"detail"`
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&prob))
+	assert.Equal(t, "GATEWAY_IDEMPOTENCY_BODY_MISMATCH", prob.Code, "machine-readable code is the contract")
 	assert.Contains(t, prob.Detail, "idempotency key", "problem detail must name the cause")
 
 	// Same key, identical body → still the original id (true retry).
@@ -974,12 +995,20 @@ func TestGateway_PostReturnsLocationAndPendingRow(t *testing.T) {
 	assert.EqualValues(t, 1500, view.AmountCents)
 	assert.Equal(t, "USD", view.Currency)
 
-	// 404 now returns problem+json with the documented shape.
-	nf, err := http.Get(baseURL + "/v1/orders/" + uuid.New().String())
+	// 404 now returns problem+json with the documented coded shape.
+	missingID := uuid.New().String()
+	nf, err := http.Get(baseURL + "/v1/orders/" + missingID)
 	require.NoError(t, err)
 	defer nf.Body.Close()
 	require.Equal(t, http.StatusNotFound, nf.StatusCode)
 	assert.Contains(t, nf.Header.Get("Content-Type"), "application/problem+json")
+	var nfProb struct {
+		Code   string         `json:"code"`
+		Params map[string]any `json:"params"`
+	}
+	require.NoError(t, json.NewDecoder(nf.Body).Decode(&nfProb))
+	assert.Equal(t, "GATEWAY_ORDER_NOT_FOUND", nfProb.Code)
+	assert.Equal(t, missingID, nfProb.Params["order_id"])
 }
 
 // TestGateway_PendingUpgradesAndReorderSafety verifies the projection status
@@ -1185,6 +1214,11 @@ func TestGateway_ListOrdersKeysetPagination(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	assert.Contains(t, resp.Header.Get("Content-Type"), "application/problem+json")
+	var cursorProb struct {
+		Code string `json:"code"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&cursorProb))
+	assert.Equal(t, "GATEWAY_INVALID_CURSOR", cursorProb.Code)
 
 	// limit above the documented maximum (100) is capped server-side; the
 	// request still succeeds (no kernel validation middleware is mounted).

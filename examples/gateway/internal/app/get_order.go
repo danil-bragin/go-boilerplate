@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	"go-boilerplate/examples/gateway/internal/apperrs"
+	"go-boilerplate/platform/apperr"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/storage/pg"
 
@@ -17,8 +19,17 @@ import (
 )
 
 // ErrOrderNotFound is returned when the requested order does not exist in the
-// read model.
-var ErrOrderNotFound = errors.New("app: order not found")
+// read model. It is a coded apperr (GATEWAY_ORDER_NOT_FOUND → 404), so it
+// flows through httpx.FromError at the edge without inline mapping;
+// errors.Is against this sentinel matches by code.
+var ErrOrderNotFound error = apperr.New(apperrs.CodeOrderNotFound)
+
+// OrderNotFound returns ErrOrderNotFound parameterized with the order id
+// (problem+json params.order_id — every message variable must be a param,
+// per Google AIP-193).
+func OrderNotFound(orderID string) error {
+	return apperr.New(apperrs.CodeOrderNotFound).WithParam("order_id", orderID)
+}
 
 // GetOrder is the query type for the GetOrder CQRS handler.
 type GetOrder struct {
@@ -55,14 +66,14 @@ func GetOrderHandler(pool *pg.Pool) cqrs.HandlerFunc[GetOrder, OrderView] {
 	return func(ctx context.Context, q GetOrder) (OrderView, error) {
 		id, err := uuid.Parse(q.OrderID)
 		if err != nil {
-			return OrderView{}, ErrOrderNotFound
+			return OrderView{}, OrderNotFound(q.OrderID)
 		}
 
 		queries := storegen.New(pg.FromContextRead(ctx, pool))
 		row, err := queries.GetOrderView(ctx, id)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return OrderView{}, ErrOrderNotFound
+				return OrderView{}, OrderNotFound(q.OrderID)
 			}
 			return OrderView{}, fmt.Errorf("app: get order view: %w", err)
 		}

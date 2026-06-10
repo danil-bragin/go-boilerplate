@@ -3,11 +3,12 @@ package app
 import (
 	"context"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"go-boilerplate/examples/gateway/internal/apperrs"
+	"go-boilerplate/platform/apperr"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/storage/pg"
 
@@ -18,8 +19,11 @@ import (
 )
 
 // ErrInvalidCursor is returned when a pagination cursor cannot be decoded.
-// Maps to HTTP 400.
-var ErrInvalidCursor = errors.New("app: invalid pagination cursor")
+// It is a coded apperr (GATEWAY_INVALID_CURSOR → 400): the edge maps it via
+// httpx.FromError; errors.Is against this sentinel matches by code. The
+// decode cause stays wrapped in the chain for logs but is never echoed to
+// clients (FromError renders only the registered message).
+var ErrInvalidCursor error = apperr.New(apperrs.CodeInvalidCursor)
 
 // List pagination bounds (documented in openapi.yaml).
 const (
