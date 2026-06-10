@@ -11,7 +11,7 @@
 | `config` | `platform/config` | `caarlos0/env` struct-tag loader; `Load[T]()` returns a typed config value |
 | `log` | `platform/observability/log` | `log/slog` setup; optional zap backend via `zapslog`; `FromContext`/`WithContext`; trace-id injection |
 | `run` | `platform/run` | Signal handling (`SIGINT`/`SIGTERM`), ordered `Start`, reverse-order `Closer`, two-phase shutdown |
-| `telemetry` | `platform/observability/telemetry` | OTel tracer + meter providers (no logs provider — logs go to stdout via `platform/observability/log`); OTLP/gRPC exporter; Prometheus `/metrics` reader stays on even when export is disabled; `Shutdown` |
+| `telemetry` | `platform/observability/telemetry` | OTel tracer + meter providers (incl. Go runtime metrics) with OTLP/gRPC + Prometheus exporters (`/metrics` reader stays on even when export is disabled); opt-in OTLP logger provider (`TELEMETRY_LOGS`, bridged into `log` for stdout+collector fan-out); `Shutdown` |
 | `httpserver` | `platform/web/httpserver` | chi server; middleware stack (SecurityHeaders, recover, req-id, OTel, access-log, max-bytes, timeout); CORS, `RateLimitPer`+`ClientIPKey`, and legacy `RateLimit` opt-in; graceful `Shutdown` |
 | `ratelimit` | `platform/web/ratelimit` | `Limiter` interface; `NewMemory` (per-key in-process token bucket, janitor eviction) and `NewRedis` (atomic Lua token bucket, fail-open default) |
 | `httpx` | `platform/web/httpx` | `Decode`+validate request bodies; RFC 7807 `ProblemJSON` error responses |

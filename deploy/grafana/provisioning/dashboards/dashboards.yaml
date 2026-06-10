@@ -1,0 +1,23 @@
+# Grafana dashboard provisioning (file provider).
+# Dashboards live as JSON next to this file; the compose grafana service
+# mounts ./deploy/grafana/provisioning at /etc/grafana/provisioning, so the
+# provider below picks up every *.json in this directory.
+#
+# Metric names referenced by the dashboards are the COLLECTOR-exported names:
+# apps push OTLP to the otel-collector, whose Prometheus exporter prefixes
+# everything with the `otel` namespace and applies the standard OTLP→Prometheus
+# translation (dots → underscores, `_total` on counters, unit suffixes such as
+# `_milliseconds` on histograms). The `job` label is the OTel service.name.
+apiVersion: 1
+
+providers:
+  - name: boilerplate
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

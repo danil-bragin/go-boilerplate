@@ -91,8 +91,20 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 	for _, opt := range opts {
 		opt(&o)
 	}
-	// 1. Logger + log-sync (registered first → runs last in LIFO closer).
-	logger, logSync := log.New(cfg.Log, os.Stdout)
+	// 1. Telemetry FIRST — the logger needs the (opt-in, TELEMETRY_LOGS) OTel
+	// log provider at construction time so records can fan out to the
+	// collector in addition to stdout. Warnings telemetry emits during setup
+	// go to the process-default logger; everything after this point uses the
+	// service logger.
+	tel, err := telemetry.SetupAll(ctx, cfg.Telemetry)
+	if err != nil {
+		return nil, err
+	}
+	metricsHandler := tel.MetricsHandler
+
+	// 2. Logger + log-sync. WithOTelBridge ignores a nil provider, so this is
+	// wiring-neutral when TELEMETRY_LOGS is off.
+	logger, logSync := log.New(cfg.Log, os.Stdout, log.WithOTelBridge(tel.LoggerProvider))
 	slog.SetDefault(logger)
 
 	closer := run.NewCloser()
@@ -114,6 +126,12 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 		return nil
 	})
 
+	// Telemetry closer registered AFTER log-sync: LIFO teardown shuts the
+	// providers down (flushing the OTLP log batch) before stdout syncs.
+	closer.Add("telemetry", func(ctx context.Context) error {
+		return tel.Shutdown(ctx)
+	})
+
 	// Invariant check: the inbox dedup window must cover the broker's topic
 	// retention. If a record can still be redelivered (retention not yet
 	// expired) after its inbox row was cleaned up, the duplicate is no longer
@@ -126,15 +144,6 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 			"topic_retention", cfg.TopicRetention,
 		)
 	}
-
-	// 2. Telemetry + metrics handler.
-	shutdownTel, metricsHandler, err := telemetry.SetupWithMetrics(ctx, cfg.Telemetry)
-	if err != nil {
-		return nil, err
-	}
-	closer.Add("telemetry", func(ctx context.Context) error {
-		return shutdownTel(ctx)
-	})
 
 	// 2b. Continuous profiling (opt-in via PYROSCOPE_ADDR). No-op when unset.
 	if cfg.PyroscopeAddr != "" {

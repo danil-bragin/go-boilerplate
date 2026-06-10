@@ -213,6 +213,7 @@ services:
     profiles: ["observability"]
     volumes:
       - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/rules.yaml:/etc/prometheus/rules.yaml:ro
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"

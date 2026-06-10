@@ -1,0 +1,162 @@
+{
+  "uid": "runtime",
+  "title": "Go Runtime",
+  "description": "Per-service Go runtime health: memory vs GOMEMLIMIT, goroutines, allocation pressure. Source: otel contrib runtime instrumentation via otel-collector (otel_go_* metrics).",
+  "tags": ["boilerplate", "runtime", "go"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "editable": true,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "job",
+        "label": "service",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(otel_go_goroutine_count, job)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Memory used vs GOMEMLIMIT vs GC goal",
+      "description": "go_memory_limit_bytes only exists when GOMEMLIMIT is set (compose sets it to ~90% of the container limit). Sustained used ≈ limit means the GC is thrashing — raise the limit or reduce footprint (docs/operations.md GOMEMLIMIT section).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (job) (otel_go_memory_used_bytes{job=~\"$job\"})",
+          "legendFormat": "{{job}} used"
+        },
+        {
+          "refId": "B",
+          "expr": "otel_go_memory_limit_bytes{job=~\"$job\"}",
+          "legendFormat": "{{job}} GOMEMLIMIT"
+        },
+        {
+          "refId": "C",
+          "expr": "otel_go_memory_gc_goal_bytes{job=~\"$job\"}",
+          "legendFormat": "{{job}} GC goal"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Goroutines",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "otel_go_goroutine_count{job=~\"$job\"}",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Allocation rate (bytes/s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (job) (rate(otel_go_memory_allocated_bytes_total{job=~\"$job\"}[5m]))",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Allocation rate (objects/s) — GC pressure",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 9 },
+      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (job) (rate(otel_go_memory_allocations_total{job=~\"$job\"}[5m]))",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Memory used by type (stack vs other)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "otel_go_memory_used_bytes{job=~\"$job\"}",
+          "legendFormat": "{{job}} {{go_memory_type}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Memory headroom (used / GOMEMLIMIT)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 6, "x": 12, "y": 18 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.75 },
+              { "color": "red", "value": 0.9 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (job) (sum by (job) (otel_go_memory_used_bytes{job=~\"$job\"}) / otel_go_memory_limit_bytes{job=~\"$job\"})",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "GOMAXPROCS / GOGC",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 9, "w": 6, "x": 18, "y": 18 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "otel_go_processor_limit{job=~\"$job\"}",
+          "legendFormat": "{{job}} GOMAXPROCS"
+        },
+        {
+          "refId": "B",
+          "expr": "otel_go_config_gogc_percent{job=~\"$job\"}",
+          "legendFormat": "{{job}} GOGC%"
+        }
+      ]
+    }
+  ]
+}

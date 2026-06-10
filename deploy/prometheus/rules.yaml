@@ -1,0 +1,122 @@
+# Prometheus alerting rules for the boilerplate stack.
+#
+# Metric names are the COLLECTOR-exported names: apps push OTLP to the
+# otel-collector whose Prometheus exporter prefixes everything with `otel`
+# and applies the OTLP→Prometheus translation (dots → underscores, `_total`
+# on counters, `_milliseconds` unit suffix on the ms histograms). The `job`
+# label is the OTel service.name (gateway/orders/payments/notifications).
+#
+# Validate: docker run --rm -v $PWD/deploy/prometheus:/r prom/prometheus:v2.55.1 \
+#             promtool check rules /r/rules.yaml
+
+groups:
+  - name: choreography
+    rules:
+      - alert: KafkaConsumerLagGrowing
+        # Lag is non-trivial AND grew over the last 5m window — a stalled or
+        # under-provisioned consumer, not just a traffic burst being drained.
+        expr: otel_kafka_consumer_lag > 100 and delta(otel_kafka_consumer_lag[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consumer lag growing on {{ $labels.topic }}/p{{ $labels.partition }} ({{ $labels.job }})"
+          description: "Lag is {{ $value }} records and still increasing after 5m. Members beyond the partition count idle — check handler latency before adding replicas."
+          runbook_url: "docs/operations.md#scaling-guide-per-component"
+
+      - alert: OutboxBacklogGrowing
+        # No row-age metric exists; a pending count that stays elevated for
+        # 10m means the relay is not draining the table per tick.
+        expr: otel_outbox_pending > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbox backlog on {{ $labels.job }}: {{ $value }} unpublished rows for 10m"
+          description: "Relay is not keeping up (or is down / lost the advisory-lock leadership). Raise OUTBOX_BATCH_SIZE, lower OUTBOX_POLL_INTERVAL, check kafka availability."
+          runbook_url: "docs/operations.md#scaling-guide-per-component"
+
+      - alert: OutboxPublishErrors
+        expr: increase(otel_outbox_publish_errors_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbox publish errors on {{ $labels.job }}"
+          description: "Publish batches failed in the last 15m; rows stay pending and are retried, but a persistent error (broker down, auth) blocks the whole outbox."
+          runbook_url: "docs/operations.md#backup--disaster-recovery"
+
+      - alert: DLTMessagesProduced
+        # Any dead-lettered record needs human triage within the redrive SLO.
+        expr: increase(otel_kafka_dlt_produced_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} record(s) dead-lettered to {{ $labels.topic }} by {{ $labels.job }} in 15m"
+          description: "Records exhausted all retry tiers (or hit a non-retryable error). Inspect the DLT and redrive after fixing the cause."
+          runbook_url: "docs/operations.md#dlt-redrive-procedure"
+
+      - alert: KafkaCommitFailures
+        expr: increase(otel_kafka_consumer_commit_failures_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Kafka commit failures on {{ $labels.topic }} ({{ $labels.job }})"
+          description: "CommitRecords RPCs failed — the duplicate-delivery window widens (inbox dedup absorbs replays, but investigate broker/group health)."
+          runbook_url: "docs/operations.md#kafka-retry-tiers--dlt-redrive-runbook"
+
+  - name: edge
+    rules:
+      - alert: HighHTTP5xxRatio
+        expr: |
+          sum by (job) (rate(otel_http_server_duration_milliseconds_count{http_response_status_code=~"5.."}[5m]))
+            /
+          sum by (job) (rate(otel_http_server_duration_milliseconds_count[5m]))
+            > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }}: >5% of requests are 5xx for 5m"
+          description: "Current 5xx ratio: {{ $value | humanizePercentage }}. Correlate with the edge dashboard (route breakdown) and Jaeger."
+          runbook_url: "docs/operations.md#scaling-guide-per-component"
+
+      - alert: HighHTTPLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum by (job, le) (rate(otel_http_server_duration_milliseconds_bucket[5m]))
+          ) > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }}: p99 latency above 1s for 10m"
+          description: "p99 is {{ $value }}ms. Check the per-route p99 panel, CFS throttling and GOMEMLIMIT pressure before scaling out."
+          runbook_url: "docs/operations.md#cpu-limits--avoid-cfs-throttling"
+
+      - alert: CacheL2BreakerOpen
+        # 0=closed 1=open 2=half-open; open >1m means Redis has been failing
+        # past the 15s half-open probe cycle repeatedly.
+        expr: otel_cache_l2_breaker_state == 1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis L2 cache breaker OPEN on {{ $labels.job }}"
+          description: "Service degraded to L1-only caching (no availability impact, but cross-instance coherence is gone). Check Redis health."
+          runbook_url: "docs/operations.md#scaling-guide-per-component"
+
+  - name: lifecycle
+    rules:
+      - alert: ServiceFlapping
+        # Readiness-flap proxy: the `apps` scrape job targets each service's
+        # admin server (/metrics on :9090). A crash-looping or readiness-
+        # flapping service makes its `up` series toggle; steady-down (service
+        # simply not deployed, e.g. compose without --profile apps) does NOT
+        # fire because `changes()` needs transitions.
+        expr: changes(up{job="apps"}[15m]) >= 4
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }} is flapping (4+ up/down transitions in 15m)"
+          description: "Admin endpoint availability is toggling — crash loop, OOM-kill cycle, or readiness flapping behind it. Check container restarts and GOMEMLIMIT."
+          runbook_url: "docs/operations.md#gomemlimit--prevent-oom-kill"
