@@ -5,18 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
 // Producer wraps a *kgo.Client and provides a synchronous Produce method.
 type Producer struct {
-	cl *kgo.Client
+	cl      *kgo.Client
+	metrics producerMetrics
 }
 
 // NewProducer returns a Producer that uses cl for all produce operations.
 func NewProducer(cl *kgo.Client) *Producer {
-	return &Producer{cl: cl}
+	return &Producer{cl: cl, metrics: newProducerMetrics()}
 }
 
 // Produce synchronously writes rec to its topic and waits for broker
@@ -38,7 +40,10 @@ func (p *Producer) Produce(ctx context.Context, rec Record) error {
 		Headers: headers,
 	}
 
-	if err := p.cl.ProduceSync(ctx, kr).FirstErr(); err != nil {
+	start := time.Now()
+	err := p.cl.ProduceSync(ctx, kr).FirstErr()
+	p.metrics.recordPublishDuration(ctx, rec.Topic, time.Since(start))
+	if err != nil {
 		return fmt.Errorf("kafka: produce: %w", err)
 	}
 	return nil
@@ -68,8 +73,15 @@ func (p *Producer) ProduceBatch(ctx context.Context, records []Record) error {
 		wg   sync.WaitGroup
 	)
 
+	// One publish-duration sample per DISTINCT topic in the batch: the whole
+	// batch shares a single Flush round-trip, so the measured RTT applies to
+	// every topic it contains.
+	topics := map[string]struct{}{}
+	start := time.Now()
+
 	wg.Add(len(records))
 	for _, rec := range records {
+		topics[rec.Topic] = struct{}{}
 		headers := make([]kgo.RecordHeader, 0, len(rec.Headers))
 		for k, v := range rec.Headers {
 			headers = append(headers, kgo.RecordHeader{
@@ -106,6 +118,11 @@ func (p *Producer) ProduceBatch(ctx context.Context, records []Record) error {
 	// even when Flush returned an error. Without this, in-flight callbacks can
 	// mutate the error slice after return, causing a data race.
 	wg.Wait()
+
+	elapsed := time.Since(start)
+	for topic := range topics {
+		p.metrics.recordPublishDuration(ctx, topic, elapsed)
+	}
 
 	if flushErr != nil {
 		return errors.Join(fmt.Errorf("kafka: produce batch flush: %w", flushErr), errors.Join(errs...))

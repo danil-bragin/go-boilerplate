@@ -127,6 +127,31 @@ func TestConsumerMetrics_ProcessedFailedLag(t *testing.T) {
 		"records_failed counter must count handler failures")
 	require.True(t, hasGauge(&rm, "kafka.consumer.lag"),
 		"consumer lag gauge must be populated from fetches")
+
+	// Duration histograms (wiring proof; per-pair attribute assertions live in
+	// the package-internal unit tests).
+	require.GreaterOrEqual(t, histCount(&rm, "kafka.consumer.handler.duration"), uint64(4),
+		"handler duration histogram must observe every invocation (3 ok + ≥1 error)")
+	require.GreaterOrEqual(t, histCount(&rm, "kafka.producer.publish.duration"), uint64(3),
+		"producer publish duration histogram must observe every sync produce")
+}
+
+// histCount sums the datapoint counts of the named float64 histogram.
+func histCount(rm *metricdata.ResourceMetrics, name string) uint64 {
+	var total uint64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			if h, ok := m.Data.(metricdata.Histogram[float64]); ok {
+				for _, dp := range h.DataPoints {
+					total += dp.Count
+				}
+			}
+		}
+	}
+	return total
 }
 
 // TestDLTMetrics_ProducedCounter verifies kafka.dlt.produced moves when
