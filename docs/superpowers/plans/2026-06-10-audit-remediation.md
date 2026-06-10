@@ -1,5 +1,16 @@
 # Audit Remediation Implementation Plan
 
+> **STATUS: COMPLETE (2026-06-10).** All phases 0-5 executed and merged to main (~100 commits).
+> Final verification: full serial suite 46/46 ok ×2, full-repo -race run green, e2e green ≥4 runs,
+> golangci-lint 0, gofumpt clean, mocks reproducible, compose all-profiles valid, doc-test + scaffold
+> smoke green. Final adversarial review (3 reviewers over full diff) found 3 MUST-FIX + 20 SHOULD/NIT —
+> all fixed and re-verified. Notable deviations from plan: Phase 2 reorganized into 2 lanes (L4+L6
+> merged; 2.2/2.3 moved to contracts lane) to avoid routes.go/server.go merge conflicts; review round
+> added fixes beyond plan scope (EOS AbortingFirstErrPromise, retry onRevoked resume, idempotency
+> per-principal scoping, GET/LIST ownership, fatal-serve process exit). §B-equivalents recorded in
+> commit messages; invariants live as integration tests (redelivery, no-commit-past-failure,
+> drain-order, ownership, precedence).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Every fix MUST ship with tests (TDD: failing test first). Caveman encoding used below per repo FORMAT.md conventions; code blocks verbatim.
 
 **Goal:** Fix ALL findings from 2026-06-10 six-agent deep audit (messaging correctness, cache coherence, edge/security, observability, contracts, choreography failure paths, DX, stack updates).
