@@ -33,8 +33,8 @@ func TestMain(m *testing.M) {
 }
 
 // Per-test unique topic names on the shared broker. configureTopics
-// regenerates them and points the gateway at them via the GATEWAY_*_TOPIC
-// envs; the consumer group ("gateway-projection") can stay fixed because
+// regenerates them and points the gateway at them via the topic envs
+// (ORDERS_COMMANDS_TOPIC / ORDERS_EVENTS_TOPIC / PAYMENTS_EVENTS_TOPIC); the consumer group ("gateway-projection") can stay fixed because
 // offsets are tracked per (group, topic). Tests in this package run
 // sequentially (no t.Parallel), so package-level variables are safe.
 var (
@@ -53,9 +53,9 @@ func configureTopics(t *testing.T) {
 	topicCommands = "orders.commands" + suffix
 	topicOrdersEvents = "orders.events" + suffix
 	topicPaymentsEvents = "payments.events" + suffix
-	t.Setenv("GATEWAY_COMMANDS_TOPIC", topicCommands)
-	t.Setenv("GATEWAY_ORDERS_EVENTS_TOPIC", topicOrdersEvents)
-	t.Setenv("GATEWAY_PAYMENTS_EVENTS_TOPIC", topicPaymentsEvents)
+	t.Setenv("ORDERS_COMMANDS_TOPIC", topicCommands)
+	t.Setenv("ORDERS_EVENTS_TOPIC", topicOrdersEvents)
+	t.Setenv("PAYMENTS_EVENTS_TOPIC", topicPaymentsEvents)
 
 	// The shared broker lives for the whole package run while each test
 	// creates its own 6-partition topics (+DLTs). Delete them afterwards:

@@ -293,9 +293,9 @@ services:
       GATEWAY_JWKS_ISSUER: http://keycloak:8080/realms/app
       GATEWAY_JWKS_AUDIENCE: gateway
       # Topics
-      GATEWAY_COMMANDS_TOPIC: orders.commands
-      GATEWAY_ORDERS_EVENTS_TOPIC: orders.events
-      GATEWAY_PAYMENTS_EVENTS_TOPIC: payments.events
+      ORDERS_COMMANDS_TOPIC: orders.commands
+      ORDERS_EVENTS_TOPIC: orders.events
+      PAYMENTS_EVENTS_TOPIC: payments.events
       # Per-IP rate limiting. Adjust for your traffic profile.
       # RATELIMIT_REDIS=true uses Redis-backed distributed limiter (requires REDIS_ADDRS).
       # TRUSTED_PROXIES: comma-separated CIDRs for trusted reverse proxies (e.g. "10.0.0.0/8").

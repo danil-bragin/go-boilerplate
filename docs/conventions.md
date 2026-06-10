@@ -251,3 +251,18 @@ fit — otherwise reviewers should push back to `StandardPipeline`.
 Resilience (retries, circuit breaking, rate limiting) is never a pipeline
 behavior: it stays at the transport level (httpserver middleware, kafka/retry
 escalation, `platform/resilience` around outbound calls).
+
+---
+
+## 8. Topic env naming
+
+**Rule: a topic env is named after the TOPIC it points at, never after a
+service.** `orders.commands` → `ORDERS_COMMANDS_TOPIC`, `orders.events` →
+`ORDERS_EVENTS_TOPIC`, `payments.events` → `PAYMENTS_EVENTS_TOPIC` — in
+every service that touches the topic, producer or consumer. No
+`GATEWAY_*_TOPIC`-style prefixes.
+
+Why: each container has its own env namespace, so several services reading
+the same env name is not a conflict — it is the point. "Same topic = same
+env name everywhere" means one compose/.env line per topic per service, no
+mental mapping table, and a single-process test (e2e) sets each name once.

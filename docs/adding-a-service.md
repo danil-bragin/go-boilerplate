@@ -209,6 +209,9 @@ const (
 )
 
 // Config aggregates all configuration for the shipping service.
+// Topic envs are named after the TOPIC, never the service (conventions §8):
+// the env for orders.events is ORDERS_EVENTS_TOPIC in every service that
+// touches it — not SHIPPING_EVENTS_TOPIC.
 type Config struct {
 	servicekit.Config
 	EventsTopic string `env:"ORDERS_EVENTS_TOPIC" envDefault:"orders.events"`
