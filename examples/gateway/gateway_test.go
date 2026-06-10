@@ -168,7 +168,8 @@ func TestGateway_GetUnknownOrder404(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&prob))
 	assert.Equal(t, http.StatusNotFound, prob.Status)
 	assert.Equal(t, "GATEWAY_ORDER_NOT_FOUND", prob.Code)
-	assert.Equal(t, "order "+unknownID+" not found", prob.Detail)
+	assert.Equal(t, "Order "+unknownID+" was not found.", prob.Detail,
+		"detail renders from the en catalog template")
 	assert.Equal(t, "/v1/orders/"+unknownID, prob.Instance)
 	assert.Equal(t, unknownID, prob.Params["order_id"], "AIP-193: message variables must be params")
 }
@@ -942,7 +943,7 @@ func TestGateway_IdempotencyKeyBodyMismatch409(t *testing.T) {
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&prob))
 	assert.Equal(t, "GATEWAY_IDEMPOTENCY_BODY_MISMATCH", prob.Code, "machine-readable code is the contract")
-	assert.Contains(t, prob.Detail, "idempotency key", "problem detail must name the cause")
+	assert.Contains(t, prob.Detail, "Idempotency-Key", "problem detail must name the cause")
 
 	// Same key, identical body → still the original id (true retry).
 	st, retryID := postOrderRaw(t, baseURL, "mismatch-key", "",
