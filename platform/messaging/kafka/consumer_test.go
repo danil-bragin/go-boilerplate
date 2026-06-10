@@ -13,10 +13,12 @@ import (
 
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
+	"go-boilerplate/platform/testkit/goleakopts"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.uber.org/goleak"
 )
 
 func TestConsumer_GroupConsumesCommitted(t *testing.T) {
@@ -24,6 +26,11 @@ func TestConsumer_GroupConsumesCommitted(t *testing.T) {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
 	broker, _ := kafkatest.Shared(t)
+
+	// Two consumer Run goroutines are started and closed in this test; the
+	// leak check proves Run/Close leave nothing behind (client-lifetime kgo
+	// loops and shared-container goroutines are ignored via goleakopts).
+	defer goleak.VerifyNone(t, goleakopts.Default(goleak.IgnoreCurrent())...)
 
 	topic := uniqueName("ctopic")
 	groupID := uniqueName("g1")

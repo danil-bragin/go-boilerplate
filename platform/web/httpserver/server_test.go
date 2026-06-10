@@ -11,9 +11,15 @@ import (
 	"go-boilerplate/platform/web/httpserver"
 
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
 
 func TestServer_ServesAndShutsDown(t *testing.T) {
+	// Serve goroutine must exit with Shutdown. Deferred LIFO: idle client
+	// conns are dropped first, then the leak check runs.
+	defer goleak.VerifyNone(t)
+	defer http.DefaultTransport.(*http.Transport).CloseIdleConnections()
+
 	srv := httpserver.New(httpserver.Config{Addr: "127.0.0.1:0"})
 	srv.Mux().Get("/ping", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("pong"))
@@ -35,6 +41,8 @@ func TestServer_ServesAndShutsDown(t *testing.T) {
 
 // A3 – Notify() must unblock on graceful shutdown
 func TestNotify_UnblocksOnGracefulShutdown(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
 	srv := httpserver.New(httpserver.Config{Addr: "127.0.0.1:0"})
 	require.NoError(t, srv.Start())
 
@@ -58,6 +66,8 @@ func TestNotify_UnblocksOnGracefulShutdown(t *testing.T) {
 
 // A6 – Start() twice must error
 func TestStart_TwiceErrors(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
 	srv := httpserver.New(httpserver.Config{Addr: "127.0.0.1:0"})
 	require.NoError(t, srv.Start())
 
@@ -73,6 +83,8 @@ func TestStart_TwiceErrors(t *testing.T) {
 // from two goroutines simultaneously does not panic (no double-close of the
 // serveErr channel). The mutex + closed flag must absorb both calls safely.
 func TestShutdown_DoubleConcurrentShutdownNoPanic(t *testing.T) {
+	defer goleak.VerifyNone(t)
+
 	srv := httpserver.New(httpserver.Config{Addr: "127.0.0.1:0"})
 	require.NoError(t, srv.Start())
 

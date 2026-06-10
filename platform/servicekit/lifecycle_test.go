@@ -19,10 +19,12 @@ import (
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/storage/pg/pgtest"
+	"go-boilerplate/platform/testkit/goleakopts"
 	"go-boilerplate/platform/testkit/mockhttp"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
 
 // readyzStatus GETs /readyz on the admin server and returns the HTTP status,
@@ -88,6 +90,12 @@ func TestStop_TeardownOrder(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
+
+	// The service is fully stopped in the test body; no service goroutine may
+	// survive. Deferred LIFO: idle HTTP conns (from readyzStatus probes) are
+	// dropped first, then the leak check runs.
+	defer goleak.VerifyNone(t, goleakopts.Default()...)
+	defer http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 
 	const grace = 300 * time.Millisecond
 	svc := newLifecycleService(t, grace)
@@ -164,6 +172,11 @@ func TestStop_ReadyzServes503DuringDrain(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
+
+	// Stop completes in the test body (require.NoError on <-stopDone); the
+	// drain goroutine and all service goroutines must be gone afterwards.
+	defer goleak.VerifyNone(t, goleakopts.Default()...)
+	defer http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 
 	const grace = 500 * time.Millisecond
 	svc := newLifecycleService(t, grace)

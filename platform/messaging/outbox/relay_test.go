@@ -10,9 +10,11 @@ import (
 
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/storage/pg"
+	"go-boilerplate/platform/testkit/goleakopts"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
 
 type fakePublisher struct {
@@ -253,6 +255,9 @@ func TestRelay_RunDrainsBacklogInOneTick(t *testing.T) {
 		pollInterval = 500 * time.Millisecond
 	)
 	pool := newPoolWithSchema(t)
+	// The relay Run goroutine must be gone when the test ends. IgnoreCurrent
+	// excludes the pool's health-check and container goroutines created above.
+	defer goleak.VerifyNone(t, goleakopts.Default(goleak.IgnoreCurrent())...)
 	ctx := context.Background()
 	repo := outbox.NewRepository(pool)
 
@@ -301,6 +306,9 @@ func TestRelay_RunPartialBatchSleepsUntilNextTick(t *testing.T) {
 		pollInterval = 100 * time.Millisecond
 	)
 	pool := newPoolWithSchema(t)
+	// Run is synchronous here, but it spawns the drain loop internally; the
+	// leak check proves nothing survives the context deadline.
+	defer goleak.VerifyNone(t, goleakopts.Default(goleak.IgnoreCurrent())...)
 	ctx := context.Background()
 	repo := outbox.NewRepository(pool)
 
@@ -343,6 +351,8 @@ func (a *alwaysFailPublisher) Publish(_ context.Context, _ outbox.Message) error
 // batch failures and keeps polling until the context is cancelled.
 func TestRelay_RunCallsOnErrorAndKeepsPolling(t *testing.T) {
 	pool := newPoolWithSchema(t)
+	// The Run goroutine below must terminate with the context deadline.
+	defer goleak.VerifyNone(t, goleakopts.Default(goleak.IgnoreCurrent())...)
 	ctx := context.Background()
 	repo := outbox.NewRepository(pool)
 

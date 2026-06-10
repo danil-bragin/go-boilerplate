@@ -10,9 +10,11 @@ import (
 
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
+	"go-boilerplate/platform/testkit/goleakopts"
 
 	"github.com/stretchr/testify/require"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.uber.org/goleak"
 )
 
 // TestShutdownCommitsProcessedRecords proves that records successfully
@@ -27,6 +29,11 @@ func TestShutdownCommitsProcessedRecords(t *testing.T) {
 	}
 	broker, _ := kafkatest.Shared(t)
 	ctx := context.Background()
+
+	// Both consumers Run in goroutines and are closed below; nothing of the
+	// shutdown path may outlive the test (kgo client-lifetime loops and the
+	// shared-container goroutines are ignored via goleakopts).
+	defer goleak.VerifyNone(t, goleakopts.Default(goleak.IgnoreCurrent())...)
 
 	topic := uniqueName("shutdown-commit")
 	group := uniqueName("g-shut")
