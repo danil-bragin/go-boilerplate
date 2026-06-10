@@ -3,6 +3,7 @@ package apperr_test
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"testing"
 
 	"go-boilerplate/platform/apperr"
@@ -146,6 +147,22 @@ func TestPlatformCodes_Registered(t *testing.T) {
 			assert.Equal(t, tt.status, reg.Status)
 			assert.Equal(t, tt.permanent, reg.Permanent)
 		})
+	}
+}
+
+// TestRegistered_SortedSnapshot pins the snapshot API used by cmd/errgen:
+// one entry per registered code, sorted by code, each entry equal to what
+// Lookup returns for that code.
+func TestRegistered_SortedSnapshot(t *testing.T) {
+	snap := apperr.Registered()
+	require.Len(t, snap, len(apperr.Codes()))
+	require.True(t, sort.SliceIsSorted(snap, func(i, j int) bool {
+		return snap[i].Code < snap[j].Code
+	}), "Registered() must be sorted by code")
+	for _, e := range snap {
+		reg, ok := apperr.Lookup(e.Code)
+		require.True(t, ok, "snapshot code %s must be in the registry", e.Code)
+		assert.Equal(t, reg, e.Registration, "snapshot entry for %s", e.Code)
 	}
 }
 
