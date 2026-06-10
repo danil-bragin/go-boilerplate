@@ -63,7 +63,7 @@ func newLifecycleService(t *testing.T, drainGrace time.Duration) *Service {
 	dsn := pgtest.NewDSN(t)
 
 	cfg := Config{AdminAddr: "127.0.0.1:0"}
-	cfg.PG.DSN = dsn
+	cfg.PG.DSN = config.Secret(dsn)
 	cfg.Kafka.Brokers = []string{broker}
 	cfg.Telemetry.Enabled = false
 	cfg.Log.Level = "error"
@@ -212,7 +212,7 @@ func TestPyroscope_OptIn(t *testing.T) {
 	dsn := pgtest.NewDSN(t)
 
 	cfg := Config{AdminAddr: "127.0.0.1:0"}
-	cfg.PG.DSN = dsn
+	cfg.PG.DSN = config.Secret(dsn)
 	cfg.Kafka.Brokers = []string{broker}
 	cfg.Telemetry.Enabled = false
 	cfg.Log.Level = "error"
@@ -265,7 +265,7 @@ func TestStart_AdminBindFailureIsFatal(t *testing.T) {
 	dsn := pgtest.NewDSN(t)
 
 	cfg := Config{AdminAddr: ln.Addr().String()} // already taken
-	cfg.PG.DSN = dsn
+	cfg.PG.DSN = config.Secret(dsn)
 	cfg.Kafka.Brokers = []string{broker}
 	cfg.Telemetry.Enabled = false
 	cfg.Log.Level = "error"
@@ -299,7 +299,7 @@ func TestStart_AdminBindOptionalWarnsAndContinues(t *testing.T) {
 	dsn := pgtest.NewDSN(t)
 
 	cfg := Config{AdminAddr: ln.Addr().String(), AdminBindOptional: true}
-	cfg.PG.DSN = dsn
+	cfg.PG.DSN = config.Secret(dsn)
 	cfg.Kafka.Brokers = []string{broker}
 	cfg.Telemetry.Enabled = false
 	cfg.Log.Level = "error"

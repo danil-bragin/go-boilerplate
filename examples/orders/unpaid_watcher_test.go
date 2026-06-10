@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"go-boilerplate/examples/orders"
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/storage/pg"
@@ -157,7 +158,7 @@ func TestOrders_UnpaidWatcherEmitsTimeoutOnce(t *testing.T) {
 		_ = app.Stop(stopCtx)
 	})
 
-	pool, err := pg.New(ctx, pg.Config{DSN: dsn})
+	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool.Close(context.Background()) })
 

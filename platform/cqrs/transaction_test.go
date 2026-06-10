@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/storage/pg/pgtest"
@@ -21,7 +22,7 @@ func setupTxCounter(t *testing.T) *pg.Pool {
 	}
 	dsn := pgtest.NewDSN(t)
 	ctx := context.Background()
-	pool, err := pg.New(ctx, pg.Config{DSN: dsn})
+	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool.Close(ctx) })
 	_, err = pool.Writer().Exec(ctx, `create table counter (n int not null)`)

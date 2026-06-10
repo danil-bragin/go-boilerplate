@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/storage/pg/pgtest"
 
@@ -73,7 +74,7 @@ func newMetricsPool(t *testing.T) *pg.Pool {
 	dsn := pgtest.NewDSN(t)
 	ctx := context.Background()
 	require.NoError(t, pg.Migrate(ctx, dsn, migrationsInternal, "migrations"))
-	pool, err := pg.New(ctx, pg.Config{DSN: dsn})
+	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool.Close(ctx) })
 	return pool

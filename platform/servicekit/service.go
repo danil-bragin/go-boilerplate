@@ -167,7 +167,7 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 		// skips them (production: a dedicated migrate job owns schema changes).
 		// MigrateDSN honors PG_MIGRATE_URL — required behind PgBouncer.
 		if cfg.MigrateOnStart && migrations != nil && migrationsDir != "" {
-			if err := pg.Migrate(ctx, cfg.PG.MigrateDSN(), migrations, migrationsDir); err != nil {
+			if err := pg.Migrate(ctx, cfg.PG.MigrateDSN().Reveal(), migrations, migrationsDir); err != nil {
 				return nil, err
 			}
 		}

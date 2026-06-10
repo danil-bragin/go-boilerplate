@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/storage/pg"
@@ -58,7 +59,7 @@ func TestProjectionApp_StandaloneSmoke(t *testing.T) {
 		"message-id": orderID,
 	})
 
-	pool, err := pg.New(ctx, pg.Config{DSN: dsn})
+	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool.Close(context.Background()) })
 

@@ -1,6 +1,7 @@
 package pg_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -10,6 +11,30 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 )
+
+// TestConfig_DSNsAreRedactedInDumps: the DSN fields carry the database
+// password — a %+v / %v / %s dump of the config (panic logs, debug prints)
+// must never leak it.
+func TestConfig_DSNsAreRedactedInDumps(t *testing.T) {
+	cfg := pg.Config{
+		DSN:        "postgres://app:hunter2-writer@db:5432/app",
+		ReaderDSN:  "postgres://app:hunter2-reader@replica:5432/app",
+		MigrateURL: "postgres://app:hunter2-migrate@db:5432/app",
+	}
+
+	for _, dump := range []string{
+		fmt.Sprintf("%+v", cfg),
+		fmt.Sprintf("%v", cfg),
+		fmt.Sprintf("%#v", cfg),
+	} {
+		require.NotContains(t, dump, "hunter2", "config dump must not leak DSN passwords: %s", dump)
+		require.Contains(t, dump, "[REDACTED]")
+	}
+
+	// The raw values stay reachable for the pool/migration call sites.
+	require.Equal(t, "postgres://app:hunter2-writer@db:5432/app", cfg.DSN.Reveal())
+	require.Equal(t, "postgres://app:hunter2-migrate@db:5432/app", cfg.MigrateDSN().Reveal())
+}
 
 func TestConfig_BuildPoolConfigAppliesSizingAndDefaults(t *testing.T) {
 	cfg := pg.Config{

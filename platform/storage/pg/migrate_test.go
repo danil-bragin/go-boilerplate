@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/storage/pg/pgtest"
 
@@ -26,7 +27,7 @@ func TestMigrate_AppliesEmbeddedMigrations(t *testing.T) {
 	err := pg.Migrate(ctx, dsn, testMigrations, "testdata/migrations")
 	require.NoError(t, err)
 
-	pool, err := pg.New(ctx, pg.Config{DSN: dsn})
+	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool.Close(ctx) })
 
@@ -84,7 +85,7 @@ func TestMigrate_ConcurrentReplicasNoError(t *testing.T) {
 	require.Empty(t, errors, "all concurrent Migrate calls must return nil; got: %v", errors)
 
 	// The widget table must exist exactly once (migration applied correctly).
-	pool, err := pg.New(ctx, pg.Config{DSN: dsn})
+	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool.Close(ctx) })
 
@@ -137,10 +138,10 @@ func TestMigrate_LockAndMigrationShareSession(t *testing.T) {
 // locks and migrations need a direct Postgres connection).
 func TestConfig_MigrateDSN(t *testing.T) {
 	cfg := pg.Config{DSN: "postgres://pooled:5432/db"}
-	require.Equal(t, "postgres://pooled:5432/db", cfg.MigrateDSN(), "default: pool DSN")
+	require.Equal(t, "postgres://pooled:5432/db", cfg.MigrateDSN().Reveal(), "default: pool DSN")
 
 	cfg.MigrateURL = "postgres://direct:5432/db"
-	require.Equal(t, "postgres://direct:5432/db", cfg.MigrateDSN(), "PG_MIGRATE_URL wins when set")
+	require.Equal(t, "postgres://direct:5432/db", cfg.MigrateDSN().Reveal(), "PG_MIGRATE_URL wins when set")
 }
 
 // TestMigrate_MigrateURLOverrideHonored (integration): when MigrateURL is set
@@ -155,7 +156,7 @@ func TestMigrate_MigrateURLOverrideHonored(t *testing.T) {
 
 	cfg := pg.Config{
 		DSN:        "postgres://nobody:nope@127.0.0.1:1/void", // unreachable
-		MigrateURL: dsn,
+		MigrateURL: config.Secret(dsn),
 	}
-	require.NoError(t, pg.Migrate(ctx, cfg.MigrateDSN(), testMigrations, "testdata/migrations"))
+	require.NoError(t, pg.Migrate(ctx, cfg.MigrateDSN().Reveal(), testMigrations, "testdata/migrations"))
 }

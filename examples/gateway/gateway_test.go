@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/storage/pg"
@@ -922,7 +923,7 @@ func TestGateway_IdempotentRetrySinglePendingRow(t *testing.T) {
 	require.Equal(t, id1, id2)
 
 	ctx := context.Background()
-	pool, err := pg.New(ctx, pg.Config{DSN: os.Getenv("PG_DSN")})
+	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(os.Getenv("PG_DSN"))})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool.Close(ctx) })
 

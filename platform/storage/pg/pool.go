@@ -16,7 +16,7 @@ type Pool struct {
 
 // New builds writer (and optional reader) pools and verifies connectivity.
 func New(ctx context.Context, cfg Config) (*Pool, error) {
-	wc, err := cfg.buildPoolConfig(cfg.DSN)
+	wc, err := cfg.buildPoolConfig(cfg.DSN.Reveal())
 	if err != nil {
 		return nil, err
 	}
@@ -32,7 +32,7 @@ func New(ctx context.Context, cfg Config) (*Pool, error) {
 	p := &Pool{writer: writer, reader: writer}
 
 	if cfg.ReaderDSN != "" {
-		rc, err := cfg.buildReaderPoolConfig(cfg.ReaderDSN)
+		rc, err := cfg.buildReaderPoolConfig(cfg.ReaderDSN.Reveal())
 		if err != nil {
 			writer.Close()
 			return nil, err

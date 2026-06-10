@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/storage/pg/pgtest"
@@ -25,10 +26,10 @@ func twoPoolsSharedSchema(t *testing.T) (*pg.Pool, *pg.Pool) {
 	dsn := pgtest.NewDSN(t)
 	ctx := context.Background()
 	require.NoError(t, pg.Migrate(ctx, dsn, migrations, "migrations"))
-	pool1, err := pg.New(ctx, pg.Config{DSN: dsn})
+	pool1, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool1.Close(ctx) })
-	pool2, err := pg.New(ctx, pg.Config{DSN: dsn})
+	pool2, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool2.Close(ctx) })
 	return pool1, pool2

@@ -29,7 +29,7 @@ func TestConfig_MigrateOnStartDefaultTrue(t *testing.T) {
 func markerTableExists(t *testing.T, dsn string) bool {
 	t.Helper()
 	ctx := context.Background()
-	pool, err := pg.New(ctx, pg.Config{DSN: dsn})
+	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
 	require.NoError(t, err)
 	defer func() { _ = pool.Close(ctx) }()
 
@@ -46,7 +46,7 @@ func newMigrateService(t *testing.T, migrateOnStart bool) (string, *Service) {
 	dsn := pgtest.NewDSN(t)
 
 	cfg := Config{AdminAddr: "127.0.0.1:0", MigrateOnStart: migrateOnStart}
-	cfg.PG.DSN = dsn
+	cfg.PG.DSN = config.Secret(dsn)
 	cfg.Kafka.Brokers = []string{broker}
 	cfg.Telemetry.Enabled = false
 	cfg.Log.Level = "error"

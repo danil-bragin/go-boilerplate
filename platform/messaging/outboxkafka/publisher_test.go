@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/messaging/outbox"
@@ -42,7 +43,7 @@ func TestKafkaPublisher_DrainsOutboxToKafka(t *testing.T) {
 	require.NoError(t, pg.Migrate(ctx, dsn, testMigrations, "testdata/migrations"))
 
 	// 3. Build pool, Kafka client, producer, and ensure the topic exists.
-	pool, err := pg.New(ctx, pg.Config{DSN: dsn})
+	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool.Close(ctx) })
 
@@ -168,7 +169,7 @@ func TestKafkaPublisher_PublishBatch(t *testing.T) {
 
 	require.NoError(t, pg.Migrate(ctx, dsn, testMigrations, "testdata/migrations"))
 
-	pool, err := pg.New(ctx, pg.Config{DSN: dsn})
+	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool.Close(ctx) })
 
@@ -268,7 +269,7 @@ func TestKafkaPublisher_BrokerDownLeavesRowsUnpublished(t *testing.T) {
 	dsn := pgtest.NewDSN(t)
 	require.NoError(t, pg.Migrate(ctx, dsn, testMigrations, "testdata/migrations"))
 
-	pool, err := pg.New(ctx, pg.Config{DSN: dsn})
+	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool.Close(ctx) })
 

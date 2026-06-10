@@ -9,6 +9,7 @@ import (
 	"go-boilerplate/examples/orders/internal/app"
 	"go-boilerplate/examples/orders/internal/migrations"
 	"go-boilerplate/examples/orders/internal/transport"
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/messaging/outbox"
@@ -32,7 +33,7 @@ func newTestPool(t *testing.T) *pg.Pool {
 	dsn := pgtest.NewDSN(t)
 	ctx := context.Background()
 	require.NoError(t, pg.Migrate(ctx, dsn, migrations.FS, "sql"))
-	pool, err := pg.New(ctx, pg.Config{DSN: dsn})
+	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool.Close(ctx) })
 	return pool
