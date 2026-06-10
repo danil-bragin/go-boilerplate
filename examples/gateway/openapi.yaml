@@ -40,6 +40,11 @@ paths:
             Reuse: replaying a key with a DIFFERENT request body (customer_id,
             amount_cents or currency changed) is rejected with 409 Conflict —
             a key identifies one logical request, not a slot to overwrite.
+            Mismatch detection reads a replica when one is configured: a reuse
+            with a different body within the replication-lag window may return
+            202 instead of 409 — the conflicting request is still discarded
+            downstream (commands deduplicate by order id); only the 409 signal
+            is lost within that window.
             Note that order ids are derived deterministically from the
             (principal, key) pair — key alone when auth is disabled — so they
             are predictable to whoever knows both; treat keys as secrets
