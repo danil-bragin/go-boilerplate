@@ -5,6 +5,7 @@
 package pg
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"go-boilerplate/platform/config"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -170,6 +172,26 @@ func (c Config) buildSizedPoolConfig(dsn string, maxConns, minConns int32) (*pgx
 
 	if c.StatementCacheMode == StatementCacheModeDescribeExec {
 		pc.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
+	}
+
+	// UTC scanning: pgx's default TimestamptzCodec has no ScanLocation, so
+	// scanned timestamptz values carry time.Local — behavior silently
+	// depends on the host/container timezone. Registering the codec with
+	// ScanLocation=UTC on every connection (this builder serves BOTH the
+	// writer and reader pools) makes every scanned instant UTC, matching the
+	// repository-wide convention (platform/clock).
+	//
+	// Precision note: Postgres stores timestamptz with MICROsecond
+	// precision; Go time.Time carries nanoseconds. Values round-trip through
+	// the database truncated to µs — never compare stored timestamps for
+	// equality against in-memory ones without truncating to time.Microsecond.
+	pc.AfterConnect = func(_ context.Context, conn *pgx.Conn) error {
+		conn.TypeMap().RegisterType(&pgtype.Type{
+			Name:  "timestamptz",
+			OID:   pgtype.TimestamptzOID,
+			Codec: &pgtype.TimestamptzCodec{ScanLocation: time.UTC},
+		})
+		return nil
 	}
 
 	return pc, nil
