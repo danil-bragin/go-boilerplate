@@ -71,9 +71,11 @@ func buildCache(cfg Config, svc *servicekit.Service) cqrs.Cache {
 }
 
 // buildSSE builds the order-status SSE streamer. When REDIS_ADDRS is set a
-// dedicated rueidis client carries the projection's status pub/sub (the
-// cache's client is encapsulated inside cache.Cache, and rueidis multiplexes
-// one connection per address, so a second client is cheap). When Redis is
+// dedicated rueidis client carries the status broadcast pub/sub (the cache's
+// client is encapsulated inside cache.Cache, and rueidis multiplexes one
+// connection per address, so a second client is cheap): the streamer holds
+// ONE shared subscription per replica and fans updates out to open streams
+// in-process — stream count never adds Redis connections. When Redis is
 // unconfigured or unreachable the streamer degrades to polling the
 // projection store (sse.Streamer handles a nil client).
 func buildSSE(cfg Config, svc *servicekit.Service) *sse.Streamer {
