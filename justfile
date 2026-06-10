@@ -170,3 +170,30 @@ hooks:
 # Local snapshot release via goreleaser (requires goreleaser; snapshot = no publish)
 release:
     goreleaser release --snapshot --clean
+
+# ── PGO (profile-guided optimization) ─────────────────────────────────────────
+
+# Fetch a CPU profile from Pyroscope into the service's main package as default.pgo.
+# go build (1.21+) defaults to -pgo=auto: it picks up default.pgo from the main
+# package dir automatically; when the file is absent builds are plain non-PGO.
+# Degrades gracefully: if Pyroscope is down/empty, nothing is overwritten.
+# Usage: just pgo-fetch gateway [addr] [window]   (addr default http://localhost:4040)
+pgo-fetch svc addr='http://localhost:4040' window='24h':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    svc='{{svc}}'
+    dir="examples/$svc/cmd/$svc"
+    [[ -d "$dir" ]] || dir="cmd/$svc"
+    [[ -d "$dir" ]] || { echo "pgo-fetch: no main package at examples/$svc/cmd/$svc or cmd/$svc" >&2; exit 1; }
+    # Pyroscope render API: /pyroscope/render?query=<profile-type>{service_name="<app>"}&from=…&format=pprof
+    # The app name is Telemetry.ServiceName (OTEL_SERVICE_NAME), set by servicekit's pyroscope-go wiring.
+    url='{{addr}}/pyroscope/render?query=process_cpu:cpu:nanoseconds:cpu:nanoseconds%7Bservice_name%3D%22'"$svc"'%22%7D&from=now-{{window}}&until=now&format=pprof'
+    tmp="$(mktemp)"
+    if ! curl -fsS --max-time 30 "$url" -o "$tmp" || [[ ! -s "$tmp" ]]; then
+        rm -f "$tmp"
+        echo "pgo-fetch: Pyroscope unreachable or returned no profile data ({{addr}})." >&2
+        echo "pgo-fetch: keeping existing $dir/default.pgo (if any); builds fall back to non-PGO." >&2
+        exit 1
+    fi
+    mv "$tmp" "$dir/default.pgo"
+    echo "pgo-fetch: wrote $dir/default.pgo ($(wc -c < "$dir/default.pgo" | tr -d ' ') bytes) — picked up automatically by go build / goreleaser (-pgo=auto)"

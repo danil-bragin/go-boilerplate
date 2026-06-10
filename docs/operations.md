@@ -463,3 +463,52 @@ matching `DRAIN_GRACE`, `GOMEMLIMIT` from the memory limit) and a migrate Job
 repo's code actually implements; secrets management, network policies, TLS,
 and registry plumbing are deliberately out of scope. Validate with
 `kubectl apply --dry-run=client -k deploy/k8s/`.
+
+---
+
+## PGO (profile-guided optimization)
+
+Since Go 1.21, `go build` defaults to `-pgo=auto`: if a file named
+`default.pgo` exists in the **main package directory**, the compiler uses it
+to guide inlining/devirtualization (typical win: a few percent CPU on hot
+services); if the file is absent, the build is a plain non-PGO build. Nothing
+in the build pipeline (Dockerfile, goreleaser, CI) needs flags — presence of
+the file is the switch, absence can never break a build.
+
+### Producing a profile
+
+Production-shaped profiles come from the continuous profiler: set
+`PYROSCOPE_ADDR` on the service (servicekit starts `pyroscope-go`; the
+application name is `Telemetry.ServiceName`, i.e. `OTEL_SERVICE_NAME`). Then:
+
+```bash
+just pgo-fetch gateway                          # local pyroscope, last 24h
+just pgo-fetch gateway http://pyroscope:4040 7d # explicit addr + window
+```
+
+The recipe calls the Pyroscope render API and installs the result as the main
+package's `default.pgo`:
+
+```
+GET <addr>/pyroscope/render
+      ?query=process_cpu:cpu:nanoseconds:cpu:nanoseconds{service_name="<svc>"}
+      &from=now-<window>&until=now&format=pprof
+  →  examples/<svc>/cmd/<svc>/default.pgo   (or cmd/<svc>/ for repo-level commands)
+```
+
+If Pyroscope is unreachable or has no samples, the recipe exits non-zero
+**without touching an existing `default.pgo`** — builds simply continue with
+the previous profile or without PGO. Any pprof CPU profile works as input
+(e.g. `curl <admin>/debug/pprof/profile?seconds=30` under load) if you don't
+run Pyroscope.
+
+### Workflow recommendation
+
+1. Commit `default.pgo` per service (it is an opaque, mergeable-by-replace
+   binary; Go tolerates stale profiles — they just optimize yesterday's hot
+   paths). Refresh on a cadence (e.g. before each release) with
+   `just pgo-fetch`, not on every commit.
+2. Profile the PROFILE SOURCE deployment, not a laptop: PGO amplifies
+   whatever workload shaped the profile.
+3. Verify the build picked it up: `go version -m <binary> | grep -- -pgo`
+   shows the build setting.

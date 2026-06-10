@@ -8,6 +8,13 @@
 #
 # This workflow is dormant until a GitHub remote is added and a `v*` tag is
 # pushed (see .github/workflows/release.yml).
+#
+# PGO: no per-build flag needed. Since Go 1.21 `go build` defaults to
+# -pgo=auto, which uses a `default.pgo` profile found in the MAIN package
+# directory (e.g. examples/gateway/cmd/gateway/default.pgo) and silently
+# builds without PGO when the file is absent — so these builds never break
+# on a missing profile. Populate profiles with `just pgo-fetch <svc>`
+# (Pyroscope render API → default.pgo); see docs/operations.md § PGO.
 
 version: 2
 
