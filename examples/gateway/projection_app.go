@@ -65,11 +65,17 @@ func NewProjectionApp(ctx context.Context) (*ProjectionApp, error) {
 	// committed write (nil cache = no-op, graceful degradation).
 	appCache := buildCache(cfg, svc)
 
+	// SSE status notifications also work the same as in embedded mode: the
+	// standalone projection PUBLISHes status changes to Redis; the gateway
+	// edge instances hold the SSE subscriptions. With no Redis configured
+	// Notify is a no-op and edges fall back to store polling.
+	streamer := buildSSE(cfg, svc)
+
 	var consumeOpts []consume.Option
 	if sd := svc.Serde(); sd != nil {
 		consumeOpts = append(consumeOpts, consume.WithSerde(sd))
 	}
-	projHandler := projection.NewHandler(svc.Pool(), svc.Logger(), appCache, consumeOpts...)
+	projHandler := projection.NewHandler(svc.Pool(), svc.Logger(), appCache, streamer.Notify, consumeOpts...)
 	if err := svc.AddConsumer(
 		ctx, "gateway-projection",
 		[]string{cfg.OrdersEventsTopic, cfg.PaymentsEventsTopic},

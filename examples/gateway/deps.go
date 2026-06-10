@@ -11,6 +11,8 @@ import (
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/servicekit"
 	"go-boilerplate/platform/storage/blob"
+
+	"go-boilerplate/examples/gateway/internal/sse"
 	"go-boilerplate/platform/storage/cache"
 	"go-boilerplate/platform/web/ratelimit"
 
@@ -66,6 +68,40 @@ func buildCache(cfg Config, svc *servicekit.Service) cqrs.Cache {
 		return c.HealthCheck(ctx)
 	}))
 	return c
+}
+
+// buildSSE builds the order-status SSE streamer. When REDIS_ADDRS is set a
+// dedicated rueidis client carries the projection's status pub/sub (the
+// cache's client is encapsulated inside cache.Cache, and rueidis multiplexes
+// one connection per address, so a second client is cheap). When Redis is
+// unconfigured or unreachable the streamer degrades to polling the
+// projection store (sse.Streamer handles a nil client).
+func buildSSE(cfg Config, svc *servicekit.Service) *sse.Streamer {
+	var client rueidis.Client
+	if len(cfg.Cache.RedisAddrs) > 0 && cfg.Cache.RedisAddrs[0] != "" {
+		c, err := rueidis.NewClient(rueidis.ClientOption{
+			InitAddress: cfg.Cache.RedisAddrs,
+		})
+		if err != nil {
+			svc.Logger().Warn(
+				"gateway: SSE Redis unavailable, falling back to projection-store polling",
+				"error", err,
+				"redis_addrs", cfg.Cache.RedisAddrs,
+			)
+		} else {
+			client = c
+			svc.Closer().Add("sse-redis", func(context.Context) error {
+				c.Close()
+				return nil
+			})
+		}
+	} else {
+		svc.Logger().Info("gateway: REDIS_ADDRS not set — SSE falls back to projection-store polling")
+	}
+	return sse.New(client, svc.Pool(), svc.Logger(), cfg.AuthDisabled,
+		sse.WithHeartbeat(cfg.SSEHeartbeat),
+		sse.WithPollInterval(cfg.SSEPollInterval),
+	)
 }
 
 // buildBlob tries to build a MinIO-backed object store for order attachments.

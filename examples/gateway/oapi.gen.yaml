@@ -4,3 +4,10 @@ generate:
   models: true
   chi-server: true
   strict-server: true
+output-options:
+  # streamOrderEvents (GET /v1/orders/{id}/events) is a hand-mounted SSE
+  # streaming handler (internal/sse) — the generated strict-handler model
+  # cannot represent an unbounded text/event-stream response, so the
+  # operation is documented in openapi.yaml but excluded from codegen.
+  exclude-operation-ids:
+    - streamOrderEvents

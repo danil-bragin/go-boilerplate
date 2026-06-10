@@ -31,6 +31,11 @@ var (
 	OrderPaymentTimedOutEventType = consume.EventTypeFor[*ordersv1.OrderPaymentTimedOut](1)
 )
 
+// StatusNotifier is called AFTER a status write committed, with the order id
+// whose status (possibly) changed — the gateway wires sse.Streamer.Notify
+// here so SSE subscribers receive live updates. May be nil (no-op).
+type StatusNotifier func(ctx context.Context, orderID string)
+
 // NewHandler returns a kafka.HandlerFunc that handles both "orders.events"
 // and "payments.events" records, routing on the versioned "event-type"
 // header via consume.Typed (which also supplies inbox dedup, the uniform
@@ -40,8 +45,15 @@ var (
 // cache may be nil (gateway started without Redis). When non-nil, every
 // successful projection write busts the order-view cache entry AFTER the
 // inbox transaction commits, so readers on every instance see the new state
-// instead of a stale cached view.
-func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, opts ...consume.Option) kafka.HandlerFunc {
+// instead of a stale cached view. notify (may be nil) runs in the same
+// post-commit hook and pushes the change to SSE subscribers.
+func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify StatusNotifier, opts ...consume.Option) kafka.HandlerFunc {
+	committed := func(ctx context.Context, orderID string) {
+		bustOrderCache(ctx, cache, logger, orderID)
+		if notify != nil {
+			notify(ctx, orderID)
+		}
+	}
 	opts = append([]consume.Option{consume.WithLogger(logger)}, opts...)
 	return consume.New(pool, consumerGroup, opts...).Handler(
 		consume.TypedFor(1,
@@ -63,7 +75,7 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, opts ...co
 				return nil
 			},
 			consume.OnCommitted(func(ctx context.Context, evt *ordersv1.OrderCreated) {
-				bustOrderCache(ctx, cache, logger, evt.GetOrderId())
+				committed(ctx, evt.GetOrderId())
 			}),
 		),
 		consume.TypedFor(1,
@@ -89,7 +101,7 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, opts ...co
 				return nil
 			},
 			consume.OnCommitted(func(ctx context.Context, evt *ordersv1.PaymentProcessed) {
-				bustOrderCache(ctx, cache, logger, evt.GetOrderId())
+				committed(ctx, evt.GetOrderId())
 			}),
 		),
 		consume.TypedFor(1,
@@ -112,7 +124,7 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, opts ...co
 				return nil
 			},
 			consume.OnCommitted(func(ctx context.Context, evt *ordersv1.OrderPaymentTimedOut) {
-				bustOrderCache(ctx, cache, logger, evt.GetOrderId())
+				committed(ctx, evt.GetOrderId())
 			}),
 		),
 		consume.TypedFor(1,
@@ -136,7 +148,7 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, opts ...co
 				return nil
 			},
 			consume.OnCommitted(func(ctx context.Context, evt *ordersv1.PaymentFailed) {
-				bustOrderCache(ctx, cache, logger, evt.GetOrderId())
+				committed(ctx, evt.GetOrderId())
 			}),
 		),
 	)

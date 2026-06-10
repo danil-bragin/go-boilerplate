@@ -274,6 +274,85 @@ The gateway applies a per-client-IP token-bucket rate limiter at the edge. Confi
 
 ---
 
+## Order-status streaming (SSE)
+
+`GET /v1/orders/{id}/events` streams the order lifecycle
+(`pending → created → paid | payment_failed | payment_timeout`) as
+Server-Sent Events. Browser clients use the native `EventSource`; curl:
+
+```bash
+curl -N -H "Authorization: Bearer $(just token)" \
+  http://localhost:8080/v1/orders/<id>/events
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `GATEWAY_SSE_HEARTBEAT` | `15s` | Keep-alive comment interval (keep below any LB idle timeout) |
+| `GATEWAY_SSE_POLL_INTERVAL` | `2s` | Store-polling cadence when Redis is unavailable |
+
+**Transport:** the projection publishes every committed status change to the
+Redis channel `orders:status:<id>` (it re-reads the row first, so the payload
+is always the authoritative current status); each connected client holds one
+Redis subscription. With `REDIS_ADDRS` unset or Redis down, the stream
+degrades to polling the projection store every `GATEWAY_SSE_POLL_INTERVAL` —
+same events, higher latency. The standalone projection deployment
+(`cmd/projection`) publishes to the same channels, so SSE works in both
+embedded and split topologies.
+
+**Reconnects:** events carry a monotone id (status ordinal). `EventSource`
+re-sends it as `Last-Event-ID` on reconnect and the gateway replays the
+current status only when newer — reconnect storms cost one row read each, no
+duplicate events.
+
+**Edge budgets:** the SSE route group is deliberately exempt from
+`http.TimeoutHandler` (it buffers and kills streaming responses) and the
+request body cap (GET, body never read). The gateway server is therefore
+built `WithoutTimeout`/`WithoutMaxBytes`, and the JSON API and attachments
+groups re-apply both with the same `HTTP_HANDLER_TIMEOUT` /
+`HTTP_MAX_BODY_BYTES` values — the `WithoutMaxBytes` startup WARN is the
+expected audit reminder for the SSE exemption. On graceful shutdown active
+streams are closed immediately (server `OnShutdown` hook); clients reconnect
+to another instance and resume.
+
+---
+
+## Background workers (periodic & single-active)
+
+Services register ticker-driven background work via
+`servicekit.AddPeriodicWorker(name, interval, jitter, singleActive, fn)`:
+
+- **interval** — the tick cadence. **jitter** adds a uniformly random extra
+  delay in `[0, jitter)` per tick so replicas don't hammer shared
+  dependencies in lock-step (`0` = none).
+- **fn errors are logged, never fatal** — the loop keeps ticking. A worker
+  that wants to stop the service should not exist; workers are maintenance
+  loops.
+- **singleActive=true** runs the loop under `pg.RunAsLeader`: a session-scoped
+  Postgres advisory lock (key `leader:<name>:<schema>`) elects ONE instance
+  across all replicas; the others stay hot-standby and re-try every second.
+  The leader health-checks its lock connection every second — on a lost
+  session the worker's context is cancelled and leadership is re-contested
+  (failover within a few seconds). This is leader *election*, not fencing:
+  a brief overlap window (≤ one health-check interval) is possible, so the
+  worker body must still be idempotent (CAS guards, upserts).
+- **singleActive=false** runs the worker on EVERY instance — right for
+  naturally concurrency-safe loops.
+
+The harness uses it internally:
+
+| Worker | singleActive | Why |
+|---|---|---|
+| `inbox-cleanup` (`INBOX_CLEANUP_INTERVAL`) | `false` | age-based DELETE is idempotent; concurrent replicas delete disjoint rows |
+| `audit-cleanup` (`AUDIT_CLEANUP_INTERVAL`) | `false` | same idempotent DELETE |
+| `unpaid-watcher` (orders, `ORDERS_UNPAID_CHECK_INTERVAL`) | `true` | one scanner is enough; the CAS guard covers the overlap window |
+
+The outbox relay keeps its own (pre-existing) advisory-lock leader mode
+(`OUTBOX_SINGLE_ACTIVE`, lock key `outbox_relay:<schema>`): its leadership is
+re-verified *between batches* of a drain — a tighter dual-publish bound than
+the generic worker offers — so it intentionally does not use `RunAsLeader`.
+
+---
+
 ## JWKS outage semantics (gateway auth)
 
 When `GATEWAY_AUTH_DISABLED=false`, the gateway verifies bearer JWTs against the IdP's JWKS. The key set is fetched once at startup (startup FAILS fast if the initial fetch cannot complete) and then cached and refreshed in the background (`jwk.Cache`). During an IdP/JWKS outage:

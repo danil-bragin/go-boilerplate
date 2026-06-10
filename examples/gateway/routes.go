@@ -6,6 +6,7 @@ import (
 
 	"go-boilerplate/examples/gateway/internal/api"
 	"go-boilerplate/examples/gateway/internal/attachments"
+	"go-boilerplate/examples/gateway/internal/sse"
 	"go-boilerplate/platform/featureflags"
 	"go-boilerplate/platform/observability/log"
 	"go-boilerplate/platform/security/auth"
@@ -73,6 +74,11 @@ func applyEdgeSecurity(cfg Config, mux chi.Router, lim ratelimit.Limiter, truste
 }
 
 // mountAPIRoutes wires the strict handler with optional auth middleware.
+//
+// The gateway server is built WithoutTimeout/WithoutMaxBytes (the SSE route
+// must stream past both — see mountSSERoutes), so the JSON API group
+// re-applies the standard per-request Timeout and body cap here with the
+// same configured values.
 func mountAPIRoutes(
 	cfg Config,
 	mux chi.Router,
@@ -91,7 +97,10 @@ func mountAPIRoutes(
 	// EXCEPT /healthz: load-balancer health probes carry no credentials, and a
 	// 401 on the health route makes every probe fail (half-dead pod).
 	chiOpts := api.ChiServerOptions{
-		BaseRouter: mux,
+		BaseRouter: mux.With(
+			httpserver.MaxBytes(cfg.HTTP.MaxBodyBytes),
+			httpserver.Timeout(cfg.HTTP.HandlerTimeout),
+		),
 	}
 	if !cfg.AuthDisabled {
 		authMiddleware := auth.Middleware(verifier)
@@ -116,6 +125,8 @@ func mountAPIRoutes(
 //
 // Attachment routes are mounted behind the same auth middleware so that
 // upload/download requires a valid token (same RBAC boundary as POST /v1/orders).
+// Like the JSON API group they re-apply the standard Timeout and body cap
+// (the server itself is built WithoutTimeout/WithoutMaxBytes for SSE).
 func mountAttachmentRoutes(
 	cfg Config,
 	httpSrv *httpserver.Server,
@@ -127,14 +138,15 @@ func mountAttachmentRoutes(
 	if objStore == nil || flags == nil {
 		return
 	}
-	var attachRouter chi.Router
+	attachRouter := httpSrv.Mux().With(
+		httpserver.MaxBytes(cfg.HTTP.MaxBodyBytes),
+		httpserver.Timeout(cfg.HTTP.HandlerTimeout),
+	)
 	if !cfg.AuthDisabled {
 		attachMiddleware := auth.Middleware(verifier)
-		attachRouter = httpSrv.Mux().With(func(next http.Handler) http.Handler {
+		attachRouter = attachRouter.With(func(next http.Handler) http.Handler {
 			return attachMiddleware(next)
 		})
-	} else {
-		attachRouter = httpSrv.Mux()
 	}
 	// Ownership: only the order's customer (or an admin) may touch its
 	// attachments. Backed by the gateway read model (orders_read.customer_id).
@@ -143,4 +155,28 @@ func mountAttachmentRoutes(
 		opts = append(opts, attachments.WithOwnerLookup(attachments.StoreOwnerLookup(pool)))
 	}
 	attachments.New(objStore, flags.Bool, opts...).Mount(attachRouter)
+}
+
+// mountSSERoutes mounts GET /v1/orders/{id}/events behind the same auth
+// middleware as the rest of the API.
+//
+// DELIBERATELY exempt from http.TimeoutHandler and MaxBytes (the server is
+// built WithoutTimeout/WithoutMaxBytes; this group re-applies neither):
+// TimeoutHandler buffers the whole response and cuts it at the deadline —
+// fatal for an endless stream — and the body cap is moot on a GET whose body
+// is never read. The streamer's own heartbeat + client-close detection bound
+// the connection instead.
+func mountSSERoutes(cfg Config, httpSrv *httpserver.Server, verifier auth.Verifier, streamer *sse.Streamer) {
+	var r chi.Router = httpSrv.Mux()
+	if !cfg.AuthDisabled {
+		sseMiddleware := auth.Middleware(verifier)
+		r = r.With(func(next http.Handler) http.Handler {
+			return sseMiddleware(next)
+		})
+	}
+	r.Get("/v1/orders/{id}/events", streamer.Stream)
+
+	// End active streams as soon as graceful shutdown begins; otherwise open
+	// connections would hold http.Server.Shutdown for the teardown budget.
+	httpSrv.OnShutdown(streamer.Shutdown)
 }

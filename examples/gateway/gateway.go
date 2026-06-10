@@ -155,6 +155,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	appCache := buildCache(cfg, svc)
 	objStore := buildBlob(ctx, cfg, svc)
 	flags := buildFeatureFlags(cfg, svc)
+	streamer := buildSSE(cfg, svc)
 
 	// Build the per-IP rate limiter (memory or Redis).
 	limiter := buildLimiter(cfg, svc)
@@ -173,7 +174,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		if sd := svc.Serde(); sd != nil {
 			consumeOpts = append(consumeOpts, consume.WithSerde(sd))
 		}
-		projHandler := projection.NewHandler(svc.Pool(), svc.Logger(), appCache, consumeOpts...)
+		projHandler := projection.NewHandler(svc.Pool(), svc.Logger(), appCache, streamer.Notify, consumeOpts...)
 		if err := svc.AddConsumer(
 			ctx, "gateway-projection",
 			[]string{cfg.OrdersEventsTopic, cfg.PaymentsEventsTopic},
@@ -189,7 +190,14 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	// AddHTTPServer owns its lifecycle: Start binds it (bind failure fatal,
 	// like the admin server) and teardown shuts it down right after the
 	// drain-gate — before consumers are cancelled and kafka/pg close.
-	httpSrv := httpserver.New(cfg.HTTP)
+	//
+	// WithoutTimeout/WithoutMaxBytes: the SSE route streams indefinitely, so
+	// the server-wide http.TimeoutHandler and body cap are lifted to
+	// per-route-group control — the JSON API and attachments groups re-apply
+	// both with the same configured values; only the SSE group is exempt
+	// (see mountSSERoutes). The WithoutMaxBytes startup WARN is the expected
+	// audit reminder for that exemption.
+	httpSrv := httpserver.New(cfg.HTTP, httpserver.WithoutTimeout(), httpserver.WithoutMaxBytes())
 	svc.AddHTTPServer("public", httpSrv)
 	a.server = httpSrv
 
@@ -211,6 +219,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	applyEdgeSecurity(cfg, httpSrv.Mux(), limiter, trustedPrefixes)
 	mountAPIRoutes(cfg, httpSrv.Mux(), apiServer, a.verifier)
 	mountAttachmentRoutes(cfg, httpSrv, a.verifier, objStore, flags, svc.Pool())
+	mountSSERoutes(cfg, httpSrv, a.verifier, streamer)
 
 	return a, nil
 }

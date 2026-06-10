@@ -28,7 +28,7 @@ import (
 func TestNewHandler_SkipsUnknownEventTypes(t *testing.T) {
 	t.Parallel()
 	broker := fakes.NewBroker()
-	handler := projection.NewHandler(nil, slog.Default(), nil, consume.WithoutInbox())
+	handler := projection.NewHandler(nil, slog.Default(), nil, nil, consume.WithoutInbox())
 	broker.Subscribe("orders.events", handler)
 	broker.Subscribe("payments.events", handler)
 
@@ -56,7 +56,7 @@ func TestNewHandler_SkipsUnknownEventTypes(t *testing.T) {
 func TestNewHandler_RoutesAllFourEventTypes(t *testing.T) {
 	t.Parallel()
 	broker := fakes.NewBroker()
-	handler := projection.NewHandler(nil, slog.Default(), nil, consume.WithoutInbox())
+	handler := projection.NewHandler(nil, slog.Default(), nil, nil, consume.WithoutInbox())
 	broker.Subscribe("orders.events", handler)
 	broker.Subscribe("payments.events", handler)
 

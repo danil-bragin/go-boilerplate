@@ -33,11 +33,12 @@ func (s *Service) Start() error {
 	s.runCtx = runCtx
 	s.cancelRun = cancelRun
 
-	// Launch inbox cleanup if configured (interval > 0). All services that use
-	// the harness migrate the inbox table, so this is safe to launch
+	// Register inbox cleanup if configured (interval > 0). All services that
+	// use the harness migrate the inbox table, so this is safe to launch
 	// unconditionally. Future services with no inbox table will simply log a
 	// harmless DELETE error; set InboxCleanupInterval=0 to suppress it.
-	s.startInboxCleanup(runCtx)
+	// Must happen BEFORE the goroutine launch loop below.
+	s.registerInboxCleanup()
 
 	for _, g := range s.goroutines {
 		fn := g // capture

@@ -1,6 +1,6 @@
 package servicekit
 
-// White-box test for the inbox-cleanup goroutine lifecycle. Runs in -short
+// White-box test for the inbox-cleanup worker lifecycle. Runs in -short
 // mode: the cleanup loop only touches the pool on its first tick, so a long
 // interval plus a zero-value pool exercises the goroutine accounting without
 // any container.
@@ -14,11 +14,12 @@ import (
 	"go-boilerplate/platform/storage/pg"
 )
 
-// TestStartInboxCleanup_TrackedByWaitGroup asserts the teardown invariant:
-// the inbox-cleanup goroutine must be tracked by s.wg, because the
-// consumers-cancel closer waits on s.wg BEFORE the pg closer runs — an
-// untracked cleanup goroutine could race its DELETE against pool teardown.
-func TestStartInboxCleanup_TrackedByWaitGroup(t *testing.T) {
+// TestRegisterInboxCleanup_TrackedByWaitGroup asserts the teardown invariant:
+// the inbox-cleanup worker must be registered as a harness goroutine and
+// therefore tracked by s.wg when Start launches it — the consumers-cancel
+// closer waits on s.wg BEFORE the pg closer runs, so an untracked cleanup
+// goroutine could race its DELETE against pool teardown.
+func TestRegisterInboxCleanup_TrackedByWaitGroup(t *testing.T) {
 	s := &Service{
 		cfg: Config{
 			InboxCleanupInterval: time.Hour, // first tick far in the future
@@ -28,9 +29,20 @@ func TestStartInboxCleanup_TrackedByWaitGroup(t *testing.T) {
 		pool:   &pg.Pool{}, // never dereferenced before the first tick
 	}
 
+	s.registerInboxCleanup()
+	if len(s.goroutines) != 1 {
+		t.Fatalf("registerInboxCleanup must register exactly one goroutine, got %d", len(s.goroutines))
+	}
+
+	// Launch it the way Start does: wg-tracked with the run context.
 	runCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s.startInboxCleanup(runCtx)
+	fn := s.goroutines[0]
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		fn(runCtx)
+	}()
 
 	waited := make(chan struct{})
 	go func() {
@@ -53,5 +65,29 @@ func TestStartInboxCleanup_TrackedByWaitGroup(t *testing.T) {
 	case <-waited:
 	case <-time.After(5 * time.Second):
 		t.Fatal("cleanup goroutine did not exit after runCtx cancellation")
+	}
+}
+
+// TestRegisterInboxCleanup_DisabledWhenIntervalZero asserts that a zero
+// interval (or missing pool) registers nothing.
+func TestRegisterInboxCleanup_DisabledWhenIntervalZero(t *testing.T) {
+	s := &Service{
+		cfg:    Config{InboxCleanupInterval: 0},
+		logger: slog.Default(),
+		pool:   &pg.Pool{},
+	}
+	s.registerInboxCleanup()
+	if len(s.goroutines) != 0 {
+		t.Fatalf("interval=0 must register no goroutine, got %d", len(s.goroutines))
+	}
+
+	s2 := &Service{
+		cfg:    Config{InboxCleanupInterval: time.Hour},
+		logger: slog.Default(),
+		pool:   nil, // WithoutPG
+	}
+	s2.registerInboxCleanup()
+	if len(s2.goroutines) != 0 {
+		t.Fatalf("nil pool must register no goroutine, got %d", len(s2.goroutines))
 	}
 }
