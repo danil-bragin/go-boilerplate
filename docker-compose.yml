@@ -219,7 +219,10 @@ services:
   # ── Observability ───────────────────────────────────────────────────────────
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.111.0
+    # ≥0.153 required: the prometheusexporter converts OTLP exponential
+    # histograms to Prometheus NATIVE histograms (0.111 silently dropped the
+    # native representation). Verified live — see docs/operations.md §Latency tails.
+    image: otel/opentelemetry-collector-contrib:0.153.0
     restart: unless-stopped
     profiles: ["observability"]
     volumes:
@@ -248,7 +251,12 @@ services:
       - "14317:4317"   # OTLP gRPC (host-mapped to avoid conflict with collector)
 
   prometheus:
-    image: prom/prometheus:v2.55.1
+    # v3.x required for native-histogram ingestion (stable since v3.9; scraping
+    # is enabled via `scrape_native_histograms: true` in deploy/prometheus.yml,
+    # the v2-era --enable-feature=native-histograms flag is a no-op now).
+    # NOTE: the v3 image no longer ships console templates — the v2
+    # --web.console.* flags would fail startup and were removed.
+    image: prom/prometheus:v3.12.0
     restart: unless-stopped
     profiles: ["observability"]
     volumes:
@@ -260,8 +268,6 @@ services:
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
-      - --web.console.libraries=/etc/prometheus/console_libraries
-      - --web.console.templates=/etc/prometheus/consoles
       - --web.enable-lifecycle
 
   grafana:

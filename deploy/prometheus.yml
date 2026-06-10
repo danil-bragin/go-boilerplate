@@ -1,6 +1,14 @@
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  # Ingest Prometheus NATIVE histograms (the apps emit OTel exponential
+  # histograms; the collector's prometheus exporter — and the apps' own
+  # /metrics endpoints — expose them as native histograms over the protobuf
+  # scrape format). Setting this also flips the scrape-protocol negotiation
+  # order to prefer PrometheusProto (Prometheus ≥3.8). Classic-bucket
+  # fallback: TELEMETRY_CLASSIC_HISTOGRAMS=true on the apps — no Prometheus
+  # change needed, explicit *_bucket series ingest either way.
+  scrape_native_histograms: true
 
 # Alerting rules — compose mounts deploy/prometheus/rules.yaml at this path.
 rule_files:
@@ -28,6 +36,11 @@ scrape_configs:
   # collector path above; primarily provides the `up` series that the
   # ServiceFlapping alert (deploy/prometheus/rules.yaml) watches. Targets are
   # down (not flapping) when the `apps` compose profile is not running.
+  # This lane also serves NATIVE histograms: the OTel Go prometheus exporter
+  # converts exponential histograms to client_golang native histograms, which
+  # the protobuf scrape (scrape_native_histograms above) ingests — verified
+  # live against otel/exporters/prometheus v0.66 + Prometheus v3.12.0. Note
+  # these series carry NO otel_ namespace (e.g. http_server_duration_milliseconds).
   - job_name: apps
     static_configs:
       - targets:
