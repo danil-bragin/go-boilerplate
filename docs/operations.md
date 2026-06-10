@@ -11,7 +11,7 @@ only the services they actually need.
 
 | Profile | Services | Command |
 |---|---|---|
-| _(none — core)_ | postgres, redpanda, redpanda-console, redis, minio, minio-setup, keycloak | `just up` |
+| _(none — core)_ | postgres, redpanda, redpanda-console, redis, seaweedfs, seaweedfs-setup, keycloak | `just up` |
 | `observability` | core + otel-collector, jaeger, prometheus, grafana, pyroscope | `just up-obs` |
 | `apps` | core + gateway, orders, payments, notifications | `just up-apps` |
 | `observability` + `apps` | Everything | `just up-full` |
@@ -19,8 +19,8 @@ only the services they actually need.
 ### Notes
 
 - **Core is always included.** Profile-less services (postgres, redpanda, redis,
-  minio, keycloak) start with any `docker compose up` invocation regardless of
-  which profiles are active.
+  seaweedfs, keycloak) start with any `docker compose up` invocation regardless
+  of which profiles are active.
 - **Apps are independent of observability.** The four application services
   (`gateway`, `orders`, `payments`, `notifications`) do not `depends_on` any
   observability service.  When the observability profile is absent, the apps
@@ -76,12 +76,15 @@ the container is given a fractional CPU quota (e.g. `cpus: "0.5"`) the Linux
 CFS scheduler throttles the container when it exceeds the quota, causing
 stop-the-world GC pauses and tail-latency spikes that are hard to diagnose.
 
-**Solution.** Every `cmd/*/main.go` blank-imports
+**Solution.** `platform/servicekit/main.go` blank-imports
 `go.uber.org/automaxprocs`:
 
 ```go
 import _ "go.uber.org/automaxprocs"
 ```
+
+The import lives in `servicekit.Main` — the single process entry point every
+service binary goes through — so one import sizes every binary correctly.
 
 `automaxprocs` reads the cgroup CPU quota at startup and calls
 `runtime.GOMAXPROCS` with the correct value (e.g. quota=1.0 → GOMAXPROCS=1).
@@ -171,9 +174,14 @@ namespace.  There is no need for per-service env-variable prefixes: the
 `gateway` container has its own `PG_DSN`, the `orders` container has its own
 `PG_DSN`, and so on.
 
-To run multiple services in a single process (e.g. an integration test), pass
-distinct configs explicitly via code rather than relying on env variables — see
-`examples/e2e/e2e_test.go` for the pattern.
+Configuration is read from the environment exactly once, inside each
+service's `NewApp` (`config.Load`). To run multiple services in a single
+process (e.g. an integration test), set each service's variables with
+`t.Setenv` immediately before calling its `NewApp` — later assignments to the
+same variable (`PG_DSN`, `KAFKA_BROKERS`, …) do not affect services that were
+already constructed. See `examples/e2e/e2e_test.go` for the pattern. Note
+that `t.Setenv` disallows `t.Parallel()` in the same test, which is the right
+constraint here: the wiring sequence is inherently order-dependent.
 
 ---
 

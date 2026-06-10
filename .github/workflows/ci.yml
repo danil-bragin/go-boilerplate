@@ -117,6 +117,12 @@ jobs:
       - name: scaffold smoke (new-service + rename-module)
         run: ./scripts/test-scaffold.sh
 
+      # Doc drift gate (BLOCKING): every Go code block in
+      # docs/adding-a-service.md must compile (or at least parse, for blocks
+      # marked nocompile) against the current platform API.
+      - name: doc-test (adding-a-service.md code blocks)
+        run: ./scripts/doc-test.sh
+
   # ── Integration tests ─────────────────────────────────────────────────────
   test:
     name: Test

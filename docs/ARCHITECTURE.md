@@ -17,19 +17,23 @@
 | `httpx` | `platform/web/httpx` | `Decode`+validate request bodies; RFC 7807 `ProblemJSON` error responses |
 | `health` | `platform/observability/health` | `/livez` + `/readyz` aggregator; `Checker` interface; liveness always 200, readiness gates on registered checks |
 | `pg` | `platform/storage/pg` | `pgxpool` factory with tuned defaults; `RunInTx`; `FromContext` (pulls tx or pool); reader/writer pool split; health check |
-| `outbox` | `platform/messaging/outbox` | Outbox table (`outbox_messages`); `Repository.Enqueue`; polling `Relay` (`FOR UPDATE SKIP LOCKED`); AT-LEAST-ONCE delivery to Kafka |
-| `kafka` | `platform/messaging/kafka` | franz-go producer + consumer group; OTel instrumentation; cooperative-sticky; retry-topics (`<topic>.retry.N`) + DLT |
-| `serde` | `platform/messaging/serde` | Protobuf ↔ Confluent Schema Registry serializer; schema registration + caching |
+| `outbox` | `platform/messaging/outbox` | Outbox table; `Repository.Enqueue` (explicit `Topic`, auto correlation/causation stamping); polling `Relay` (`FOR UPDATE SKIP LOCKED`, drain-until-empty, single-active advisory-lock leader mode); AT-LEAST-ONCE delivery to Kafka |
+| `kafka` | `platform/messaging/kafka` | franz-go producer + consumer group; OTel instrumentation; cooperative-sticky; seek-back redelivery on handler failure; `WithRetry` poison→DLT; `WithOnError` operational hook |
+| `retry` | `platform/messaging/retry` | Tiered retry topics (`<topic>.retry.<idx>`, delay carried in `retry-due-at` header) + escalation to DLT; opt-in key parking to preserve per-key order |
+| `consume` | `platform/messaging/consume` | `consume.Typed` — typed consumer pipeline: event-type header dispatch, serde/proto decode, uniform message-id policy, inbox dedup, principal + chain-lineage ctx install |
+| `msgctx` | `platform/messaging/msgctx` | Correlation-id / causation-id context propagation (consume → outbox chain lineage) |
+| `serde` | `platform/messaging/serde` | Protobuf ↔ Confluent Schema Registry wire format via franz-go `pkg/sr`; opt-in (`SERDE_SR_URL`); registration + caching |
 | `inbox` | `platform/messaging/inbox` | `ProcessOnce(consumer, msgID, fn)` — inserts inbox row + runs `fn` in the SAME transaction; duplicate messages silently no-op |
 | `outboxkafka` | `platform/messaging/outboxkafka` | Wires `outbox.Relay` to the Kafka producer; resolves the circular-import problem |
-| `cqrs` | `platform/cqrs` | `HandlerFunc[C,R]`, `Behavior[C,R]`, `Decorate` — typed generic decorator pipeline |
-| `cache` | `platform/storage/cache` | Two-tier `Get`/`Set`/`Delete`: L1 = otter v2 (in-process), L2 = rueidis (Redis); singleflight stampede prevention; TTL jitter |
-| `blob` | `platform/storage/blob` | `ObjectStore` interface + minio-go v7 implementation; `Put`/`Get`/`Delete`/`PresignGet` |
-| `resilience` | `platform/resilience` | failsafe-go policy builders: `Retry`, `CircuitBreaker`, `Timeout`, `Bulkhead`, `RateLimit`; compose via `failsafe.With` |
-| `auth` | `platform/security/auth` | OIDC/JWT validation via lestrrat jwx/v2; JWKS auto-refresh; `Principal` in `ctx`; pluggable middleware interface |
+| `cqrs` | `platform/cqrs` | `HandlerFunc[C,R]`, `Behavior[C,R]`, `Decorate`, `StandardPipeline`, `Deadline` — typed generic decorator pipeline |
+| `cache` | `platform/storage/cache` | Two-tier `Get`/`Set`/`Delete`/`GetOrLoad`: L1 = otter v2 (in-process), L2 = rueidis (Redis); cross-instance L1 invalidation via Redis pub/sub; circuit breaker on L2; singleflight stampede prevention; TTL jitter |
+| `blob` | `platform/storage/blob` | `ObjectStore` interface + aws-sdk-go-v2 S3 implementation (SeaweedFS in local dev — ADR-0012); `Put`/`Get`/`Delete`/`PresignGet` |
+| `resilience` | `platform/resilience` | failsafe-go policy builders: `Retry`, `CircuitBreaker`, `Timeout`, `Bulkhead`; compose via `failsafe.With` |
+| `auth` | `platform/security/auth` | OIDC/JWT validation via lestrrat jwx/v3 (clock skew, optional azp); JWKS auto-refresh; `Principal` in `ctx`; Kafka header propagation (`InjectHeaders`/`ExtractToContext`) |
 | `authz` | `platform/security/authz` | RBAC `Behavior` — extracts roles from `ctx` principal; returns 403 if required permission absent |
 | `audit` | `platform/security/audit` | `Behavior` — on successful command writes an audit entry (who/what/when/resource) to the audit table via `pg.FromContext` |
-| `featureflags` | `platform/featureflags` | OpenFeature Go SDK wrapper; `BoolValue`/`StringValue` helpers; swappable provider (env-var provider included) |
+| `featureflags` | `platform/featureflags` | OpenFeature Go SDK v2 wrapper; `BoolValue`/`StringValue` helpers; swappable provider (env-var provider included) |
+| `servicekit` | `platform/servicekit` | Service wiring harness: `New` (+`WithoutKafka`/`WithoutPG`), `AddConsumer`/`AddConsumerWithRetry`/`AddOutboxRelay`/`AddWorker`/`AddHTTPServer`/`AddAuditCleanup`, `Main` entry point; readiness-first drain-gate teardown |
 
 ---
 
@@ -140,7 +144,7 @@ See `docs/operations.md` for the full rationale. Summary:
 
 | Knob | Mechanism | Why |
 |---|---|---|
-| `GOMAXPROCS` | `go.uber.org/automaxprocs` blank-imported in every `cmd/*/main.go` | Reads the Linux cgroup CPU quota so the scheduler uses the correct thread count instead of the host CPU count, avoiding CFS throttling |
+| `GOMAXPROCS` | `go.uber.org/automaxprocs` blank-imported in `platform/servicekit/main.go` (`servicekit.Main`, the shared entry point of every service binary) | Reads the Linux cgroup CPU quota so the scheduler uses the correct thread count instead of the host CPU count, avoiding CFS throttling |
 | `GOMEMLIMIT` | Set in `docker-compose.yml` (and `.env.example`) per service | Instructs the Go GC to soft-trim below the cgroup limit, preventing OOM-kill |
 | CPU limit | `deploy.resources.limits.cpus` in `docker-compose.yml` | Bounds container CPU; use whole-number values to avoid fractional CFS throttling |
 | Memory limit | `deploy.resources.limits.memory` in `docker-compose.yml` | Hard cgroup limit; `GOMEMLIMIT` should be ≈90% of this value |
@@ -157,13 +161,13 @@ The following items were previously listed as deferred but are now implemented:
 | Trace ID in logs | Wired via `platform/observability/log` traceHandler — `trace_id` + `span_id` injected into every log entry when a span is active |
 | Health endpoints | `/livez` + `/readyz` mounted on every service's admin HTTP server via `platform/observability/health` |
 | Security headers | `SecurityHeaders` middleware in default `httpserver.New` chain; sets `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Content-Security-Policy`, `X-XSS-Protection` |
-| Edge rate limiting (global) | `RateLimit(rps, burst)` token-bucket middleware in `platform/web/httpserver`; wired on the gateway's public server at 100 rps / burst 200 |
+| Edge rate limiting (global) | Legacy `RateLimit(rps, burst)` token-bucket middleware still available in `platform/web/httpserver`, but no longer wired anywhere — the gateway uses the per-IP limiter (next row); 429 responses carry `Retry-After`/`RateLimit-Remaining` headers + problem+json body |
 | CORS | `CORS(CORSOptions)` middleware in `platform/web/httpserver`; wired on the gateway's public server; opt-in elsewhere |
-| Resilience + caching + authz in gateway | Circuit-breaker retry wraps Kafka publish; CQRS caching behavior on GetOrder query; RBAC authz behavior on CreateOrder command |
+| Resilience + caching + authz in gateway | `resilience.Do` (Retry ×3 + Timeout 2 s) wraps the Kafka command publish; CQRS caching behavior on GetOrder query; RBAC authz on CreateOrder; ownership check on attachments |
 | CDC outbox relay (polling) | Polling relay (`platform/messaging/outbox`) with `FOR UPDATE SKIP LOCKED`, publish-after-commit, AT-LEAST-ONCE delivery wired in all services |
 | Image signing (cosign) | Step present in `.github/workflows/ci.yml` (commented; requires registry credentials + `id-token: write`) |
 | Per-IP + distributed rate limiting | `RateLimitPer(l, ClientIPKey(trusted))` in `platform/web/httpserver`; wired in gateway replacing the global limiter. `platform/web/ratelimit` provides `NewMemory` and `NewRedis`. Gateway config: `RATELIMIT_RPS`, `RATELIMIT_BURST`, `RATELIMIT_REDIS`, `TRUSTED_PROXIES`. |
-| Kafka tiered retry-topics | `platform/messaging/retry` — tier definitions and routing for `<topic>.retry.<dur>` topics; used in the orders service |
+| Kafka tiered retry-topics | `platform/messaging/retry` — index-named tiers (`<topic>.retry.<idx>`, delay in the `retry-due-at` header); used in the orders service |
 | Kafka EOS (`TransactConsumer`) | `platform/messaging/kafka.TransactConsumer` — atomic consume→produce via `GroupTransactSession`; see ADR-0006 |
 
 ---

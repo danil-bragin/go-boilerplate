@@ -8,6 +8,7 @@
 *.test
 coverage.out
 coverage.html
+.doctest-tmp/
 
 # Env
 .env

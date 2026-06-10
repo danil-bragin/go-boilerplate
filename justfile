@@ -55,7 +55,7 @@ test-unit:
 test-integration:
     go test ./...
 
-# Run end-to-end tests only (requires full stack via docker compose)
+# Run the end-to-end choreography test (self-provisions Redpanda + Postgres via testcontainers; requires Docker, NOT docker compose)
 test-e2e:
     go test ./examples/e2e/...
 
@@ -147,6 +147,10 @@ rename-module-check path:
 # Smoke-test the scaffolding scripts (new-service build/vet + rename-module --check) — runs in CI
 test-scaffold:
     ./scripts/test-scaffold.sh
+
+# Compile/parse-check the Go code blocks in docs/adding-a-service.md — runs blocking in CI
+doc-test:
+    ./scripts/doc-test.sh
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 

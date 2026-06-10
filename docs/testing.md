@@ -10,9 +10,9 @@ Read this before writing a new test; copy the linked examples rather than invent
 | Layer | Scope | Infra required | Test doubles | When runs |
 |---|---|---|---|---|
 | **Unit** | One function / method | None | moq mocks (`mocks.*`) | Always (`-short`) |
-| **Functional** | A use-case slice across several collaborators | None | Hand fakes (`fakes.*`) + `mockhttp.*` | Always (`-short`) |
+| **Functional** | A use-case slice across several collaborators | None | Hand fakes (`fakes.*`, incl. `fakes.Broker`) + `mockhttp.*` | Always (`-short`) |
 | **Integration** | A service wired to real DB / broker | Docker (testcontainers) | Real infra containers | Full `go test ./...` only |
-| **E2E** | Multiple services via HTTP/gRPC/Kafka | Full stack (`docker compose up`) | None | `just test-e2e` / CI nightly |
+| **E2E** | All four services in-process, full choreography over real Kafka + Postgres | Docker (testcontainers — **self-provisioned**, no `docker compose` needed) | None (capture notifier only) | Full `go test ./...` / `just test-e2e` |
 
 ---
 
@@ -32,9 +32,13 @@ func TestMyIntegration(t *testing.T) {
 This creates two CI lanes:
 
 - **Fast lane** — `go test -short ./...`: runs unit + functional tests only.
-  No Docker daemon required. Should complete in seconds.
-- **Full lane** — `go test ./...`: also runs integration tests that spin up
-  real Postgres, Redpanda, Redis, and MinIO via testcontainers.
+  No Docker daemon required. Should complete in seconds. The example services
+  model this lane too: each has `-short` tests driving the real transport
+  pipeline through `fakes.Broker` (no containers).
+- **Full lane** — `go test ./...`: also runs integration tests (and the e2e
+  choreography test) that spin up real Postgres, Redpanda, Redis, and
+  SeaweedFS via testcontainers. Both lanes run on every CI push/PR — there is
+  no nightly-only suite.
 
 Use `just test-unit` for the fast lane and `just test-integration` for the full lane (see §5).
 
@@ -46,12 +50,13 @@ Use `just test-unit` for the fast lane and `just test-integration` for the full 
 |---|---|---|
 | Assert exact arguments / call count | moq mock | `platform/testkit/mocks` |
 | Stateful in-memory behaviour (cache, publisher, store) | Hand fake | `platform/testkit/fakes` |
+| Kafka without Docker — drive `kafka.HandlerFunc` / `consume.Typed` pipelines | `fakes.Broker` (+ `consume.WithoutInbox()`) | `platform/testkit/fakes` |
 | External HTTP dependency (REST API, JWKS endpoint, webhook) | `mockhttp.Server` + `mockhttp.JSON` | `platform/testkit/mockhttp` |
 | Auth — live RS256 JWKS + JWT minting | `mockhttp.JWKS(t)` | `platform/testkit/mockhttp` |
 | Real Postgres | `pgtest.NewDSN(t)` | `platform/storage/pg/pgtest` |
 | Real Kafka / Redpanda | `kafkatest.NewRedpanda(t)` | `platform/messaging/kafka/kafkatest` |
 | Real Redis | `testcontainers-go/modules/redis` directly (see `platform/storage/cache/cache_test.go`) | `github.com/testcontainers/testcontainers-go/modules/redis` |
-| Real MinIO | `testcontainers-go/modules/minio` directly (see `platform/storage/blob/blob_test.go`) | `github.com/testcontainers/testcontainers-go/modules/minio` |
+| Real S3 (SeaweedFS) | generic testcontainers container (see `platform/storage/blob/blob_test.go`) | `github.com/testcontainers/testcontainers-go` |
 | Real Keycloak | generic testcontainers container (see `examples/gateway/keycloak_test.go`) | `github.com/testcontainers/testcontainers-go` |
 | Canonical test data | Builder functions | `platform/testkit/fixtures` |
 
@@ -72,6 +77,15 @@ pub.Messages()               // []outbox.Message
 cache := fakes.NewCache()
 cache.Set(ctx, "k", data, time.Minute)
 data, ok := cache.Get(ctx, "k")
+
+// fakes.Broker — in-memory Kafka: outbox.Publisher in, kafka.HandlerFunc out,
+// synchronous delivery with real event-type/message-id headers. Pair with
+// consume.WithoutInbox() to run consume.Typed pipelines without a database.
+// (See examples/payments/internal/transport/consumer_test.go.)
+broker := fakes.NewBroker()
+broker.Subscribe("orders.events", handler)        // handler: kafka.HandlerFunc
+_ = broker.Publish(ctx, outboxMsg)                // relay-style publish path
+recs := broker.Records("orders.events")           // delivered records
 
 // mockhttp — external HTTP + request recorder
 rec := mockhttp.Server(t, mockhttp.JSON(http.StatusOK, body))
@@ -97,6 +111,7 @@ rec := fixtures.Record(fixtures.WithTopic("orders"))
 |---|---|---|
 | Unit | [`examples/testing/unit_example_test.go`](../examples/testing/unit_example_test.go) | moq mock, success + error path, `PublishCalls()` assertion |
 | Functional | [`examples/testing/functional_example_test.go`](../examples/testing/functional_example_test.go) | `mockhttp.Server` external HTTP, `fakes.Cache`, `fakes.Publisher`, behaviour assertions |
+| Fast-lane transport | [`examples/payments/internal/transport/consumer_test.go`](../examples/payments/internal/transport/consumer_test.go) | `fakes.Broker` + `consume.WithoutInbox()` — real decode→dispatch pipeline, no Docker |
 | Integration | [`examples/orders/orders_test.go`](../examples/orders/orders_test.go) | testcontainers Postgres + Redpanda, full service wire-up |
 | HTTP integration | [`examples/gateway/gateway_test.go`](../examples/gateway/gateway_test.go) | HTTP handler integration, JWKS auth, testcontainers Postgres |
 | E2E | [`examples/e2e/`](../examples/e2e/) | Full choreography across all services |
@@ -112,7 +127,7 @@ just test-unit
 # Full lane — includes integration tests (requires Docker)
 just test-integration
 
-# E2E only
+# E2E only (self-provisions Redpanda + Postgres via testcontainers; needs Docker, not compose)
 just test-e2e
 
 # Coverage report (fast lane)
@@ -120,6 +135,12 @@ just test-cover
 
 # Regenerate moq mocks
 just gen-mocks
+
+# Scaffolding smoke test (new-service + rename-module --check) — same gate as CI
+just test-scaffold
+
+# Doc drift gate: compile the code blocks in docs/adding-a-service.md
+just doc-test
 ```
 
 Raw `go test` equivalents:
