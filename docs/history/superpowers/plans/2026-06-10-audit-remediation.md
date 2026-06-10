@@ -10,6 +10,7 @@
 > per-principal scoping, GET/LIST ownership, fatal-serve process exit). §B-equivalents recorded in
 > commit messages; invariants live as integration tests (redelivery, no-commit-past-failure,
 > drain-order, ownership, precedence).
+> Checkboxes below were intentionally left unticked — execution was tracked via commits, not this file.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Every fix MUST ship with tests (TDD: failing test first). Caveman encoding used below per repo FORMAT.md conventions; code blocks verbatim.
 
