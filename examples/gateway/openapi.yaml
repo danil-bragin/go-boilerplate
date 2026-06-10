@@ -76,6 +76,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
     get:
       summary: List orders
@@ -119,13 +121,15 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /v1/orders/{id}:
     get:
       summary: Get order by ID
       description: >
         Returns the current view of an order from the read model projection.
-        Status lifecycle: pending → created → paid.
+        Status lifecycle: pending → created → paid | payment_failed | payment_timeout.
 
         Ownership: non-admin callers may only read orders whose customer_id
         equals their token subject; any other existing order returns the same
@@ -152,6 +156,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 
   /healthz:
     get:
@@ -210,6 +216,18 @@ components:
     TooManyRequests:
       description: >
         Rate limit exceeded. Retry-After indicates when to retry.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ServiceUnavailable:
+      description: >
+        Temporarily unable to serve the request: either the per-request
+        timeout elapsed (http.TimeoutHandler) or the distributed rate
+        limiter is configured fail-closed and its backend is unreachable.
+        Safe to retry after a short backoff. The body is RFC 7807-shaped;
+        on the timeout path the Content-Type header is sniffed by net/http
+        rather than set to application/problem+json (stdlib limitation).
       content:
         application/problem+json:
           schema:

@@ -11,9 +11,9 @@
 | `config` | `platform/config` | `caarlos0/env` struct-tag loader; `Load[T]()` returns a typed config value |
 | `log` | `platform/observability/log` | `log/slog` setup; optional zap backend via `zapslog`; `FromContext`/`WithContext`; trace-id injection |
 | `run` | `platform/run` | Signal handling (`SIGINT`/`SIGTERM`), ordered `Start`, reverse-order `Closer`, two-phase shutdown |
-| `telemetry` | `platform/observability/telemetry` | OTel tracer + meter + logger providers; OTLP/gRPC exporter; `Shutdown` |
+| `telemetry` | `platform/observability/telemetry` | OTel tracer + meter providers (no logs provider — logs go to stdout via `platform/observability/log`); OTLP/gRPC exporter; Prometheus `/metrics` reader stays on even when export is disabled; `Shutdown` |
 | `httpserver` | `platform/web/httpserver` | chi server; middleware stack (SecurityHeaders, recover, req-id, OTel, access-log, max-bytes, timeout); CORS, `RateLimitPer`+`ClientIPKey`, and legacy `RateLimit` opt-in; graceful `Shutdown` |
-| `ratelimit` | `platform/web/ratelimit` | `Limiter` interface; `NewMemory` (per-key in-process token bucket, janitor eviction) and `NewRedis` (atomic Lua GCRA, fail-open default) |
+| `ratelimit` | `platform/web/ratelimit` | `Limiter` interface; `NewMemory` (per-key in-process token bucket, janitor eviction) and `NewRedis` (atomic Lua token bucket, fail-open default) |
 | `httpx` | `platform/web/httpx` | `Decode`+validate request bodies; RFC 7807 `ProblemJSON` error responses |
 | `health` | `platform/observability/health` | `/livez` + `/readyz` aggregator; `Checker` interface; liveness always 200, readiness gates on registered checks |
 | `pg` | `platform/storage/pg` | `pgxpool` factory with tuned defaults; `RunInTx`; `FromContext` (pulls tx or pool); reader/writer pool split; health check |
@@ -32,7 +32,7 @@
 | `auth` | `platform/security/auth` | OIDC/JWT validation via lestrrat jwx/v3 (clock skew, optional azp); JWKS auto-refresh; `Principal` in `ctx`; Kafka header propagation (`InjectHeaders`/`ExtractToContext`) |
 | `authz` | `platform/security/authz` | RBAC `Behavior` — extracts roles from `ctx` principal; returns 403 if required permission absent |
 | `audit` | `platform/security/audit` | `Behavior` — on successful command writes an audit entry (who/what/when/resource) to the audit table via `pg.FromContext` |
-| `featureflags` | `platform/featureflags` | OpenFeature Go SDK v2 wrapper; `BoolValue`/`StringValue` helpers; swappable provider (env-var provider included) |
+| `featureflags` | `platform/featureflags` | OpenFeature Go SDK v2 wrapper; `BoolValue`/`StringValue` helpers; swappable provider (in-memory provider included; flagd/LaunchDarkly via `openfeature.SetProviderAndWait`) |
 | `servicekit` | `platform/servicekit` | Service wiring harness: `New` (+`WithoutKafka`/`WithoutPG`), `AddConsumer`/`AddConsumerWithRetry`/`AddOutboxRelay`/`AddWorker`/`AddHTTPServer`/`AddAuditCleanup`, `Main` entry point; readiness-first drain-gate teardown |
 
 ---
@@ -53,14 +53,16 @@ func Decorate[C, R any](h HandlerFunc[C, R], behaviors ...Behavior[C, R]) Handle
 **Commands** (state-mutating, always transactional):
 
 ```
-Logging → Tracing → Metrics → Validation → Audit → Transaction → handler
+Tracing → Logging → Metrics → Validation → Transaction → Audit → handler
 ```
 
 **Queries** (read-only, may be cached):
 
 ```
-Logging → Tracing → Metrics → Validation → Caching → handler
+Tracing → Logging → Metrics → Validation → Caching → handler
 ```
+
+Tracing is OUTERMOST so every inner behavior (and the handler) runs inside the span and context-aware log records carry `trace_id`/`span_id`. Audit sits INSIDE Transaction so the audit row commits (and rolls back) with the command. `cqrs.StandardPipeline` assembles this canonical order regardless of option call order.
 
 **Invariants:**
 - The `Transaction` behavior is applied ONLY to commands. It calls `pg.RunInTx` and stores the tx in `ctx` so that repositories and the `audit` behavior can call `pg.FromContext` without opening a new transaction.
@@ -163,7 +165,7 @@ The following items were previously listed as deferred but are now implemented:
 | Security headers | `SecurityHeaders` middleware in default `httpserver.New` chain; sets `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Content-Security-Policy`, `X-XSS-Protection` |
 | Edge rate limiting (global) | Legacy `RateLimit(rps, burst)` token-bucket middleware still available in `platform/web/httpserver`, but no longer wired anywhere — the gateway uses the per-IP limiter (next row); 429 responses carry `Retry-After`/`RateLimit-Remaining` headers + problem+json body |
 | CORS | `CORS(CORSOptions)` middleware in `platform/web/httpserver`; wired on the gateway's public server; opt-in elsewhere |
-| Resilience + caching + authz in gateway | `resilience.Do` (Retry ×3 + Timeout 2 s) wraps the Kafka command publish; CQRS caching behavior on GetOrder query; RBAC authz on CreateOrder; ownership check on attachments |
+| Resilience + caching + authz in gateway | `resilience.Do` (Retry ×3 + Timeout 2 s) wraps the Kafka command publish; CQRS caching behavior on GetOrder query; RBAC authz on CreateOrder; ownership checks on attachments and on order GET/LIST (owner or admin) |
 | CDC outbox relay (polling) | Polling relay (`platform/messaging/outbox`) with `FOR UPDATE SKIP LOCKED`, publish-after-commit, AT-LEAST-ONCE delivery wired in all services |
 | Image signing (cosign) | Step present in `.github/workflows/ci.yml` (commented; requires registry credentials + `id-token: write`) |
 | Per-IP + distributed rate limiting | `RateLimitPer(l, ClientIPKey(trusted))` in `platform/web/httpserver`; wired in gateway replacing the global limiter. `platform/web/ratelimit` provides `NewMemory` and `NewRedis`. Gateway config: `RATELIMIT_RPS`, `RATELIMIT_BURST`, `RATELIMIT_REDIS`, `TRUSTED_PROXIES`. |

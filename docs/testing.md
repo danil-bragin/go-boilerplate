@@ -110,7 +110,7 @@ rec := fixtures.Record(fixtures.WithTopic("orders"))
 | Layer | File | What it shows |
 |---|---|---|
 | Unit | [`examples/testing/unit_example_test.go`](../examples/testing/unit_example_test.go) | moq mock, success + error path, `PublishCalls()` assertion |
-| Functional | [`examples/testing/functional_example_test.go`](../examples/testing/functional_example_test.go) | `mockhttp.Server` external HTTP, `fakes.Cache`, `fakes.Publisher`, behaviour assertions |
+| Functional | [`examples/testing/functional_example_test.go`](../examples/testing/functional_example_test.go) | `mockhttp.Server` external HTTP, `fakes.Cache`, `fakes.Publisher`, `fixtures.Record`/`fixtures.Principal` builders, behaviour assertions |
 | Fast-lane transport | [`examples/payments/internal/transport/consumer_test.go`](../examples/payments/internal/transport/consumer_test.go) | `fakes.Broker` + `consume.WithoutInbox()` — real decode→dispatch pipeline, no Docker |
 | Integration | [`examples/orders/orders_test.go`](../examples/orders/orders_test.go) | testcontainers Postgres + Redpanda, full service wire-up |
 | HTTP integration | [`examples/gateway/gateway_test.go`](../examples/gateway/gateway_test.go) | HTTP handler integration, JWKS auth, testcontainers Postgres |

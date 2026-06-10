@@ -39,7 +39,10 @@ import (
 	"net/http"
 	"testing"
 
+	"go-boilerplate/platform/messaging/kafka"
+	authpkg "go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/testkit/fakes"
+	"go-boilerplate/platform/testkit/fixtures"
 	"go-boilerplate/platform/testkit/mockhttp"
 
 	"github.com/stretchr/testify/assert"
@@ -184,4 +187,56 @@ func TestFetchAndNotify_PublisherFailure(t *testing.T) {
 
 	// No messages should have been recorded (FailNext clears without storing).
 	assert.Empty(t, pub.Messages())
+}
+
+// TestHandleRecord_FixtureDriven demonstrates driving a kafka.HandlerFunc
+// directly with a record built by the fixtures package — no broker, no
+// containers, always -short.
+//
+//	fixtures.Record    – kafka.Record with sane defaults; override only the
+//	                     fields the test cares about (topic, key, value,
+//	                     headers).
+//	fixtures.Principal – auth.Principal builder; install it into ctx with
+//	                     auth.Into to exercise principal-aware consumer
+//	                     logic without minting a JWT.
+//
+// FUNCTIONAL: behaviour assertion on the state the handler leaves behind
+// (cache contents), not on call interactions.
+func TestHandleRecord_FixtureDriven(t *testing.T) {
+	// Arrange ----------------------------------------------------------------
+
+	cache := fakes.NewCache()
+
+	// A minimal consumer handler: caches the record value under
+	// "item:<key>", stamping the acting principal's subject as a header-style
+	// suffix so the test can assert principal propagation.
+	handler := func(ctx context.Context, rec kafka.Record) error {
+		p, ok := authpkg.From(ctx)
+		if !ok {
+			return context.Canceled // never happens in this test
+		}
+		cache.Set(ctx, "item:"+string(rec.Key)+":by:"+p.Subject, rec.Value, 0)
+		return nil
+	}
+
+	// fixtures.Record: defaults for everything, override only what matters.
+	rec := fixtures.Record(
+		fixtures.WithTopic("catalogue.items"),
+		fixtures.WithKey([]byte("item-42")),
+		fixtures.WithValue([]byte(`{"id":"item-42","name":"Widget"}`)),
+	)
+
+	// fixtures.Principal: default subject/roles, override the subject.
+	ctx := authpkg.Into(context.Background(),
+		fixtures.Principal(fixtures.WithSubject("auditor-7")))
+
+	// Act --------------------------------------------------------------------
+
+	require.NoError(t, handler(ctx, rec))
+
+	// Assert -----------------------------------------------------------------
+
+	raw, hit := cache.Get(ctx, "item:item-42:by:auditor-7")
+	assert.True(t, hit, "handler should cache the record value keyed by record key + principal subject")
+	assert.JSONEq(t, `{"id":"item-42","name":"Widget"}`, string(raw))
 }

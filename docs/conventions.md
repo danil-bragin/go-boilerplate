@@ -159,7 +159,7 @@ just lint               # run golangci-lint
 just fmt                # format via golangci-lint fmt (gofumpt + goimports)
 just audit              # fmt + lint + vuln + unit tests (pre-merge gate)
 
-just up                 # start core infra (postgres, redpanda, redis, minio, keycloak)
+just up                 # start core infra (postgres, redpanda, redis, seaweedfs, keycloak)
 just up-obs             # core + observability stack
 just up-apps            # core + four app services (built from source)
 just up-full            # everything
@@ -198,6 +198,8 @@ type Health struct { ... }
 **Context.** `context.Context` is always the first parameter of any function that accepts one. Never store a context in a struct field except where the Go stdlib pattern requires it (noted explicitly in the code with `//nolint:containedctx` and a comment explaining why).
 
 **Naming.** Constructors are `New` or `New<Type>`. Config structs are `Config`. Unexported type aliases used only within a file are fine; exported types used across packages go in the package-level file named for the concept.
+
+**Secrets in config.** Credential-bearing config fields (passwords, API keys, DSNs with embedded passwords) use `config.Secret` instead of `string`: it prints `[REDACTED]` for `%v`/`%+v`/`%#v` and in slog output, so a dumped config struct never leaks credentials. The raw value is accessed explicitly via `Reveal()` at the single call site that hands it to a client library — `git grep "\.Reveal()"` lists every place a secret leaves the config layer. Examples: `pg.Config.DSN`, `blob.Config.SecretKey`.
 
 ---
 

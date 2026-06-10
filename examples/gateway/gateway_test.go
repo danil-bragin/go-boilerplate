@@ -16,6 +16,7 @@ import (
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
 	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/storage/pg/pgtest"
+	"go-boilerplate/platform/testkit/fakes"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -261,28 +262,13 @@ func pollOrderStatus(t *testing.T, baseURL, orderID, expectedStatus string, time
 	t.Fatalf("order %s did not reach status %q within %v", orderID, expectedStatus, timeout)
 }
 
-// stubVerifier is a minimal auth.Verifier for tests.
-// It accepts only the literal token "good" and rejects everything else.
-// The returned Principal carries the "user" role so that RBAC on POST /v1/orders
-// allows the request through.
-type stubVerifier struct{}
-
-func (stubVerifier) Verify(_ context.Context, rawToken string) (authpkg.Principal, error) {
-	if rawToken == "good" {
-		return authpkg.Principal{Subject: "test-user", Roles: []string{"user"}}, nil
-	}
-	return authpkg.Principal{}, authpkg.ErrInvalidToken
-}
-
-// stubVerifierNoRole returns a valid principal that deliberately lacks any role.
-// Used to prove that RBAC returns 403 when the principal has no permitted role.
-type stubVerifierNoRole struct{}
-
-func (stubVerifierNoRole) Verify(_ context.Context, rawToken string) (authpkg.Principal, error) {
-	if rawToken == "good" {
-		return authpkg.Principal{Subject: "test-user-norole", Roles: []string{}}, nil
-	}
-	return authpkg.Principal{}, authpkg.ErrInvalidToken
+// noRoleVerifier returns a fakes.Verifier whose principal deliberately lacks
+// any role. Used to prove that RBAC returns 403 when the principal has no
+// permitted role.
+func noRoleVerifier() *fakes.Verifier {
+	v := fakes.NewVerifier()
+	v.Principal = authpkg.Principal{Subject: "test-user-norole", Roles: []string{}}
+	return v
 }
 
 // multiUserVerifier resolves the literal tokens "alice" and "bob" to distinct
@@ -300,9 +286,10 @@ func (multiUserVerifier) Verify(_ context.Context, rawToken string) (authpkg.Pri
 	return authpkg.Principal{}, authpkg.ErrInvalidToken
 }
 
-// startAppAuthEnabled starts the gateway with AuthDisabled=false and a stub verifier.
+// startAppAuthEnabled starts the gateway with AuthDisabled=false and the
+// default fakes.Verifier (accepts any non-empty bearer token, "user" role).
 func startAppAuthEnabled(t *testing.T, broker, dsn string) string {
-	return startAppWithVerifier(t, broker, dsn, stubVerifier{})
+	return startAppWithVerifier(t, broker, dsn, fakes.NewVerifier())
 }
 
 // startAppWithVerifier starts the gateway with AuthDisabled=false and the
@@ -708,7 +695,7 @@ func TestGateway_AuthzForbidsWithoutRole(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "error")
 
 	ctx := context.Background()
-	a, err := gateway.NewApp(ctx, gateway.WithVerifier(stubVerifierNoRole{}))
+	a, err := gateway.NewApp(ctx, gateway.WithVerifier(noRoleVerifier()))
 	require.NoError(t, err)
 	require.NoError(t, a.Start())
 	t.Cleanup(func() {
@@ -742,7 +729,7 @@ func TestGateway_AuthzForbidsWithoutRole(t *testing.T) {
 	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
 	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
 
-	a2, err := gateway.NewApp(ctx, gateway.WithVerifier(stubVerifier{}))
+	a2, err := gateway.NewApp(ctx, gateway.WithVerifier(fakes.NewVerifier()))
 	require.NoError(t, err)
 	require.NoError(t, a2.Start())
 	t.Cleanup(func() {

@@ -6,7 +6,7 @@
 
 | Tool | Install | Notes |
 |---|---|---|
-| Go 1.25+ | https://go.dev/dl/ | Required |
+| Go 1.26+ | https://go.dev/dl/ | Required |
 | Docker | https://docs.docker.com/get-docker/ | Required for integration tests + local stack |
 | [just](https://just.systems/) | `brew install just` / `cargo install just` | Required for dev recipes |
 | [lefthook](https://lefthook.dev/) | `brew install lefthook` | Required for git hooks |

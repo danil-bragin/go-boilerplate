@@ -32,8 +32,10 @@ type RetryOpts struct {
 // wrapper returns nil so the consumer commits the offset — the poison
 // message is parked in the DLT and no longer blocks the partition.
 //
-// NOTE: in-process retry blocks the partition during the retry window;
-// stateless retry-topics are deferred to a later sub-project.
+// NOTE: in-process retry blocks the partition during the retry window —
+// but it never reorders per-key records. For non-blocking tiered
+// retry-topics (which DO trade away per-key ordering) see
+// platform/messaging/retry.
 //
 // Context cancellation:
 //   - If ctx is cancelled while sleeping between attempts the wrapper

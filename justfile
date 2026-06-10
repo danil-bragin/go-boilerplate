@@ -95,7 +95,7 @@ audit:
 
 # ── Docker Compose stack ───────────────────────────────────────────────────────
 
-# Start core infra (pg, kafka, redis, minio, keycloak)
+# Start core infra (pg, kafka, redis, seaweedfs, keycloak)
 up:
     docker compose up -d
 
