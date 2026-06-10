@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"go-boilerplate/platform/apperr"
+
 	"go-boilerplate/platform/web/httpx"
 	"go-boilerplate/platform/web/ratelimit"
 
@@ -132,11 +134,8 @@ func CORS(opts CORSOptions) func(http.Handler) http.Handler {
 				// Preflight request.
 				if !allowed {
 					// No CORS headers for disallowed origins; reject outright.
-					httpx.WriteProblem(w, httpx.Problem{
-						Status: http.StatusForbidden,
-						Title:  "Forbidden",
-						Detail: "origin not allowed",
-					})
+					httpx.WriteError(w, r, apperr.New(apperr.CodeAuthForbidden).
+						WithParam("reason", "origin not allowed"))
 					return
 				}
 				h := w.Header()
@@ -296,20 +295,14 @@ func RateLimitPer(l ratelimit.Limiter, key func(*http.Request) string) func(http
 			if err != nil {
 				// Fail-closed infrastructure error: not the client's fault and
 				// no real wait estimate exists — 503 without Retry-After.
-				httpx.WriteProblem(w, httpx.Problem{
-					Status: http.StatusServiceUnavailable,
-					Title:  "Service Unavailable",
-					Detail: "rate limiter unavailable",
-				})
+				httpx.WriteError(w, r, apperr.New(apperr.CodeRateLimitUnavailable))
 				return
 			}
 			if !res.Allowed {
-				w.Header().Set("Retry-After", strconv.FormatInt(retryAfterSeconds(res.RetryAfter), 10))
-				httpx.WriteProblem(w, httpx.Problem{
-					Status: http.StatusTooManyRequests,
-					Title:  "Too Many Requests",
-					Detail: "rate limit exceeded",
-				})
+				retryAfter := retryAfterSeconds(res.RetryAfter)
+				w.Header().Set("Retry-After", strconv.FormatInt(retryAfter, 10))
+				httpx.WriteError(w, r, apperr.New(apperr.CodeRateLimited).
+					WithParam("retry_after_seconds", retryAfter))
 				return
 			}
 			next.ServeHTTP(w, r)

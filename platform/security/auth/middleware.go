@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 
+	"go-boilerplate/platform/apperr"
+
 	"go-boilerplate/platform/observability/log"
 	"go-boilerplate/platform/web/httpx"
 )
@@ -20,11 +22,8 @@ func Middleware(v Verifier) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			raw, ok := bearerToken(r)
 			if !ok {
-				httpx.WriteProblem(w, httpx.Problem{
-					Status: http.StatusUnauthorized,
-					Title:  "Unauthorized",
-					Detail: "missing or malformed Authorization header",
-				})
+				httpx.WriteError(w, r, apperr.New(apperr.CodeAuthUnauthenticated).
+					WithParam("reason", "missing or malformed Authorization header"))
 				return
 			}
 
@@ -35,20 +34,17 @@ func Middleware(v Verifier) func(http.Handler) http.Handler {
 				// generic "invalid token"; anything else (infrastructure
 				// failure) gets an even more generic detail and the real
 				// error goes to the structured log only.
-				detail := "invalid token"
+				reason := "invalid token"
 				if !errors.Is(err, ErrInvalidToken) {
-					detail = "authentication failed"
+					reason = "authentication failed"
 					log.From(r.Context()).ErrorContext(
 						r.Context(),
 						"auth: token verification failed with non-token error",
 						"error", err,
 					)
 				}
-				httpx.WriteProblem(w, httpx.Problem{
-					Status: http.StatusUnauthorized,
-					Title:  "Unauthorized",
-					Detail: detail,
-				})
+				httpx.WriteError(w, r, apperr.New(apperr.CodeAuthUnauthenticated).
+					WithParam("reason", reason))
 				return
 			}
 
@@ -65,11 +61,8 @@ func RequireRole(role string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			p, ok := From(req.Context())
 			if !ok {
-				httpx.WriteProblem(w, httpx.Problem{
-					Status: http.StatusUnauthorized,
-					Title:  "Unauthorized",
-					Detail: "no authenticated principal",
-				})
+				httpx.WriteError(w, req, apperr.New(apperr.CodeAuthUnauthenticated).
+					WithParam("reason", "no authenticated principal"))
 				return
 			}
 
@@ -80,11 +73,8 @@ func RequireRole(role string) func(http.Handler) http.Handler {
 				}
 			}
 
-			httpx.WriteProblem(w, httpx.Problem{
-				Status: http.StatusForbidden,
-				Title:  "Forbidden",
-				Detail: "required role: " + role,
-			})
+			httpx.WriteError(w, req, apperr.New(apperr.CodeAuthForbidden).
+				WithParam("required_role", role))
 		})
 	}
 }

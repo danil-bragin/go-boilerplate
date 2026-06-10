@@ -41,6 +41,9 @@ localized texts live in the owning service's i18n catalog, keyed by code.
 | `GATEWAY_MALFORMED_REQUEST` | 400 | yes | `reason` | malformed request: {reason} |
 | `GATEWAY_ORDER_NOT_FOUND` | 404 | yes | `order_id` | order {order_id} not found |
 | `INTERNAL` | 500 | no | — | internal error |
+| `MESSAGING_MALFORMED_PAYLOAD` | 400 | yes | — | malformed message payload |
 | `ORDERS_INVALID_ORDER_ID` | 400 | yes | `order_id` | invalid order id {order_id} |
 | `ORDERS_INVALID_STATUS_TRANSITION` | 409 | yes | `from`, `to` | order cannot transition from {from} to {to} |
+| `RATE_LIMITED` | 429 | yes | — | rate limit exceeded |
+| `RATE_LIMIT_UNAVAILABLE` | 503 | no | — | rate limiter unavailable |
 | `VALIDATION_FAILED` | 400 | yes | — | validation failed |

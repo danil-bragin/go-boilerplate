@@ -375,6 +375,7 @@ func (c *Consumer) processRecords(
 				Headers: kafka.HeadersFromKGO(rec.Headers),
 			}
 			dltRec.Headers[HeaderLastError] = "malformed: missing retry headers"
+			dltRec.Headers[kafka.HeaderDLTOriginalTopic] = base
 			// Fix 3: only commit when DLT produce succeeded. On failure, HOLD
 			// this record and the rest of the batch and retry after a delay —
 			// merely skipping the commit would NOT redeliver it (kgo advances

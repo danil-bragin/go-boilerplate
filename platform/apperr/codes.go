@@ -19,6 +19,18 @@ const (
 
 	// CodeAuthForbidden marks principals lacking permission for an action.
 	CodeAuthForbidden = "AUTH_FORBIDDEN"
+
+	// CodeMalformedPayload marks a message whose bytes cannot be decoded
+	// (protobuf unmarshal failure, Schema-Registry framing mismatch).
+	// Permanent: redelivery re-reads the same bytes — straight to the DLT.
+	CodeMalformedPayload = "MESSAGING_MALFORMED_PAYLOAD"
+
+	// CodeRateLimited marks requests rejected by the per-key rate limiter.
+	CodeRateLimited = "RATE_LIMITED"
+
+	// CodeRateLimitUnavailable marks fail-closed rejections when the
+	// distributed limiter backend is unreachable (503, transient).
+	CodeRateLimitUnavailable = "RATE_LIMIT_UNAVAILABLE"
 )
 
 func init() {
@@ -26,4 +38,7 @@ func init() {
 	Register(CodeValidationFailed, 400, true, "validation failed")
 	Register(CodeAuthUnauthenticated, 401, true, "authentication required")
 	Register(CodeAuthForbidden, 403, true, "permission denied")
+	Register(CodeMalformedPayload, 400, true, "malformed message payload")
+	Register(CodeRateLimited, 429, true, "rate limit exceeded")
+	Register(CodeRateLimitUnavailable, 503, false, "rate limiter unavailable")
 }

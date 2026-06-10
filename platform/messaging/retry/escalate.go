@@ -156,8 +156,13 @@ func (e *Escalator) publishNext(ctx context.Context, origTopic string, rec kafka
 	if toDLT {
 		// Route to DLT (final tier exhausted or permanent error). Keep the
 		// existing retry headers for forensics and add/overwrite last-error;
-		// stamp the apperr code when the chain carries one.
+		// stamp the apperr code when the chain carries one. The origin topic
+		// MUST be present: a base-topic record short-circuited by a permanent
+		// error never traversed a tier, so it carries no retry-orig-topic —
+		// without x-original-topic cmd/redrive cannot route it back and
+		// aborts the whole redrive run at this record.
 		out.Headers[HeaderLastError] = truncate(cause.Error(), 512)
+		out.Headers[kafka.HeaderDLTOriginalTopic] = origTopic
 		var ae *apperr.Error
 		if errors.As(cause, &ae) {
 			out.Headers[kafka.HeaderDLTErrorCode] = ae.Code

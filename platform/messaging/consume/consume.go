@@ -34,6 +34,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"go-boilerplate/platform/apperr"
+
 	"go-boilerplate/platform/messaging/inbox"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/msgctx"
@@ -144,7 +146,7 @@ func (h typedHandler[T]) handle(ctx context.Context, dec serde.Deserializer, val
 	var zero T
 	msg, ok := zero.ProtoReflect().Type().New().Interface().(T)
 	if !ok {
-		return nil, fmt.Errorf("consume: cannot instantiate message for %s", h.event)
+		return nil, apperr.Wrapf(nil, apperr.CodeMalformedPayload, "consume: cannot instantiate message for %s", h.event)
 	}
 
 	if dec != nil {
@@ -155,9 +157,9 @@ func (h typedHandler[T]) handle(ctx context.Context, dec serde.Deserializer, val
 			// every record decode-errors into the DLT until an operator
 			// correlates the two configs.
 			if len(value) == 0 || value[0] != srMagicByte {
-				return nil, fmt.Errorf("consume: decode %s: value is not Confluent-SR framed (no 0x00 magic byte) — producer publishing raw protobuf while this consumer has SERDE_SR_URL set? %w", h.event, err)
+				return nil, apperr.Wrapf(err, apperr.CodeMalformedPayload, "consume: decode %s: value is not Confluent-SR framed (no 0x00 magic byte) — producer publishing raw protobuf while this consumer has SERDE_SR_URL set?", h.event)
 			}
-			return nil, fmt.Errorf("consume: decode %s: %w", h.event, err)
+			return nil, apperr.Wrapf(err, apperr.CodeMalformedPayload, "consume: decode %s failed", h.event)
 		}
 	} else {
 		// Inverse mismatch: a valid protobuf message never starts with 0x00
@@ -166,10 +168,10 @@ func (h typedHandler[T]) handle(ctx context.Context, dec serde.Deserializer, val
 		// producer frames with Schema Registry while this consumer decodes
 		// raw protobuf.
 		if len(value) >= 6 && value[0] == srMagicByte {
-			return nil, fmt.Errorf("consume: unmarshal %s: value appears Confluent-SR framed (0x00 magic byte) but this consumer decodes raw protobuf — SERDE_SR_URL mismatch between producer and consumer?", h.event)
+			return nil, apperr.Wrapf(nil, apperr.CodeMalformedPayload, "consume: unmarshal %s: value appears Confluent-SR framed (0x00 magic byte) but this consumer decodes raw protobuf — SERDE_SR_URL mismatch between producer and consumer?", h.event)
 		}
 		if err := proto.Unmarshal(value, msg); err != nil {
-			return nil, fmt.Errorf("consume: unmarshal %s: %w", h.event, err)
+			return nil, apperr.Wrapf(err, apperr.CodeMalformedPayload, "consume: unmarshal %s failed", h.event)
 		}
 	}
 
