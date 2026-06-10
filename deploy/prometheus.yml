@@ -13,9 +13,11 @@ global:
 # Rules — compose mounts deploy/prometheus/*.yaml at these paths:
 #   rules.yaml          alerting rules (choreography/edge/lifecycle)
 #   rules-latency.yaml  p50/p95/p99 recording rules over native histograms
+#   slo.yaml            SLO error-ratio rules + burn-rate alerts
 rule_files:
   - /etc/prometheus/rules.yaml
   - /etc/prometheus/rules-latency.yaml
+  - /etc/prometheus/slo.yaml
 
 scrape_configs:
   # Scrape Prometheus itself.

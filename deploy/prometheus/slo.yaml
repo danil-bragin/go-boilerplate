@@ -1,0 +1,147 @@
+# SLOs as code — error-budget burn-rate rules (Google SRE workbook ch. 5).
+#
+# ┌──────────────────────────────────────────────────────────────────────────┐
+# │ SLO definitions (the single source of truth — docs and k6 thresholds     │
+# │ reference THIS block; change targets here first):                        │
+# │                                                                          │
+# │ SLO-1  HTTP latency+availability: 99% of HTTP requests complete in       │
+# │        < 500 ms AND are non-5xx, over a rolling 30-day window.           │
+# │        (error budget: 1% of requests; k6 gate: p(99)<500 in              │
+# │        scripts/k6/order-flow.js)                                         │
+# │                                                                          │
+# │ SLO-2  Order choreography: 99% of orders reach a terminal status         │
+# │        (paid / payment_failed / cancelled) in < 60 s of creation,        │
+# │        over a rolling 30-day window.                                     │
+# │        Caveat: orders that NEVER reach a terminal status are not         │
+# │        observed by the lifecycle histogram — the OutboxBacklogGrowing /  │
+# │        KafkaConsumerLagGrowing alerts cover the fully-stuck case.        │
+# └──────────────────────────────────────────────────────────────────────────┘
+#
+# Burn-rate methodology: alert when the error budget is being consumed N×
+# faster than the SLO allows, measured over a long AND a short window (the
+# short window stops alerting promptly once the problem ends):
+#
+#   fast burn:  14.4× over 1h  AND 5m   → 2%  of the 30d budget per hour  → critical
+#   slow burn:   6×   over 6h  AND 30m  → 5%  of the 30d budget per 6h    → warning
+#
+# With a 1% error budget the thresholds are 14.4 × 0.01 = 0.144 and
+# 6 × 0.01 = 0.06 on the error RATIO.
+#
+# All histogram expressions use Prometheus NATIVE histogram functions
+# (histogram_fraction / histogram_count) — the duration metrics are native
+# histograms, there is no `le` label. See docs/operations.md §Latency tails.
+#
+# Validate + unit-test (same image the stack pins):
+#   docker run --rm -v $PWD/deploy/prometheus:/r --entrypoint promtool \
+#     prom/prometheus:v3.12.0 check rules /r/slo.yaml
+#   docker run --rm -v $PWD/deploy/prometheus:/r --entrypoint promtool \
+#     prom/prometheus:v3.12.0 test rules /r/tests/slo_test.yaml
+
+groups:
+  # ── SLO-1: HTTP latency+availability error ratio, multiwindow ────────────
+  # error_ratio(W) = 1 − good/total, where good = non-5xx requests under
+  # 500 ms (histogram_fraction over the non-5xx native histogram × its count)
+  # and total = all requests. Zero-traffic windows yield NaN, which never
+  # satisfies a > comparison — no alert on silence.
+  - name: slo-http-error-ratio
+    rules:
+      - record: job:slo_http_error_ratio:rate5m
+        expr: |
+          1 - (
+              histogram_fraction(0, 500, sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[5m])))
+            * histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[5m])))
+            / histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds[5m])))
+          )
+      - record: job:slo_http_error_ratio:rate30m
+        expr: |
+          1 - (
+              histogram_fraction(0, 500, sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[30m])))
+            * histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[30m])))
+            / histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds[30m])))
+          )
+      - record: job:slo_http_error_ratio:rate1h
+        expr: |
+          1 - (
+              histogram_fraction(0, 500, sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[1h])))
+            * histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[1h])))
+            / histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds[1h])))
+          )
+      - record: job:slo_http_error_ratio:rate6h
+        expr: |
+          1 - (
+              histogram_fraction(0, 500, sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[6h])))
+            * histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code!~"5.."}[6h])))
+            / histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds[6h])))
+          )
+
+  # ── SLO-2: order-lifecycle error ratio, multiwindow ──────────────────────
+  # error_ratio(W) = fraction of orders whose created→terminal duration
+  # exceeded 60 s. Fed by the lane-B orders.lifecycle.duration histogram.
+  - name: slo-orders-lifecycle-error-ratio
+    rules:
+      - record: global:slo_orders_lifecycle_error_ratio:rate5m
+        expr: 1 - histogram_fraction(0, 60, sum(rate(otel_orders_lifecycle_duration_seconds[5m])))
+      - record: global:slo_orders_lifecycle_error_ratio:rate30m
+        expr: 1 - histogram_fraction(0, 60, sum(rate(otel_orders_lifecycle_duration_seconds[30m])))
+      - record: global:slo_orders_lifecycle_error_ratio:rate1h
+        expr: 1 - histogram_fraction(0, 60, sum(rate(otel_orders_lifecycle_duration_seconds[1h])))
+      - record: global:slo_orders_lifecycle_error_ratio:rate6h
+        expr: 1 - histogram_fraction(0, 60, sum(rate(otel_orders_lifecycle_duration_seconds[6h])))
+
+  # ── Burn-rate alerts ──────────────────────────────────────────────────────
+  - name: slo-burn-alerts
+    rules:
+      - alert: HTTPSLOFastBurn
+        # 14.4× burn over 1h AND 5m: at this pace 2% of the 30-day error
+        # budget disappears every hour — page-worthy.
+        expr: |
+          job:slo_http_error_ratio:rate1h > (14.4 * 0.01)
+          and
+          job:slo_http_error_ratio:rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }}: HTTP SLO fast burn (>14.4x for 1h+5m)"
+          description: "Requests failing the 99%<500ms-and-non-5xx SLO at {{ $value | humanizePercentage }} — the 30d error budget burns in under 2 days at this rate."
+          runbook_url: "docs/operations.md#latency-tails--slos"
+
+      - alert: HTTPSLOSlowBurn
+        # 6× burn over 6h AND 30m: budget gone in ~5 days — ticket-worthy.
+        expr: |
+          job:slo_http_error_ratio:rate6h > (6 * 0.01)
+          and
+          job:slo_http_error_ratio:rate30m > (6 * 0.01)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }}: HTTP SLO slow burn (>6x for 6h+30m)"
+          description: "Sustained SLO violations at {{ $value | humanizePercentage }} error ratio. Investigate before the fast-burn page fires."
+          runbook_url: "docs/operations.md#latency-tails--slos"
+
+      - alert: OrdersLifecycleSLOFastBurn
+        expr: |
+          global:slo_orders_lifecycle_error_ratio:rate1h > (14.4 * 0.01)
+          and
+          global:slo_orders_lifecycle_error_ratio:rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Order choreography SLO fast burn (>14.4x for 1h+5m)"
+          description: "More than {{ $value | humanizePercentage }} of orders take >60s to reach a terminal status. Check consumer lag, outbox backlog and the choreography dashboard."
+          runbook_url: "docs/operations.md#latency-tails--slos"
+
+      - alert: OrdersLifecycleSLOSlowBurn
+        expr: |
+          global:slo_orders_lifecycle_error_ratio:rate6h > (6 * 0.01)
+          and
+          global:slo_orders_lifecycle_error_ratio:rate30m > (6 * 0.01)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Order choreography SLO slow burn (>6x for 6h+30m)"
+          description: "Sustained lifecycle-latency SLO violations ({{ $value | humanizePercentage }} of orders >60s to terminal). Investigate before the fast-burn page fires."
+          runbook_url: "docs/operations.md#latency-tails--slos"

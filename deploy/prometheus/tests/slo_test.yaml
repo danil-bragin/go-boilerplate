@@ -1,0 +1,149 @@
+# promtool unit tests for deploy/prometheus/slo.yaml — proves the burn-rate
+# arithmetic with SYNTHETIC NATIVE HISTOGRAM series.
+#
+# promtool ≥ v3 supports native-histogram literals in input_series:
+#   {{schema:0 sum:S count:C offset:O buckets:[...]}}+{{...increment...}}xN
+# (verified against prom/prometheus:v3.12.0 — the same image the stack pins).
+# What promtool CANNOT do here: exact float equality on histogram_fraction
+# results is brittle (interpolation noise in the last ulp), so value checks
+# assert bounded comparisons and the alert tests assert firing/not-firing.
+#
+# Bucket geometry (schema 0 → powers of two): for the HTTP metric (ms) the
+# "good" bucket is index 8 = (128,256] and the "bad" bucket index 11 =
+# (1024,2048]; index 9 = (256,512] — the one straddling the 500 ms SLO
+# boundary — is kept EMPTY so histogram_fraction(0, 500) needs no
+# interpolation. Same trick for lifecycle (s): good (16,32], bad (64,128],
+# straddler (32,64] empty.
+#
+# Run:
+#   docker run --rm -v $PWD/deploy/prometheus:/r --entrypoint promtool \
+#     prom/prometheus:v3.12.0 test rules /r/tests/slo_test.yaml
+
+rule_files:
+  - ../slo.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # ── 20% of requests are slow (>1s): every burn window sits at 0.20 ──────
+  # 0.20 > 0.144 (fast) and > 0.06 (slow) → both alerts fire.
+  - interval: 1m
+    input_series:
+      - series: 'otel_http_server_duration_milliseconds{job="gateway", http_route="/v1/orders", http_response_status_code="200"}'
+        values: '{{schema:0 sum:20000 count:100 offset:8 buckets:[80 0 0 20]}}+{{schema:0 sum:20000 count:100 offset:8 buckets:[80 0 0 20]}}x80'
+    promql_expr_test:
+      # Recording-rule arithmetic: error ratio ≈ 0.20 on the 5m window.
+      - expr: (job:slo_http_error_ratio:rate5m > bool 0.19) * (job:slo_http_error_ratio:rate5m < bool 0.21)
+        eval_time: 70m
+        exp_samples:
+          - labels: '{job="gateway"}'
+            value: 1
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: HTTPSLOFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: gateway
+            exp_annotations:
+              summary: "gateway: HTTP SLO fast burn (>14.4x for 1h+5m)"
+              description: "Requests failing the 99%<500ms-and-non-5xx SLO at 20% — the 30d error budget burns in under 2 days at this rate."
+              runbook_url: "docs/operations.md#latency-tails--slos"
+      - eval_time: 70m
+        alertname: HTTPSLOSlowBurn
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: gateway
+            exp_annotations:
+              summary: "gateway: HTTP SLO slow burn (>6x for 6h+30m)"
+              description: "Sustained SLO violations at 20% error ratio. Investigate before the fast-burn page fires."
+              runbook_url: "docs/operations.md#latency-tails--slos"
+
+  # ── availability leg: 10% of requests are FAST but 5xx ──────────────────
+  # Latency alone is perfect; the 5xx exclusion must still count those
+  # requests as bad → ratio 0.10 < 0.144 (no fast burn) but > 0.06 → slow
+  # burn fires.
+  - interval: 1m
+    input_series:
+      - series: 'otel_http_server_duration_milliseconds{job="gateway", http_route="/v1/orders", http_response_status_code="200"}'
+        values: '{{schema:0 sum:18000 count:90 offset:8 buckets:[90]}}+{{schema:0 sum:18000 count:90 offset:8 buckets:[90]}}x80'
+      - series: 'otel_http_server_duration_milliseconds{job="gateway", http_route="/v1/orders", http_response_status_code="500"}'
+        values: '{{schema:0 sum:2000 count:10 offset:8 buckets:[10]}}+{{schema:0 sum:2000 count:10 offset:8 buckets:[10]}}x80'
+    promql_expr_test:
+      - expr: (job:slo_http_error_ratio:rate5m > bool 0.09) * (job:slo_http_error_ratio:rate5m < bool 0.11)
+        eval_time: 70m
+        exp_samples:
+          - labels: '{job="gateway"}'
+            value: 1
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: HTTPSLOFastBurn
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: HTTPSLOSlowBurn
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: gateway
+            exp_annotations:
+              summary: "gateway: HTTP SLO slow burn (>6x for 6h+30m)"
+              description: "Sustained SLO violations at 10% error ratio. Investigate before the fast-burn page fires."
+              runbook_url: "docs/operations.md#latency-tails--slos"
+
+  # ── multiwindow guard: a short 100%-bad spike must NOT page ─────────────
+  # 65 minutes of perfect traffic, then 5 minutes of all-slow requests:
+  # rate5m ≈ 1.0 but rate1h ≈ 5/70 ≈ 0.07 < 0.144 → fast burn stays silent
+  # (this is exactly why the burn-rate alert ANDs a long and a short window).
+  - interval: 1m
+    input_series:
+      - series: 'otel_http_server_duration_milliseconds{job="gateway", http_route="/v1/orders", http_response_status_code="200"}'
+        values: '{{schema:0 sum:20000 count:100 offset:8 buckets:[100]}}+{{schema:0 sum:20000 count:100 offset:8 buckets:[100]}}x64 {{schema:0 sum:1330000 count:700 offset:8 buckets:[6500 0 0 100]}}+{{schema:0 sum:200000 count:100 offset:8 buckets:[0 0 0 100]}}x5'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: HTTPSLOFastBurn
+        exp_alerts: []
+
+  # ── SLO-2: 20% of orders take >60s to reach a terminal status ───────────
+  - interval: 1m
+    input_series:
+      - series: 'otel_orders_lifecycle_duration_seconds{job="gateway", terminal_status="paid"}'
+        values: '{{schema:0 sum:500 count:50 offset:5 buckets:[40 0 10]}}+{{schema:0 sum:500 count:50 offset:5 buckets:[40 0 10]}}x80'
+    promql_expr_test:
+      - expr: (global:slo_orders_lifecycle_error_ratio:rate5m > bool 0.19) * (global:slo_orders_lifecycle_error_ratio:rate5m < bool 0.21)
+        eval_time: 70m
+        exp_samples:
+          - labels: '{}'
+            value: 1
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: OrdersLifecycleSLOFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "Order choreography SLO fast burn (>14.4x for 1h+5m)"
+              description: "More than 20% of orders take >60s to reach a terminal status. Check consumer lag, outbox backlog and the choreography dashboard."
+              runbook_url: "docs/operations.md#latency-tails--slos"
+      - eval_time: 70m
+        alertname: OrdersLifecycleSLOSlowBurn
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Order choreography SLO slow burn (>6x for 6h+30m)"
+              description: "Sustained lifecycle-latency SLO violations (20% of orders >60s to terminal). Investigate before the fast-burn page fires."
+              runbook_url: "docs/operations.md#latency-tails--slos"
+
+  # ── SLO-2 healthy: 100% of orders terminal in <60s → no alerts ──────────
+  - interval: 1m
+    input_series:
+      - series: 'otel_orders_lifecycle_duration_seconds{job="gateway", terminal_status="paid"}'
+        values: '{{schema:0 sum:500 count:50 offset:5 buckets:[50]}}+{{schema:0 sum:500 count:50 offset:5 buckets:[50]}}x80'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: OrdersLifecycleSLOFastBurn
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: OrdersLifecycleSLOSlowBurn
+        exp_alerts: []
