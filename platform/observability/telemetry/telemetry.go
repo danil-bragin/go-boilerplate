@@ -67,6 +67,12 @@ type Config struct {
 	OTLPEndpoint      string `env:"OTEL_EXPORTER_OTLP_ENDPOINT" envDefault:"localhost:4317"`
 	Enabled           bool   `env:"OTEL_ENABLED"              envDefault:"false"`
 	MetricsPrometheus bool   `env:"OTEL_METRICS_PROMETHEUS"   envDefault:"true"`
+	// ClassicHistograms (TELEMETRY_CLASSIC_HISTOGRAMS) flips every duration
+	// histogram from the default base-2 exponential aggregation (exported as
+	// Prometheus NATIVE histograms by the pipeline) to per-signal tuned
+	// explicit buckets — the fallback for backends that cannot ingest native
+	// histograms. See HistogramViews / views.go for the bucket tables.
+	ClassicHistograms bool `env:"TELEMETRY_CLASSIC_HISTOGRAMS" envDefault:"false"`
 	// LogsEnabled (TELEMETRY_LOGS) opts in to OTLP log export: an otlploggrpc
 	// exporter pushing to OTLPEndpoint plus an SDK LoggerProvider (exposed via
 	// SetupAll's Providers.LoggerProvider and the otel global). Stdout logging
@@ -237,6 +243,13 @@ func SetupAll(ctx context.Context, cfg Config) (Providers, error) {
 
 	if len(mpReaders) > 0 {
 		mpReaders = append(mpReaders, sdkmetric.WithResource(res))
+		// Latency-tail views: exponential (native) histograms by default,
+		// per-signal explicit buckets when TELEMETRY_CLASSIC_HISTOGRAMS=true.
+		// Provider-wide, so the Prometheus-pull AND OTLP-push readers both
+		// see the same aggregation.
+		for _, v := range HistogramViews(cfg.ClassicHistograms) {
+			mpReaders = append(mpReaders, sdkmetric.WithView(v))
+		}
 		mp := sdkmetric.NewMeterProvider(mpReaders...)
 		otel.SetMeterProvider(mp)
 		// Go runtime metrics (go.memory.*, go.goroutine.count, …) feed the
