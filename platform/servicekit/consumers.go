@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"time"
 
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/retry"
@@ -55,9 +54,9 @@ func (s *Service) AddConsumer(ctx context.Context, groupID string, topics []stri
 
 	// Wrap with retry/DLT so poison messages never block the partition.
 	wrapped := kafka.WithRetry(handler, kafka.RetryOpts{
-		MaxAttempts: 3,
+		MaxAttempts: s.cfg.ConsumerRetryMaxAttempts,
 		Producer:    s.producer,
-		Backoff:     100 * time.Millisecond,
+		Backoff:     s.cfg.ConsumerRetryBackoff,
 	})
 
 	// Build consumer.

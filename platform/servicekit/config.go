@@ -68,6 +68,14 @@ type Config struct {
 	TopicRetention  time.Duration `env:"TOPIC_RETENTION"  envDefault:"168h"`
 	EnsureTopics    bool          `env:"ENSURE_TOPICS"    envDefault:"true"`
 
+	// In-process consumer retry knobs (used by AddConsumer's kafka.WithRetry
+	// wrap: blocking attempts, then DLT). ConsumerRetryMaxAttempts is the
+	// total number of handler invocations before the record dead-letters;
+	// ConsumerRetryBackoff is the sleep between those attempts. Tiered retry
+	// (AddConsumerWithRetry) is configured via retry.Policy instead.
+	ConsumerRetryMaxAttempts int           `env:"CONSUMER_RETRY_MAX_ATTEMPTS" envDefault:"3"`
+	ConsumerRetryBackoff     time.Duration `env:"CONSUMER_RETRY_BACKOFF"      envDefault:"100ms"`
+
 	// SerdeSRURL enables Confluent Schema Registry wire-format framing of
 	// outbox-published record values when set (e.g. "http://localhost:8081").
 	// Unset (default) keeps raw protobuf values so the boilerplate runs

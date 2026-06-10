@@ -205,7 +205,8 @@ func (e *Escalator) KeyParked(topic string, key []byte) bool {
 //     DIVERTED straight to the first retry tier — the handler never sees it,
 //     so its order relative to the escalated record is preserved.
 //  2. Otherwise the handler runs up to policy.FastAttempts times in-process
-//     (with a short ctx-aware sleep between attempts).
+//     (with a ctx-aware policy.FastBackoff sleep between attempts; values
+//     <= 0 default to 100ms).
 //  3. When all fast attempts fail the record is escalated to the next retry
 //     tier. A nil return means the consumer may commit the offset; an
 //     escalation/diversion produce failure is returned so the record is NOT
@@ -214,6 +215,10 @@ func WrapHandler(handler kafka.HandlerFunc, esc *Escalator, policy Policy) kafka
 	fastAttempts := policy.FastAttempts
 	if fastAttempts <= 0 {
 		fastAttempts = 1
+	}
+	fastBackoff := policy.FastBackoff
+	if fastBackoff <= 0 {
+		fastBackoff = 100 * time.Millisecond
 	}
 	return func(ctx context.Context, rec kafka.Record) error {
 		// Key parked → divert without handling (ordering, see package doc).
@@ -232,7 +237,7 @@ func WrapHandler(handler kafka.HandlerFunc, esc *Escalator, policy Policy) kafka
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
-				case <-time.After(100 * time.Millisecond):
+				case <-time.After(fastBackoff):
 				}
 			}
 		}
