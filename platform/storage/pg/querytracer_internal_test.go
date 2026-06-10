@@ -1,9 +1,12 @@
 package pg
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric/noop"
 )
 
 // TestQueryName pins the sqlc leading-comment parse: `-- name: X :kind` on
@@ -72,4 +75,22 @@ func TestQueryName(t *testing.T) {
 			require.Equal(t, tc.want, queryName(tc.sql))
 		})
 	}
+}
+
+// TestQueryTracer_EndPathAllocs: the per-query record path must not allocate
+// once the {query, pool} attribute set is cached — every query/batch/COPY end
+// hook runs it. A noop instrument isolates the tracer's own path from SDK
+// aggregation internals.
+func TestQueryTracer_EndPathAllocs(t *testing.T) {
+	// NOT parallel: testing.AllocsPerRun forbids parallel tests.
+	tr := &queryTracer{pool: attribute.String("pool", "writer")}
+	h, err := noop.NewMeterProvider().Meter(tracerMeterName).Float64Histogram("pg.query.duration")
+	require.NoError(t, err)
+	tr.hist = h
+
+	ctx := tr.start(context.Background(), "GetOrderView")
+	tr.end(ctx) // warm the attribute cache
+
+	allocs := testing.AllocsPerRun(1000, func() { tr.end(ctx) })
+	require.Zero(t, allocs, "cached end path must not allocate")
 }
