@@ -112,11 +112,17 @@ func NewJWKSVerifier(ctx context.Context, jwksURL, issuer, audience string, opts
 }
 
 // Verify parses and validates rawToken, returning a populated Principal on
-// success. On any validation failure it returns a wrapped ErrInvalidToken.
+// success. Token-validation failures (bad signature, expired, wrong
+// issuer/audience, azp mismatch) return a wrapped ErrInvalidToken.
+//
+// Infrastructure failures — the JWKS cache lookup failing because the IdP is
+// unreachable — are deliberately NOT wrapped in ErrInvalidToken: the HTTP
+// middleware logs non-token errors, so an IdP outage surfaces in logs instead
+// of becoming a silent storm of generic 401s.
 func (v *JWKSVerifier) Verify(ctx context.Context, rawToken string) (Principal, error) {
 	keyset, err := v.cache.Lookup(ctx, v.jwksURL)
 	if err != nil {
-		return Principal{}, fmt.Errorf("%w: fetching JWKS: %w", ErrInvalidToken, err)
+		return Principal{}, fmt.Errorf("auth: fetching JWKS: %w", err)
 	}
 
 	tok, err := jwt.Parse(
