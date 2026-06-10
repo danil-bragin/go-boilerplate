@@ -183,13 +183,17 @@ func NewConsumer(
 
 // onRevoked is called by kgo when partitions are revoked or lost. It removes
 // held batches and stops timers for the affected partitions so stale wakes
-// cannot resume a partition we no longer own after re-assignment.
+// cannot resume a partition we no longer own after re-assignment, and it
+// REMOVES the partitions from the client's paused set: kgo's paused set
+// survives revoke/reassign, so a partition revoked while held (paused) and
+// later reassigned to this same instance would otherwise never be fetched
+// again — the tier would stall silently forever. Resuming a partition we do
+// not own is harmless local bookkeeping.
 //
 // Concurrency: kgo calls this from inside PollFetches (BlockRebalanceOnPoll).
 // The Run loop does NOT hold mu while polling, so there is no deadlock.
-func (c *Consumer) onRevoked(_ context.Context, _ *kgo.Client, m map[string][]int32) {
+func (c *Consumer) onRevoked(_ context.Context, cl *kgo.Client, m map[string][]int32) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	for topic, partitions := range m {
 		for _, p := range partitions {
 			tp := topicPartition{topic: topic, partition: p}
@@ -199,6 +203,11 @@ func (c *Consumer) onRevoked(_ context.Context, _ *kgo.Client, m map[string][]in
 				delete(c.timers, tp)
 			}
 		}
+	}
+	c.mu.Unlock()
+
+	if cl != nil {
+		cl.ResumeFetchPartitions(m)
 	}
 }
 

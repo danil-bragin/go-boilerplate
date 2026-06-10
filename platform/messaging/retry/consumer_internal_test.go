@@ -160,6 +160,44 @@ func TestOnRevoked_ClearsHeldAndTimers(t *testing.T) {
 	c.mu.Unlock()
 }
 
+// TestOnRevoked_ResumesPausedPartitions verifies that revoking a partition
+// whose fetches are paused (held batch) also REMOVES it from the client's
+// paused set. kgo's paused set survives revoke/reassign: without the resume,
+// a partition that comes back to this instance after a rebalance would never
+// be fetched again — the tier stalls silently forever.
+func TestOnRevoked_ResumesPausedPartitions(t *testing.T) {
+	c := newBareConsumer()
+	// Real kgo client with an unreachable seed: Pause/ResumeFetchPartitions
+	// are pure local bookkeeping, nothing is dialed.
+	cl, err := kgo.NewClient(kgo.SeedBrokers("127.0.0.1:1"))
+	require.NoError(t, err)
+	t.Cleanup(cl.Close)
+	c.client = cl
+
+	tp := topicPartition{topic: "orders.retry.0", partition: 3}
+
+	// Hold a batch → partition paused.
+	c.holdRecords(tp, []*kgo.Record{{Topic: tp.topic, Partition: tp.partition}}, time.Now().Add(time.Hour))
+	paused := cl.PauseFetchPartitions(nil) // nil → returns current paused set
+	require.Contains(t, paused, tp.topic)
+	require.Contains(t, paused[tp.topic], tp.partition, "hold must pause the partition")
+
+	// Revoke the partition (kgo passes the owning client to the callback).
+	c.onRevoked(context.Background(), cl, map[string][]int32{tp.topic: {tp.partition}})
+
+	paused = cl.PauseFetchPartitions(nil)
+	assert.NotContains(t, paused[tp.topic], tp.partition,
+		"revoked partition must be removed from the paused set — otherwise it is never fetched again if reassigned to this instance")
+
+	// Cleanup the timer created by holdRecords.
+	close(c.done)
+	c.mu.Lock()
+	for _, tm := range c.timers {
+		tm.Stop()
+	}
+	c.mu.Unlock()
+}
+
 // ---------------------------------------------------------------------------
 // Fix 4 — TestDrainWakes_IgnoresStaleSeq
 // ---------------------------------------------------------------------------
