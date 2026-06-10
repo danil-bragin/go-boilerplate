@@ -262,6 +262,14 @@ Semantics worth knowing (see `cmd/redrive` package docs):
   so side effects run again on purpose. Default (no flag) preserves the
   original id: consumers that already processed the message before it
   dead-lettered skip it via the inbox.
+- **Dedup caveat — records without a `message-id` header.** "Consumers dedup
+  on redrive" holds only for records that carry a `message-id`. Without one,
+  the consumer inbox falls back to `topic:partition:offset` as the identity —
+  and the republished record lands at a **new** offset, so the fallback
+  identity changes and the side effect **runs again**. Redrive prints a
+  `WARN` line per such record and totals them in the run summary
+  (`N record(s) without message-id`); review those records before a live run
+  if their handlers are not naturally idempotent.
 
 ### Record headers reference
 
