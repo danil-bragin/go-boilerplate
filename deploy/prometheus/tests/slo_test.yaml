@@ -60,6 +60,80 @@ tests:
               description: "Sustained SLO violations at 20% error ratio. Investigate before the fast-burn page fires."
               runbook_url: "docs/operations.md#latency-tails--slos"
 
+  # ── TOTAL OUTAGE: 100% of requests are 5xx ──────────────────────────────
+  # The worst case must page. The good leg filters {status!~"5.."}, so during
+  # a full outage it is a ZERO-COUNT histogram (the old 200-series still
+  # exists but stops incrementing) → histogram_fraction = NaN → without the
+  # NaN-proof `or` fallback the error ratio is NaN and every burn alert is
+  # SILENT during a complete outage. Ratio must clamp to 1 → both alerts fire.
+  - interval: 1m
+    input_series:
+      # Stale non-5xx series: constant value → rate() count is 0 → NaN leg.
+      - series: 'otel_http_server_duration_milliseconds{job="gateway", http_route="/v1/orders", http_response_status_code="200"}'
+        values: '{{schema:0 sum:2000 count:10 offset:8 buckets:[10]}}x80'
+      # All live traffic is 5xx.
+      - series: 'otel_http_server_duration_milliseconds{job="gateway", http_route="/v1/orders", http_response_status_code="500"}'
+        values: '{{schema:0 sum:20000 count:100 offset:8 buckets:[100]}}+{{schema:0 sum:20000 count:100 offset:8 buckets:[100]}}x80'
+    promql_expr_test:
+      # Error ratio is exactly 1 (not NaN) on the short and long windows.
+      - expr: job:slo_http_error_ratio:rate5m
+        eval_time: 70m
+        exp_samples:
+          - labels: '{__name__="job:slo_http_error_ratio:rate5m", job="gateway"}'
+            value: 1
+      - expr: job:slo_http_error_ratio:rate1h
+        eval_time: 70m
+        exp_samples:
+          - labels: '{__name__="job:slo_http_error_ratio:rate1h", job="gateway"}'
+            value: 1
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: HTTPSLOFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: gateway
+            exp_annotations:
+              summary: "gateway: HTTP SLO fast burn (>14.4x for 1h+5m)"
+              description: "Requests failing the 99%<500ms-and-non-5xx SLO at 100% — the 30d error budget burns in under 2 days at this rate."
+              runbook_url: "docs/operations.md#latency-tails--slos"
+      - eval_time: 70m
+        alertname: HTTPSLOSlowBurn
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: gateway
+            exp_annotations:
+              summary: "gateway: HTTP SLO slow burn (>6x for 6h+30m)"
+              description: "Sustained SLO violations at 100% error ratio. Investigate before the fast-burn page fires."
+              runbook_url: "docs/operations.md#latency-tails--slos"
+
+  # ── TOTAL OUTAGE, cold start: the non-5xx series never existed ──────────
+  # Same outage but the good-leg selector matches NO series at all (service
+  # 5xx'd from its very first request). The `or 0 * <total>` fallback must
+  # cover the absent-vector case too, not just NaN.
+  - interval: 1m
+    input_series:
+      - series: 'otel_http_server_duration_milliseconds{job="gateway", http_route="/v1/orders", http_response_status_code="503"}'
+        values: '{{schema:0 sum:20000 count:100 offset:8 buckets:[100]}}+{{schema:0 sum:20000 count:100 offset:8 buckets:[100]}}x80'
+    promql_expr_test:
+      - expr: job:slo_http_error_ratio:rate5m
+        eval_time: 70m
+        exp_samples:
+          - labels: '{__name__="job:slo_http_error_ratio:rate5m", job="gateway"}'
+            value: 1
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: HTTPSLOFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: gateway
+            exp_annotations:
+              summary: "gateway: HTTP SLO fast burn (>14.4x for 1h+5m)"
+              description: "Requests failing the 99%<500ms-and-non-5xx SLO at 100% — the 30d error budget burns in under 2 days at this rate."
+              runbook_url: "docs/operations.md#latency-tails--slos"
+
   # ── availability leg: 10% of requests are FAST but 5xx ──────────────────
   # Latency alone is perfect; the 5xx exclusion must still count those
   # requests as bad → ratio 0.10 < 0.144 (no fast burn) but > 0.06 → slow
