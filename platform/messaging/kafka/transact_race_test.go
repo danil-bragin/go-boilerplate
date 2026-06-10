@@ -26,7 +26,7 @@ func TestTransact_ConcurrentProducePromises_RaceFree(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 
 	ctx := context.Background()
 	const (
@@ -60,8 +60,8 @@ func TestTransact_ConcurrentProducePromises_RaceFree(t *testing.T) {
 
 	tc, err := kafka.NewTransactConsumer(
 		kafka.Config{Brokers: []string{broker}, ClientID: "txn-race-tc"},
-		"txn-race-txn-id",
-		"txn-race-group",
+		uniqueName("txn-race-txn-id"),
+		uniqueName("txn-race-group"),
 		[]string{inTopic},
 	)
 	require.NoError(t, err)
@@ -87,7 +87,7 @@ func TestTransact_ConcurrentProducePromises_RaceFree(t *testing.T) {
 	reader, err := kafka.NewConsumer(kafka.Config{
 		Brokers:  []string{broker},
 		ClientID: "txn-race-reader",
-		GroupID:  "txn-race-reader-group",
+		GroupID:  uniqueName("txn-race-reader-group"),
 	}, []string{outTopic})
 	require.NoError(t, err)
 

@@ -81,6 +81,12 @@ type Config struct {
 	// mid-chain). 1.0 (default) samples everything — right for dev and
 	// moderate traffic; lower it (e.g. 0.1) on high-QPS edges.
 	TraceRatio float64 `env:"TELEMETRY_TRACE_RATIO" envDefault:"1.0"`
+	// ShutdownTimeout bounds each provider's flush when the returned
+	// ShutdownFunc runs. Zero (the default — deliberately no env tag) means
+	// the production default of 5s. It exists so tests can inject a short
+	// timeout and not wait out full flush windows against an unreachable
+	// collector; production code should leave it unset.
+	ShutdownTimeout time.Duration `env:"-"`
 }
 
 // ShutdownFunc flushes and stops telemetry providers.
@@ -138,6 +144,12 @@ func SetupAll(ctx context.Context, cfg Config) (Providers, error) {
 	var shutdowns []func(context.Context) error
 	var metricsHandler http.Handler
 
+	// Per-provider flush budget during shutdown (test-injectable; see Config).
+	shutdownTimeout := cfg.ShutdownTimeout
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = 5 * time.Second
+	}
+
 	// Shared resource: service.name drives the `job` label that the
 	// collector's Prometheus exporter attaches to every metric (and the
 	// service name shown in Jaeger). Built once for both providers so traces
@@ -186,7 +198,7 @@ func SetupAll(ctx context.Context, cfg Config) (Providers, error) {
 		otel.SetTracerProvider(tp)
 
 		shutdowns = append(shutdowns, func(_ context.Context) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 			defer cancel()
 			return tp.Shutdown(ctx)
 		})
@@ -234,7 +246,7 @@ func SetupAll(ctx context.Context, cfg Config) (Providers, error) {
 			slog.Warn("telemetry: runtime instrumentation start failed", "error", err)
 		}
 		shutdowns = append(shutdowns, func(_ context.Context) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 			defer cancel()
 			if err := mp.Shutdown(ctx); err != nil {
 				// Metric flush errors (e.g. collector unreachable) are best-effort;

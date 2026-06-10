@@ -153,6 +153,35 @@ go test -short -coverprofile=coverage.out ./... \
   && go tool cover -func=coverage.out | tail -1       # coverage summary
 ```
 
+### Docker capacity & parallelism
+
+Integration packages each start real containers (Postgres, Redpanda, Redis,
+Keycloak) via testcontainers. By default `go test ./...` runs up to `GOMAXPROCS`
+**packages** in parallel, so a full run can have many container-heavy packages
+hammering the Docker daemon at once. On constrained hosts — CI runners have
+~4 vCPUs — the containers get CPU/memory-starved, health checks time out, and
+test binaries are killed: the tell-tale symptom is a package failing with
+**exit code 133** (or container startup timeouts) rather than a real assertion
+failure.
+
+The fix is serial package execution for any Docker-backed lane:
+
+```bash
+go test -p 1 ./...          # what `just test` / `just test-integration` do
+```
+
+The `just test` / `just test-integration` recipes default to `-p 1` via the
+`GOTESTFLAGS` variable; override it when your machine has Docker capacity to
+spare:
+
+```bash
+GOTESTFLAGS="" just test-integration    # restore default parallelism
+```
+
+CI runs the integration job with `-p 1 -timeout 25m` (job `timeout-minutes:
+30`) for the same reason. The `-short` fast lane is unaffected — it starts no
+containers and keeps full parallelism.
+
 ---
 
 ## 6. Mock Regeneration

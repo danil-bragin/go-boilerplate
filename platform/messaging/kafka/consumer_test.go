@@ -13,23 +13,28 @@ import (
 
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
+	"go-boilerplate/platform/testkit/goleakopts"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.uber.org/goleak"
 )
 
 func TestConsumer_GroupConsumesCommitted(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 
-	const (
-		topic   = "ctopic"
-		groupID = "g1"
-		n       = 5
-	)
+	// Two consumer Run goroutines are started and closed in this test; the
+	// leak check proves Run/Close leave nothing behind (client-lifetime kgo
+	// loops and shared-container goroutines are ignored via goleakopts).
+	defer goleak.VerifyNone(t, goleakopts.Default(goleak.IgnoreCurrent())...)
+
+	topic := uniqueName("ctopic")
+	groupID := uniqueName("g1")
+	const n = 5
 
 	ctx := context.Background()
 
@@ -168,12 +173,10 @@ func TestConsumer_HandlerErrorRedeliversRecord(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 
-	const (
-		topic   = "redeliver-topic"
-		groupID = "redeliver-group"
-	)
+	topic := uniqueName("redeliver-topic")
+	groupID := uniqueName("redeliver-group")
 
 	ctx := context.Background()
 
@@ -292,11 +295,11 @@ func TestConsumer_PerPartitionParallelOrdering(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 
+	topic := uniqueName("parallel-ordering-topic")
+	groupID := uniqueName("parallel-ordering-group")
 	const (
-		topic          = "parallel-ordering-topic"
-		groupID        = "parallel-ordering-group"
 		nPartitions    = 3
 		nPerPartition  = 4
 		sleepPerRecord = 10 * time.Millisecond
@@ -447,11 +450,11 @@ func TestConsumer_OnePartitionFailureDoesNotBlockOthers(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 
+	topic := uniqueName("partition-isolation-topic")
+	groupID := uniqueName("partition-isolation-group")
 	const (
-		topic         = "partition-isolation-topic"
-		groupID       = "partition-isolation-group"
 		nHealthy      = 3
 		healthyPartID = int32(1)
 		failingPartID = int32(0)

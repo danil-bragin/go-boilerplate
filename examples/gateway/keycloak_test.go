@@ -96,13 +96,15 @@ func TestGateway_KeycloakRealToken(t *testing.T) {
 	t.Logf("obtained access token (length=%d)", len(accessToken))
 
 	// ── Start the gateway with auth enabled ──────────────────────────────────
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 
+	configureTopics(t)
 	t.Setenv("PG_DSN", dsn)
 	t.Setenv("KAFKA_BROKERS", broker)
 	t.Setenv("KAFKA_CLIENT_ID", "gateway-kc-test-"+uuid.New().String())
 	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
 	t.Setenv("GATEWAY_AUTH_DISABLED", "false")
 	t.Setenv("GATEWAY_JWKS_URL", jwksURL)
 	t.Setenv("GATEWAY_JWKS_ISSUER", baseURL)

@@ -77,7 +77,7 @@ func TestConsumerMetrics_ProcessedFailedLag(t *testing.T) {
 	}
 	reader := manualReader(t)
 
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 	ctx := context.Background()
 	topic := "metrics-topic-" + uuid.NewString()[:8]
 
@@ -137,7 +137,7 @@ func TestDLTMetrics_ProducedCounter(t *testing.T) {
 	}
 	reader := manualReader(t)
 
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 	ctx := context.Background()
 	topic := "dltm-topic-" + uuid.NewString()[:8]
 

@@ -10,9 +10,11 @@ import (
 
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
+	"go-boilerplate/platform/testkit/goleakopts"
 
 	"github.com/stretchr/testify/require"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.uber.org/goleak"
 )
 
 // TestShutdownCommitsProcessedRecords proves that records successfully
@@ -25,10 +27,16 @@ func TestShutdownCommitsProcessedRecords(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 	ctx := context.Background()
 
-	const topic = "shutdown-commit"
+	// Both consumers Run in goroutines and are closed below; nothing of the
+	// shutdown path may outlive the test (kgo client-lifetime loops and the
+	// shared-container goroutines are ignored via goleakopts).
+	defer goleak.VerifyNone(t, goleakopts.Default(goleak.IgnoreCurrent())...)
+
+	topic := uniqueName("shutdown-commit")
+	group := uniqueName("g-shut")
 
 	adminCl, err := kafka.NewClient(kafka.Config{Brokers: []string{broker}, ClientID: "admin"})
 	require.NoError(t, err)
@@ -45,7 +53,7 @@ func TestShutdownCommitsProcessedRecords(t *testing.T) {
 	produceManual(t, broker, recs...)
 
 	c1, err := kafka.NewConsumer(kafka.Config{
-		Brokers: []string{broker}, ClientID: "c-shut-1", GroupID: "g-shut",
+		Brokers: []string{broker}, ClientID: "c-shut-1", GroupID: group,
 	}, []string{topic})
 	require.NoError(t, err)
 
@@ -78,7 +86,7 @@ func TestShutdownCommitsProcessedRecords(t *testing.T) {
 
 	// Second consumer, same group: nothing must be redelivered.
 	c2, err := kafka.NewConsumer(kafka.Config{
-		Brokers: []string{broker}, ClientID: "c-shut-2", GroupID: "g-shut",
+		Brokers: []string{broker}, ClientID: "c-shut-2", GroupID: group,
 	}, []string{topic})
 	require.NoError(t, err)
 	defer c2.Close(ctx)

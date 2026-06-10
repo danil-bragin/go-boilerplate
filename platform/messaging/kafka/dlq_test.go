@@ -62,13 +62,11 @@ func TestWithRetry_RoutesToDLTAfterMaxAttempts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 	ctx := context.Background()
 
-	const (
-		topic    = "work"
-		dltTopic = "work.DLT"
-	)
+	topic := uniqueName("work")
+	dltTopic := topic + ".DLT"
 
 	cl, err := kafka.NewClient(kafka.Config{
 		Brokers:  []string{broker},
@@ -125,13 +123,11 @@ func TestWithRetry_SucceedsWithinAttempts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 	ctx := context.Background()
 
-	const (
-		topic    = "work2"
-		dltTopic = "work2.DLT"
-	)
+	topic := uniqueName("work2")
+	dltTopic := topic + ".DLT"
 
 	cl, err := kafka.NewClient(kafka.Config{
 		Brokers:  []string{broker},
@@ -176,12 +172,10 @@ func TestWithRetry_CtxCancelStopsRetry(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (redpanda container)")
 	}
-	broker, _ := kafkatest.NewRedpanda(t)
+	broker, _ := kafkatest.Shared(t)
 
-	const (
-		topic    = "work3"
-		dltTopic = "work3.DLT"
-	)
+	topic := uniqueName("work3")
+	dltTopic := topic + ".DLT"
 
 	cl, err := kafka.NewClient(kafka.Config{
 		Brokers:  []string{broker},

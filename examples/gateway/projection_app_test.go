@@ -28,9 +28,10 @@ func TestProjectionApp_StandaloneSmoke(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 
+	configureTopics(t)
 	t.Setenv("PG_DSN", dsn)
 	t.Setenv("KAFKA_BROKERS", broker)
 	t.Setenv("KAFKA_CLIENT_ID", "projection-smoke-"+uuid.New().String())
@@ -54,7 +55,7 @@ func TestProjectionApp_StandaloneSmoke(t *testing.T) {
 		OrderId: orderID, CustomerId: "c-split", AmountCents: 300, Currency: "USD",
 	})
 	require.NoError(t, err)
-	produceRaw(t, broker, "orders.events", orderID, payload, map[string]string{
+	produceRaw(t, broker, topicOrdersEvents, orderID, payload, map[string]string{
 		"event-type": "orders.OrderCreated.v1",
 		"message-id": orderID,
 	})
@@ -79,8 +80,8 @@ func TestGateway_EmbeddedProjectionDisabled(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	broker, _ := kafkatest.NewRedpanda(t)
-	dsn := pgtest.NewDSN(t)
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
 
 	t.Setenv("GATEWAY_EMBEDDED_PROJECTION", "false")
 	baseURL := startApp(t, broker, dsn)
@@ -90,7 +91,7 @@ func TestGateway_EmbeddedProjectionDisabled(t *testing.T) {
 		OrderId: orderID, CustomerId: "c-noproj", AmountCents: 100, Currency: "USD",
 	})
 	require.NoError(t, err)
-	produceRaw(t, broker, "orders.events", orderID, payload, map[string]string{
+	produceRaw(t, broker, topicOrdersEvents, orderID, payload, map[string]string{
 		"event-type": "orders.OrderCreated.v1",
 		"message-id": orderID,
 	})
