@@ -139,6 +139,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest   # ubuntu-latest ships with Docker; testcontainers work out of the box
+    timeout-minutes: 30      # serial (-p 1) integration suite needs headroom; see the go test note below
     steps:
       - uses: actions/checkout@v4
 
@@ -152,10 +153,18 @@ jobs:
         run: go build ./...
 
       # NOTE: Integration tests use testcontainers-go and spin up real Postgres,
-      # Redpanda, Redis, and MinIO containers. The suite can take 3–5 minutes.
-      # Docker is available on ubuntu-latest runners so no extra setup is needed.
+      # Redpanda, Redis, and MinIO containers. Docker is available on
+      # ubuntu-latest runners so no extra setup is needed.
+      #
+      # -p 1 (serial package execution) is REQUIRED here: ubuntu-latest runners
+      # have only 4 vCPUs, and go test's default package parallelism runs
+      # several container-heavy packages at once, oversubscribing the Docker
+      # daemon. The symptom is containers being CPU/memory-starved and test
+      # binaries dying with exit code 133 — not a real test failure. Serial
+      # execution is slower but deterministic; the 25m go-test timeout (and
+      # the 30m job timeout above) accounts for it.
       - name: go test
-        run: go test -race -timeout 10m ./...
+        run: go test -race -p 1 -timeout 25m ./...
 
   # ── gofumpt format gate ───────────────────────────────────────────────────
   # Fails if any non-generated Go file is not formatted with gofumpt.

@@ -1,5 +1,12 @@
 set shell := ["bash", "-uc"]
 
+# Serial package execution for Docker-backed lanes: integration packages each
+# start real containers (testcontainers), and running several such packages in
+# parallel oversubscribes the Docker daemon (CI runners have ~4 vCPU) — the
+# symptom is tests dying with exit code 133. Override per-invocation:
+#   GOTESTFLAGS="" just test-integration
+GOTESTFLAGS := env("GOTESTFLAGS", "-p 1")
+
 # List all available recipes
 default:
     @just --list
@@ -43,17 +50,17 @@ gen-mocks:
     go generate ./platform/testkit/mocks/...
     goimports -w -local go-boilerplate platform/testkit/mocks/
 
-# Run tests for a package or pattern (default: ./...)
+# Run tests for a package or pattern (default: ./...) — serial packages (see GOTESTFLAGS)
 test pkg='./...':
-    go test {{pkg}}
+    go test {{GOTESTFLAGS}} {{pkg}}
 
 # Fast lane: unit + functional tests only (-short, no Docker)
 test-unit:
     go test -short ./...
 
-# Full lane: all tests including integration (requires Docker)
+# Full lane: all tests including integration (requires Docker) — serial packages (see GOTESTFLAGS)
 test-integration:
-    go test ./...
+    go test {{GOTESTFLAGS}} ./...
 
 # Run the end-to-end choreography test (self-provisions Redpanda + Postgres via testcontainers; requires Docker, NOT docker compose)
 test-e2e:
