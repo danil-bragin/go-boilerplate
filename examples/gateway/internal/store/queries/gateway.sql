@@ -27,32 +27,40 @@ on conflict (order_id) do update set
 -- Terminal-status precedence (MarkPaid / MarkPaymentFailed / MarkPaymentTimeout):
 -- 'paid', 'payment_failed', and 'payment_timeout' are TERMINAL. Precedence is
 -- pending < created < {terminal}; the FIRST terminal event wins and any later
--- terminal event is ignored (0 rows affected — the projection logs a warning).
--- This keeps the projection reorder-safe under at-least-once delivery.
+-- terminal event is ignored (no row returned — sqlc.ErrNoRows — and the
+-- projection logs a warning). This keeps the projection reorder-safe under
+-- at-least-once delivery.
+--
+-- RETURNING created_at feeds the orders.lifecycle.duration histogram: it is
+-- only returned when the terminal write APPLIED, so the projection observes
+-- the order's created→terminal latency exactly once per order.
 
--- name: MarkPaid :execrows
+-- name: MarkPaid :one
 insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)
 values ($1, '', 0, '', 'paid', now())
 on conflict (order_id) do update set
   status     = 'paid',
   updated_at = now()
-where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout');
+where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout')
+returning created_at;
 
--- name: MarkPaymentFailed :execrows
+-- name: MarkPaymentFailed :one
 insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)
 values ($1, '', 0, '', 'payment_failed', now())
 on conflict (order_id) do update set
   status     = 'payment_failed',
   updated_at = now()
-where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout');
+where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout')
+returning created_at;
 
--- name: MarkPaymentTimeout :execrows
+-- name: MarkPaymentTimeout :one
 insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)
 values ($1, '', 0, '', 'payment_timeout', now())
 on conflict (order_id) do update set
   status     = 'payment_timeout',
   updated_at = now()
-where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout');
+where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout')
+returning created_at;
 
 -- name: GetOrderView :one
 select order_id, customer_id, amount_cents, currency, status, created_at, updated_at

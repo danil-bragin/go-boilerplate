@@ -5,6 +5,7 @@ package projection
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -14,6 +15,7 @@ import (
 	"go-boilerplate/platform/storage/pg"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	gatewayapp "go-boilerplate/examples/gateway/internal/app"
 	storegen "go-boilerplate/examples/gateway/internal/store/gen"
@@ -54,6 +56,7 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 			notify(ctx, orderID)
 		}
 	}
+	metrics := newLifecycleMetrics()
 	opts = append([]consume.Option{consume.WithLogger(logger)}, opts...)
 	return consume.New(pool, consumerGroup, opts...).Handler(
 		consume.TypedFor(
@@ -87,11 +90,8 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 					return err
 				}
 				q := storegen.New(pg.FromContext(ctx, pool))
-				rows, err := q.MarkPaid(ctx, orderID)
-				if err != nil {
-					return fmt.Errorf("projection: mark paid: %w", err)
-				}
-				if rows == 0 {
+				createdAt, err := q.MarkPaid(ctx, orderID)
+				if errors.Is(err, pgx.ErrNoRows) {
 					// First terminal state wins: the row is already in a
 					// terminal status (payment_failed/payment_timeout/paid) —
 					// a later conflicting terminal event is ignored, loudly.
@@ -99,6 +99,10 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 						"order_id", orderID)
 					return nil
 				}
+				if err != nil {
+					return fmt.Errorf("projection: mark paid: %w", err)
+				}
+				metrics.observe(ctx, "paid", createdAt.Time)
 				logger.Debug("projection: marked paid", "order_id", orderID)
 				return nil
 			},
@@ -114,15 +118,16 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 					return err
 				}
 				q := storegen.New(pg.FromContext(ctx, pool))
-				rows, err := q.MarkPaymentTimeout(ctx, orderID)
-				if err != nil {
-					return fmt.Errorf("projection: mark payment_timeout: %w", err)
-				}
-				if rows == 0 {
+				createdAt, err := q.MarkPaymentTimeout(ctx, orderID)
+				if errors.Is(err, pgx.ErrNoRows) {
 					logger.Warn("projection: OrderPaymentTimedOut ignored — order already in a terminal status",
 						"order_id", orderID)
 					return nil
 				}
+				if err != nil {
+					return fmt.Errorf("projection: mark payment_timeout: %w", err)
+				}
+				metrics.observe(ctx, "payment_timeout", createdAt.Time)
 				logger.Debug("projection: marked payment_timeout", "order_id", orderID)
 				return nil
 			},
@@ -138,15 +143,16 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 					return err
 				}
 				q := storegen.New(pg.FromContext(ctx, pool))
-				rows, err := q.MarkPaymentFailed(ctx, orderID)
-				if err != nil {
-					return fmt.Errorf("projection: mark payment_failed: %w", err)
-				}
-				if rows == 0 {
+				createdAt, err := q.MarkPaymentFailed(ctx, orderID)
+				if errors.Is(err, pgx.ErrNoRows) {
 					logger.Warn("projection: PaymentFailed ignored — order already in a terminal status",
 						"order_id", orderID, "reason", evt.GetReason())
 					return nil
 				}
+				if err != nil {
+					return fmt.Errorf("projection: mark payment_failed: %w", err)
+				}
+				metrics.observe(ctx, "payment_failed", createdAt.Time)
 				logger.Debug("projection: marked payment_failed",
 					"order_id", orderID, "reason", evt.GetReason())
 				return nil
