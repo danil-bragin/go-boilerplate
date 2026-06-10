@@ -262,6 +262,7 @@ services:
     volumes:
       - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./deploy/prometheus/rules.yaml:/etc/prometheus/rules.yaml:ro
+      - ./deploy/prometheus/rules-latency.yaml:/etc/prometheus/rules-latency.yaml:ro
       - prometheus-data:/prometheus
     ports:
       - "9090:9090"

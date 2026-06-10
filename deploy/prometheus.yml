@@ -10,9 +10,12 @@ global:
   # change needed, explicit *_bucket series ingest either way.
   scrape_native_histograms: true
 
-# Alerting rules — compose mounts deploy/prometheus/rules.yaml at this path.
+# Rules — compose mounts deploy/prometheus/*.yaml at these paths:
+#   rules.yaml          alerting rules (choreography/edge/lifecycle)
+#   rules-latency.yaml  p50/p95/p99 recording rules over native histograms
 rule_files:
   - /etc/prometheus/rules.yaml
+  - /etc/prometheus/rules-latency.yaml
 
 scrape_configs:
   # Scrape Prometheus itself.
@@ -23,7 +26,11 @@ scrape_configs:
   # Scrape the OTel Collector's Prometheus exporter.
   # This is the primary metrics source — app services export via OTLP to the
   # collector which exposes an aggregated /metrics endpoint on :8889.
+  # honor_labels: the exporter attaches job=<OTel service.name> to every
+  # series; without honor_labels Prometheus would rename it to exported_job
+  # and set job=otel-collector, breaking every by(job) rule and dashboard.
   - job_name: otel-collector
+    honor_labels: true
     static_configs:
       - targets: ["otel-collector:8889"]
 
