@@ -231,14 +231,14 @@ services:
       - "4317:4317"   # OTLP gRPC
       - "4318:4318"   # OTLP HTTP
       - "8889:8889"   # Prometheus exporter
+      - "13133:13133" # health_check extension (curl -f http://localhost:13133/)
     depends_on:
       - jaeger
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:13133/"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+    # NOTE: no compose healthcheck — the contrib image is DISTROLESS (no
+    # shell/wget/curl), so an in-container probe cannot execute; the previous
+    # wget healthcheck could only ever report unhealthy. Liveness is served
+    # by the health_check extension on :13133 (deploy/otel-collector.yaml),
+    # published above for host-side / orchestrator probes.
 
   jaeger:
     image: jaegertracing/all-in-one:1.62.0
