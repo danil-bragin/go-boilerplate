@@ -24,7 +24,7 @@ A **production-grade, opinionated Go microservice boilerplate** for highload / e
 | L2 cache | **rueidis** + Redis pub/sub cross-instance L1 invalidation + circuit breaker on L2 |
 | Object storage | **aws-sdk-go-v2 S3** behind `ObjectStore` interface; **SeaweedFS** for local dev (MinIO OSS archived — ADR-0012) |
 | Resilience | **failsafe-go** (Retry/CB/Timeout/Bulkhead/RateLimit) |
-| Observability | **OpenTelemetry** → OTel Collector → Jaeger + Prometheus; **Pyroscope** continuous profiling (`PYROSCOPE_ADDR` opt-in SDK) |
+| Observability | **OpenTelemetry** → OTel Collector → Jaeger + Prometheus v3 (**native histograms** for all duration metrics; p50/p95/p99 recording rules, SLO burn-rate alerts, Grafana latency-tails dashboard — `docs/operations.md` §Latency tails & SLOs); **Pyroscope** continuous profiling (`PYROSCOPE_ADDR` opt-in SDK) |
 | Auth | **Keycloak** OIDC + **lestrrat jwx/v3** JWKS validation (clock skew + azp options) |
 | AuthZ | RBAC behavior (roles/perms from token claims) + resource-aware ownership checks |
 | Feature flags | **OpenFeature** Go SDK v2 (`go.openfeature.dev/openfeature/v2`) + swappable provider |
