@@ -346,6 +346,65 @@ and `rpk group describe`).
 
 ---
 
+## Feature flags (flagd)
+
+`platform/featureflags` wraps the OpenFeature SDK; the in-memory provider is
+wired today (see the package godoc). To evaluate flags from a real backend
+without code changes beyond provider registration, run
+[flagd](https://flagd.dev) next to the stack. Nothing in the repo depends on
+it, so the compose wiring ships commented-out — paste into
+`docker-compose.yml` and create the flags file when you need it:
+
+```yaml
+#  flagd:
+#    image: ghcr.io/open-feature/flagd:v0.11.8
+#    restart: unless-stopped
+#    profiles: ["flags"]      # opt-in: docker compose --profile flags up -d
+#    command: ["start", "--uri", "file:/etc/flagd/flags.json"]
+#    volumes:
+#      - ./deploy/flagd/flags.json:/etc/flagd/flags.json:ro
+#    ports:
+#      - "8013:8013"          # gRPC evaluation API (the Go provider's default)
+```
+
+`deploy/flagd/flags.json` (flagd's file syntax; hot-reloaded on change):
+
+```json
+{
+  "$schema": "https://flagd.dev/schema/v0/flags.json",
+  "flags": {
+    "new-checkout": {
+      "state": "ENABLED",
+      "variants": { "on": true, "off": false },
+      "defaultVariant": "off",
+      "targeting": {
+        "if": [{ "in": [{ "var": "tier" }, ["beta", "internal"]] }, "on", "off"]
+      }
+    },
+    "checkout-banner": {
+      "state": "ENABLED",
+      "variants": { "spring": "spring-sale", "none": "" },
+      "defaultVariant": "none"
+    }
+  }
+}
+```
+
+Go wiring (replaces `featureflags.NewInMemory`; requires adding the
+`open-feature/go-sdk-contrib` flagd provider module):
+
+```go
+provider := flagd.NewProvider(flagd.WithHost("localhost"), flagd.WithPort(8013))
+_ = openfeature.SetProviderAndWait(ctx, provider, openfeature.WithDomain("gateway"))
+flags := featureflags.New(openfeature.NewClient(openfeature.WithDomain("gateway")))
+```
+
+Evaluation context (the `tier` in the targeting rule above) comes from the
+`featureflags.BoolValue(ctx, …, map[string]any{"tier": …})` call sites; flag
+*definitions* stay in flagd, so toggles do not require a deploy.
+
+---
+
 ## Kafka retry tiers & DLT redrive runbook
 
 The `platform/messaging/retry` package implements tiered retry routing.
