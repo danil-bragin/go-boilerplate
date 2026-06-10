@@ -277,7 +277,7 @@ func SetupAll(ctx context.Context, cfg Config) (Providers, error) {
 		logglobal.SetLoggerProvider(lp)
 		loggerProvider = lp
 		shutdowns = append(shutdowns, func(_ context.Context) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 			defer cancel()
 			if err := lp.Shutdown(ctx); err != nil {
 				// Log flush errors (collector unreachable) are best-effort —

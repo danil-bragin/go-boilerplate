@@ -220,23 +220,48 @@ func (s *Streamer) Stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Subscribe BEFORE sending the initial snapshot so a transition landing
-	// in between is delivered by the subscription, not lost.
+	// Start the update feed and WAIT for the subscription to be acknowledged
+	// before reading the snapshot we send first. The snapshot is re-read
+	// AFTER the ack, so any transition committed before the subscription was
+	// live is captured by the re-read, and any transition after it arrives
+	// via the subscription — no window in which a terminal status (which has
+	// no subsequent event to paper over a loss) can be missed.
 	updates := make(chan string, 8)
+	ready := make(chan struct{})
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go s.feedUpdates(streamCtx, orderID, updates)
+	go s.feedUpdates(streamCtx, orderID, updates, ready)
+
+	select {
+	case <-ready:
+		// Subscription live (or poll mode): re-read for the authoritative
+		// snapshot. The pre-auth read above only established ownership.
+		if cur, _, err := s.currentStatus(ctx, orderID); err == nil {
+			status = cur
+		}
+	case <-time.After(2 * time.Second):
+		// Subscription slow to establish: proceed with the pre-auth snapshot;
+		// feedUpdates falls back to polling when the subscription fails, so
+		// nothing is permanently lost — only delayed.
+	case <-ctx.Done():
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Accel-Buffering", "no") // intermediaries: do not buffer
-	w.WriteHeader(http.StatusOK)
 
 	rc := http.NewResponseController(w)
-	// Long-lived stream: lift the server's WriteTimeout for this response.
-	// ErrNotSupported only means the stream is bounded by HTTP_WRITE_TIMEOUT
-	// and the client transparently reconnects (Last-Event-ID resume).
-	_ = rc.SetWriteDeadline(time.Time{})
+	// Rolling write deadline instead of the server-wide WriteTimeout: each
+	// write must complete within 2×heartbeat or the stream is torn down. A
+	// client that stops reading (slowloris — this route is exempt from
+	// http.TimeoutHandler by design) therefore cannot pin the goroutine past
+	// one deadline window, and Shutdown is never held hostage by a blocked
+	// write. ErrNotSupported only means the stream stays bounded by
+	// HTTP_WRITE_TIMEOUT and the client transparently reconnects.
+	armWriteDeadline := func() { _ = rc.SetWriteDeadline(time.Now().Add(2 * s.heartbeat)) }
+	armWriteDeadline()
+	w.WriteHeader(http.StatusOK)
 
 	// lastSent is the ordinal the CLIENT knows: the Last-Event-ID header on
 	// reconnect, else -1 (nothing). The initial snapshot is sent only when
@@ -251,6 +276,7 @@ func (s *Streamer) Stream(w http.ResponseWriter, r *http.Request) {
 			return true
 		}
 		lastSent = ord
+		armWriteDeadline()
 		if _, err := fmt.Fprintf(w, "id: %d\ndata: {\"status\":%q}\n\n", ord, status); err != nil {
 			return false
 		}
@@ -273,6 +299,7 @@ func (s *Streamer) Stream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-heartbeat.C:
+			armWriteDeadline()
 			if _, err := fmt.Fprint(w, ": hb\n\n"); err != nil {
 				return
 			}
@@ -285,24 +312,46 @@ func (s *Streamer) Stream(w http.ResponseWriter, r *http.Request) {
 
 // feedUpdates delivers status strings into updates until ctx is cancelled:
 // via Redis pub/sub when a client is configured, else by polling the store.
-// A pub/sub subscription that dies mid-stream falls back to polling instead
+// ready is closed exactly once, as soon as the feed is LIVE — for pub/sub
+// that means the SUBSCRIBE command has been acknowledged by Redis (dedicated
+// connection), so a publish issued after ready cannot be missed. A pub/sub
+// subscription that fails or dies mid-stream falls back to polling instead
 // of going silent.
-func (s *Streamer) feedUpdates(ctx context.Context, orderID string, updates chan<- string) {
+func (s *Streamer) feedUpdates(ctx context.Context, orderID string, updates chan<- string, ready chan<- struct{}) {
+	var readyOnce sync.Once
+	markReady := func() { readyOnce.Do(func() { close(ready) }) }
+
 	if s.client != nil {
-		sub := s.client.B().Subscribe().Channel(channelFor(orderID)).Build()
-		err := s.client.Receive(ctx, sub, func(msg rueidis.PubSubMessage) {
-			select {
-			case updates <- msg.Message:
-			case <-ctx.Done():
-			}
+		cc, release := s.client.Dedicate()
+		hooksDone := cc.SetPubSubHooks(rueidis.PubSubHooks{
+			OnMessage: func(msg rueidis.PubSubMessage) {
+				select {
+				case updates <- msg.Message:
+				case <-ctx.Done():
+				}
+			},
 		})
+		// Do returns only after Redis acknowledged the SUBSCRIBE — the
+		// subscription is live from here on.
+		err := cc.Do(ctx, cc.B().Subscribe().Channel(channelFor(orderID)).Build()).Error()
+		if err == nil {
+			markReady()
+			select {
+			case err = <-hooksDone: // connection lost: fall back to polling
+			case <-ctx.Done():
+				release()
+				return
+			}
+		}
+		release()
 		if ctx.Err() != nil {
 			return
 		}
-		s.logger.Warn("sse: subscription lost, falling back to store polling",
+		s.logger.Warn("sse: subscription unavailable, falling back to store polling",
 			"order_id", orderID, "error", err)
 	}
 
+	markReady() // poll mode is live immediately
 	ticker := time.NewTicker(s.pollInterval)
 	defer ticker.Stop()
 	for {

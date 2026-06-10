@@ -53,7 +53,7 @@ type ProcessPaymentResult struct {
 // DeclineThresholdCents) event to the outbox. It must be called within an
 // ambient transaction (e.g. from inbox.ProcessOnce) so that pg.FromContext
 // returns the active transaction.
-func ProcessPaymentHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.HandlerFunc[ProcessPayment, ProcessPaymentResult] {
+func ProcessPaymentHandler(pool *pg.Pool, outboxRepo *outbox.Repository, outTopic string) cqrs.HandlerFunc[ProcessPayment, ProcessPaymentResult] {
 	return func(ctx context.Context, cmd ProcessPayment) (ProcessPaymentResult, error) {
 		paymentID := uuid.New()
 		status, eventType, event := paymentOutcome(cmd, paymentID)
@@ -75,7 +75,7 @@ func ProcessPaymentHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.Ha
 
 		if err := outboxRepo.Enqueue(ctx, outbox.Message{
 			ID:            uuid.New(),
-			Topic:         "payments.events",
+			Topic:         outTopic,
 			AggregateType: "payment",
 			AggregateID:   cmd.OrderID,
 			EventType:     eventType,

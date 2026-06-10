@@ -153,7 +153,7 @@ jobs:
         run: go build ./...
 
       # NOTE: Integration tests use testcontainers-go and spin up real Postgres,
-      # Redpanda, Redis, and MinIO containers. Docker is available on
+      # Redpanda, Redis, and SeaweedFS containers. Docker is available on
       # ubuntu-latest runners so no extra setup is needed.
       #
       # -p 1 (serial package execution) is REQUIRED here: ubuntu-latest runners

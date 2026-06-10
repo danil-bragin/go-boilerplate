@@ -33,6 +33,9 @@ import (
 //
 // Must be called before Start.
 func (s *Service) AddPeriodicWorker(name string, interval, jitter time.Duration, singleActive bool, fn func(context.Context) error) error {
+	if s.started {
+		return fmt.Errorf("servicekit: AddPeriodicWorker %q called after Start — the worker would never run", name)
+	}
 	if interval <= 0 {
 		return fmt.Errorf("servicekit: AddPeriodicWorker %q: interval must be positive, got %v", name, interval)
 	}

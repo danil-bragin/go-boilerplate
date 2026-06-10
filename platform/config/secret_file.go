@@ -23,6 +23,11 @@ import (
 // A set-but-unreadable NAME_FILE is a hard error: silently starting with an
 // empty credential would surface as confusing auth failures much later.
 //
+// CAVEAT: do not combine `env:"NAME,required"` with _FILE sourcing —
+// env.Parse enforces `required` BEFORE this pass runs, so a secret supplied
+// only via NAME_FILE would fail the required check. Use a Validate() hook
+// for "must be non-empty after loading" semantics instead.
+//
 // The walk recurses into nested and embedded structs (and non-nil struct
 // pointers), mirroring caarlos0/env's traversal. Only fields of type Secret
 // participate — plain strings keep their env-only behaviour.

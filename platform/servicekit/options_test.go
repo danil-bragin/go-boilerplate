@@ -115,11 +115,11 @@ func TestAddWorker_RunsAndStops(t *testing.T) {
 
 	started := make(chan struct{})
 	var stopped atomic.Bool
-	svc.AddWorker("test-worker", func(ctx context.Context) {
+	require.NoError(t, svc.AddWorker("test-worker", func(ctx context.Context) {
 		close(started)
 		<-ctx.Done()
 		stopped.Store(true)
-	})
+	}))
 
 	require.NoError(t, svc.Start())
 	select {

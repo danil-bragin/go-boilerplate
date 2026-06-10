@@ -34,6 +34,9 @@ import (
 type Config struct {
 	servicekit.Config
 	EventsTopic string `env:"ORDERS_EVENTS_TOPIC" envDefault:"orders.events"`
+	// OutTopic is the topic payments PUBLISHES to. Named after the topic per
+	// docs/conventions.md §topic envs — consumers point at the same env name.
+	OutTopic string `env:"PAYMENTS_EVENTS_TOPIC" envDefault:"payments.events"`
 }
 
 // Option is a functional option for [NewApp].
@@ -65,7 +68,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	a.svc = svc
 
 	// Ensure source topic and output topic; DLT topics handled by AddConsumer.
-	if err := svc.EnsureTopics(ctx, cfg.EventsTopic, "payments.events"); err != nil {
+	if err := svc.EnsureTopics(ctx, cfg.EventsTopic, cfg.OutTopic); err != nil {
 		return nil, err
 	}
 
@@ -73,10 +76,10 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if err := svc.RegisterSchema(ctx, cfg.EventsTopic, transport.OrderCreatedEventType, &ordersv1.OrderCreated{}); err != nil {
 		return nil, err
 	}
-	if err := svc.RegisterSchema(ctx, "payments.events", app.PaymentProcessedEventType, &ordersv1.PaymentProcessed{}); err != nil {
+	if err := svc.RegisterSchema(ctx, cfg.OutTopic, app.PaymentProcessedEventType, &ordersv1.PaymentProcessed{}); err != nil {
 		return nil, err
 	}
-	if err := svc.RegisterSchema(ctx, "payments.events", app.PaymentFailedEventType, &ordersv1.PaymentFailed{}); err != nil {
+	if err := svc.RegisterSchema(ctx, cfg.OutTopic, app.PaymentFailedEventType, &ordersv1.PaymentFailed{}); err != nil {
 		return nil, err
 	}
 
@@ -90,7 +93,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 
 	// Build the domain handler.
 	auditStore := audit.NewPgStore(svc.Pool())
-	rawHandler := app.ProcessPaymentHandler(svc.Pool(), outboxRepo)
+	rawHandler := app.ProcessPaymentHandler(svc.Pool(), outboxRepo, cfg.OutTopic)
 	decoratedHandler := app.DecorateProcessPaymentHandler(rawHandler, auditStore)
 	var consumeOpts []consume.Option
 	if sd := svc.Serde(); sd != nil {

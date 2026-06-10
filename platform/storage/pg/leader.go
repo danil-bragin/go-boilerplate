@@ -134,7 +134,15 @@ func leadTerm(ctx context.Context, conn *pgxpool.Conn, name string, fn func(cont
 		case <-ticker.C:
 			// Health-check the dedicated lock connection. Any error ⇒ the
 			// session (and the advisory lock with it) is gone server-side.
-			if _, err := conn.Exec(ctx, `select 1`); err != nil {
+			// The check is BOUNDED by one interval: under a network black
+			// hole (no RST) an unbounded Exec would block forever while
+			// Postgres reaps the session and a standby takes the lock —
+			// leaving this stale leader running indefinitely alongside the
+			// new one. A timed-out check is treated as lock-lost.
+			healthCtx, cancelHealth := context.WithTimeout(ctx, interval)
+			_, err := conn.Exec(healthCtx, `select 1`)
+			cancelHealth()
+			if err != nil {
 				cancelFn()
 				<-fnDone
 				// Destroy the dead connection instead of returning it to the

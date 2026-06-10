@@ -75,7 +75,7 @@ func buildService(t *testing.T, pool *pg.Pool, broker string, eventsTopic string
 	auditStore := audit.NewPgStore(pool)
 
 	// Build and decorate the handler.
-	rawHandler := app.ProcessPaymentHandler(pool, outboxRepo)
+	rawHandler := app.ProcessPaymentHandler(pool, outboxRepo, "payments.events")
 	decoratedHandler := app.DecorateProcessPaymentHandler(rawHandler, auditStore)
 
 	// Wire event handler.

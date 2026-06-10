@@ -74,6 +74,10 @@ type Service struct {
 	// pg pool, so in-flight final commits and cleanup writes are not cut off
 	// by a closed client.
 	wg sync.WaitGroup
+
+	// started flips in Start. Registration after Start is a programming
+	// error: late goroutines would be appended but never launched.
+	started bool
 }
 
 // New wires all shared components: logger, telemetry, pg pool+migrations,
@@ -295,12 +299,17 @@ func (s *Service) AdminAddr() string { return s.adminServer.Addr() }
 
 // AddWorker registers a named background goroutine that Start launches and
 // teardown cancels/waits like any consumer goroutine. fn must return promptly
-// when ctx is cancelled. Must be called before Start.
-func (s *Service) AddWorker(name string, fn func(context.Context)) {
+// when ctx is cancelled. Must be called before Start — registration after
+// Start returns an error (the goroutine would never be launched).
+func (s *Service) AddWorker(name string, fn func(context.Context)) error {
+	if s.started {
+		return fmt.Errorf("servicekit: AddWorker %q called after Start — the worker would never run", name)
+	}
 	s.goroutines = append(s.goroutines, func(ctx context.Context) {
 		s.logger.Debug("worker started", "worker", name)
 		fn(ctx)
 	})
+	return nil
 }
 
 // AddHTTPServer registers a public HTTP server under the service lifecycle:

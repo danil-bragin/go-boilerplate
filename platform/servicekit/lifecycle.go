@@ -20,6 +20,7 @@ import (
 // goroutines receive context cancellation before the pg pool and kafka client
 // are closed.
 func (s *Service) Start() error {
+	s.started = true
 	if err := s.adminServer.Start(); err != nil {
 		if !s.cfg.AdminBindOptional {
 			return fmt.Errorf("servicekit: admin server failed to start on %s "+
