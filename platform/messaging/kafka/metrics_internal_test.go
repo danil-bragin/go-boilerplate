@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
@@ -114,4 +115,45 @@ func TestProducerMetrics_PublishDuration(t *testing.T) {
 	// Nil-instrument degradation must not panic.
 	var zero producerMetrics
 	zero.recordPublishDuration(ctx, "t", time.Second)
+}
+
+// TestMetrics_RecordPathAllocs: the hot record paths must not allocate once
+// the per-topic attribute sets are cached — attribute construction is hoisted
+// into a lazily-populated cache, and records pass the pre-built option slice.
+// A noop meter isolates OUR path from SDK aggregation internals; the
+// nil-instrument paths are asserted alloc-free as well.
+func TestMetrics_RecordPathAllocs(t *testing.T) {
+	// NOT parallel: testing.AllocsPerRun forbids parallel tests.
+	ctx := context.Background()
+	handlerErr := errors.New("boom")
+
+	cm := newConsumerMetricsFrom(noop.NewMeterProvider().Meter(meterName))
+	pm := newProducerMetricsFrom(noop.NewMeterProvider().Meter(meterName))
+
+	// Warm the caches: the first record per topic (and per partition for lag)
+	// is allowed to allocate the attribute sets.
+	warm := func() {
+		cm.recordHandlerDuration(ctx, "orders.events", time.Millisecond, nil)
+		cm.recordHandlerDuration(ctx, "orders.events", time.Millisecond, handlerErr)
+		cm.addProcessed(ctx, "orders.events", 1)
+		cm.addFailed(ctx, "orders.events")
+		cm.addCommitFailure(ctx, "orders.events")
+		cm.recordLag(ctx, "orders.events", 3, 42)
+		pm.recordPublishDuration(ctx, "orders.events", time.Millisecond)
+	}
+	warm()
+
+	allocs := testing.AllocsPerRun(1000, warm)
+	require.Zero(t, allocs, "cached record path must not allocate")
+
+	// Nil-instrument (metrics disabled) paths must be alloc-free no-ops.
+	var zeroCM consumerMetrics
+	var zeroPM producerMetrics
+	allocs = testing.AllocsPerRun(1000, func() {
+		zeroCM.recordHandlerDuration(ctx, "t", time.Millisecond, nil)
+		zeroCM.addProcessed(ctx, "t", 1)
+		zeroCM.recordLag(ctx, "t", 0, 1)
+		zeroPM.recordPublishDuration(ctx, "t", time.Millisecond)
+	})
+	require.Zero(t, allocs, "nil-instrument path must not allocate")
 }
