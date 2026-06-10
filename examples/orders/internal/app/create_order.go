@@ -1,29 +1,28 @@
 // Package app contains the CQRS command handlers for the orders service.
+//
+// # Layering
+//
+// Handlers here are THIN ADAPTERS: they map the command to domain-service
+// parameters and attach the cross-cutting pipeline (tracing, logging,
+// metrics, validation, audit). Every business rule — state machine, first
+// outcome wins, exactly-once timeout emission — lives in
+// internal/domain/order.Service. Command handlers never call other command
+// handlers ("cmd never calls cmd"); when two entry points need the same
+// logic, it moves into the domain service, never into a handler-to-handler
+// call.
 package app
 
 import (
 	"context"
-	"fmt"
 
-	"go-boilerplate/examples/orders/internal/store/gen"
+	"go-boilerplate/examples/orders/internal/domain/order"
 	"go-boilerplate/platform/cqrs"
-	"go-boilerplate/platform/messaging/consume"
-	"go-boilerplate/platform/messaging/outbox"
 	"go-boilerplate/platform/security/audit"
-	"go-boilerplate/platform/storage/pg"
-
-	"github.com/google/uuid"
-	"google.golang.org/protobuf/proto"
-
-	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
-// OrderCreatedEventType is the versioned event type emitted on orders.events
-// when an order row is created ("orders.OrderCreated.v1", derived from the
-// proto message).
-var OrderCreatedEventType = consume.EventTypeFor[*ordersv1.OrderCreated](1)
-
-// CreateOrder is the command to create a new order.
+// CreateOrder is the command to create a new order. Struct-tag validation is
+// enforced by the cqrs Validation behavior in the standard pipeline; domain
+// rules (UUID shape, state machine) live in order.Service.
 type CreateOrder struct {
 	OrderID     string `validate:"required"`
 	CustomerID  string `validate:"required"`
@@ -36,50 +35,20 @@ type CreateOrderResult struct {
 	OrderID string
 }
 
-// CreateOrderHandler returns a cqrs.HandlerFunc that writes an order row and
-// enqueues an OrderCreated event to the outbox. It must be called within an
-// ambient transaction (e.g. from inbox.ProcessOnce) so that pg.FromContext
-// returns the active transaction.
-func CreateOrderHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.HandlerFunc[CreateOrder, CreateOrderResult] {
+// CreateOrderHandler adapts the CreateOrder command to order.Service.Create.
+// It must be called within an ambient transaction (e.g. from
+// inbox.ProcessOnce) so the order row and the OrderCreated outbox event
+// commit atomically — see the order.Service.Create godoc.
+func CreateOrderHandler(svc *order.Service) cqrs.HandlerFunc[CreateOrder, CreateOrderResult] {
 	return func(ctx context.Context, cmd CreateOrder) (CreateOrderResult, error) {
-		orderID, err := uuid.Parse(cmd.OrderID)
-		if err != nil {
-			return CreateOrderResult{}, fmt.Errorf("create_order: invalid order id: %w", err)
-		}
-
-		q := gen.New(pg.FromContext(ctx, pool))
-		if err := q.InsertOrder(ctx, gen.InsertOrderParams{
-			ID:          orderID,
+		if err := svc.Create(ctx, order.CreateParams{
+			OrderID:     cmd.OrderID,
 			CustomerID:  cmd.CustomerID,
 			AmountCents: cmd.AmountCents,
 			Currency:    cmd.Currency,
-			Status:      "created",
 		}); err != nil {
-			return CreateOrderResult{}, fmt.Errorf("create_order: insert order: %w", err)
+			return CreateOrderResult{}, err
 		}
-
-		event := &ordersv1.OrderCreated{
-			OrderId:     cmd.OrderID,
-			CustomerId:  cmd.CustomerID,
-			AmountCents: cmd.AmountCents,
-			Currency:    cmd.Currency,
-		}
-		protoBytes, err := proto.Marshal(event)
-		if err != nil {
-			return CreateOrderResult{}, fmt.Errorf("create_order: marshal event: %w", err)
-		}
-
-		if err := outboxRepo.Enqueue(ctx, outbox.Message{
-			ID:            uuid.New(),
-			Topic:         "orders.events",
-			AggregateType: "order",
-			AggregateID:   cmd.OrderID,
-			EventType:     OrderCreatedEventType,
-			Payload:       protoBytes,
-		}); err != nil {
-			return CreateOrderResult{}, fmt.Errorf("create_order: enqueue event: %w", err)
-		}
-
 		return CreateOrderResult{OrderID: cmd.OrderID}, nil
 	}
 }

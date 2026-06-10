@@ -21,6 +21,11 @@
 // only when Logging runs INSIDE Tracing. With the order reversed, log↔trace
 // correlation silently breaks (logs without trace_id), which is exactly the
 // kind of failure nobody notices until an incident.
+//
+// Handlers never call other handlers ("cmd never calls cmd"): logic that two
+// entry points need lives in a domain service the handlers adapt to, never in
+// one handler dispatching another (which would re-run the whole pipeline and
+// tangle transaction ownership).
 package cqrs
 
 import "context"
