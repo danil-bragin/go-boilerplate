@@ -1,5 +1,11 @@
 # Round 2 — Polish & Capabilities Plan
 
+> **STATUS: COMPLETE (2026-06-10).** All waves merged (~35 commits). Final verification: full
+> serial suite 46/46 ok ×2 (pre/post review fixes), race spot-check green (kafka/cache/servicekit/pg),
+> lint 0, gofumpt v0.10 clean, mocks reproducible, compose+k8s+dashboards+rules validated, doc-test +
+> scaffold + fuzz (4 targets × 30s, zero findings) green. Review pass: 1 MUST-FIX (SSE terminal-status
+> race) + 3 SHOULD + 4 NIT — all fixed. Execution tracked via commits, checkboxes not used.
+
 > **For agentic workers:** execute lane-by-lane; TDD for behavior changes; one commit per task;
 > commit messages normal English + "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"; `--no-verify`.
 > Source findings: 4-agent post-remediation audit (2026-06-10, round 2). Decision: user approved ALL
