@@ -25,6 +25,7 @@ import (
 
 	promclient "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	otelruntime "go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -93,24 +94,28 @@ func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handl
 	var shutdowns []func(context.Context) error
 	var metricsHandler http.Handler
 
+	// Shared resource: service.name drives the `job` label that the
+	// collector's Prometheus exporter attaches to every metric (and the
+	// service name shown in Jaeger). Built once for both providers so traces
+	// and metrics agree on identity even when OTEL_SERVICE_NAME is unset.
+	res, err := resource.New(
+		ctx,
+		resource.WithAttributes(semconv.ServiceName(cfg.ServiceName)),
+	)
+	if err != nil {
+		if errors.Is(err, resource.ErrPartialResource) || errors.Is(err, resource.ErrSchemaURLConflict) {
+			slog.Warn("telemetry: partial resource", "error", err)
+		} else {
+			return nil, nil, fmt.Errorf("telemetry: resource: %w", err)
+		}
+	}
+
 	// -----------------------------------------------------------------------
 	// Tracer provider
 	// -----------------------------------------------------------------------
 	if !cfg.Enabled {
 		otel.SetTracerProvider(noop.NewTracerProvider())
 	} else {
-		res, err := resource.New(
-			ctx,
-			resource.WithAttributes(semconv.ServiceName(cfg.ServiceName)),
-		)
-		if err != nil {
-			if errors.Is(err, resource.ErrPartialResource) || errors.Is(err, resource.ErrSchemaURLConflict) {
-				slog.Warn("telemetry: partial resource", "error", err)
-			} else {
-				return nil, nil, fmt.Errorf("telemetry: resource: %w", err)
-			}
-		}
-
 		traceExp, err := otlptracegrpc.New(
 			ctx,
 			otlptracegrpc.WithEndpoint(cfg.OTLPEndpoint),
@@ -175,8 +180,15 @@ func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handl
 	}
 
 	if len(mpReaders) > 0 {
+		mpReaders = append(mpReaders, sdkmetric.WithResource(res))
 		mp := sdkmetric.NewMeterProvider(mpReaders...)
 		otel.SetMeterProvider(mp)
+		// Go runtime metrics (go.memory.*, go.goroutine.count, …) feed the
+		// "runtime" Grafana dashboard. Failure degrades gracefully — runtime
+		// metrics must never block service startup.
+		if err := otelruntime.Start(otelruntime.WithMeterProvider(mp)); err != nil {
+			slog.Warn("telemetry: runtime instrumentation start failed", "error", err)
+		}
 		shutdowns = append(shutdowns, func(_ context.Context) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
