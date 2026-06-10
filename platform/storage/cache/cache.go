@@ -57,6 +57,11 @@ type Cache struct {
 	instanceID string
 	subCancel  context.CancelFunc
 	subWG      sync.WaitGroup
+
+	// receive is the blocking subscription primitive used by subscribeLoop.
+	// A struct field so tests can substitute a stub; when nil it defaults to
+	// rueidis Receive on the invalidation channel.
+	receive func(ctx context.Context, fn func(msg rueidis.PubSubMessage)) error
 }
 
 // New constructs a Cache from cfg.
