@@ -89,6 +89,9 @@ type Forbidden = Problem
 // NotFound RFC 7807 problem details.
 type NotFound = Problem
 
+// ServiceUnavailable RFC 7807 problem details.
+type ServiceUnavailable = Problem
+
 // TooManyRequests RFC 7807 problem details.
 type TooManyRequests = Problem
 
@@ -437,6 +440,8 @@ type ForbiddenApplicationProblemPlusJSONResponse Problem
 
 type NotFoundApplicationProblemPlusJSONResponse Problem
 
+type ServiceUnavailableApplicationProblemPlusJSONResponse Problem
+
 type TooManyRequestsApplicationProblemPlusJSONResponse Problem
 
 type UnauthorizedApplicationProblemPlusJSONResponse Problem
@@ -502,6 +507,17 @@ type ListOrders429ApplicationProblemPlusJSONResponse struct {
 func (response ListOrders429ApplicationProblemPlusJSONResponse) VisitListOrdersResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(429)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListOrders503ApplicationProblemPlusJSONResponse struct {
+	ServiceUnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response ListOrders503ApplicationProblemPlusJSONResponse) VisitListOrdersResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -587,6 +603,17 @@ func (response CreateOrder429ApplicationProblemPlusJSONResponse) VisitCreateOrde
 	return json.NewEncoder(w).Encode(response)
 }
 
+type CreateOrder503ApplicationProblemPlusJSONResponse struct {
+	ServiceUnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response CreateOrder503ApplicationProblemPlusJSONResponse) VisitCreateOrderResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type GetOrderRequestObject struct {
 	Id string `json:"id"`
 }
@@ -633,6 +660,17 @@ type GetOrder429ApplicationProblemPlusJSONResponse struct {
 func (response GetOrder429ApplicationProblemPlusJSONResponse) VisitGetOrderResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(429)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetOrder503ApplicationProblemPlusJSONResponse struct {
+	ServiceUnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response GetOrder503ApplicationProblemPlusJSONResponse) VisitGetOrderResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
 
 	return json.NewEncoder(w).Encode(response)
 }

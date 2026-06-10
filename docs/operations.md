@@ -27,9 +27,8 @@ only the services they actually need.
 - **Apps are independent of observability.** The four application services
   (`gateway`, `orders`, `payments`, `notifications`) do not `depends_on` any
   observability service.  When the observability profile is absent, the apps
-  still start and run normally — OTLP gRPC connections to `otel-collector` are
-  established lazily and fail silently, so traces and metrics are simply
-  uncollected rather than fatal.
+  still start and run normally — OTLP export failures are non-fatal; traces
+  and metrics are simply uncollected.
   > **Note:** running `--profile apps` without `--profile observability` is
   > fully supported, but each service will log periodic OTLP export errors
   > because the `otel-collector` hostname is not resolvable. These errors are
@@ -202,6 +201,16 @@ The gateway applies a per-client-IP token-bucket rate limiter at the edge. Confi
 **Memory vs Redis:** The default in-memory limiter is process-local. For multi-replica deployments set `RATELIMIT_REDIS=true` so all instances share a single Redis-backed counter. If Redis is unavailable the gateway falls back to in-memory (graceful degradation, WARN logged). The distributed limiter uses Redis server time (via `TIME` inside the Lua script) so all replicas share a single clock — immune to wall-clock skew between application instances.
 
 **Trusted proxies:** XFF is ignored unless `TRUSTED_PROXIES` is set. Invalid CIDRs cause the gateway to refuse to start (fail-fast). Use network-level trust only — never trust an IP that end-users can set.
+
+---
+
+## JWKS outage semantics (gateway auth)
+
+When `GATEWAY_AUTH_DISABLED=false`, the gateway verifies bearer JWTs against the IdP's JWKS. The key set is fetched once at startup (startup FAILS fast if the initial fetch cannot complete) and then cached and refreshed in the background (`jwk.Cache`). During an IdP/JWKS outage:
+
+- Tokens verifiable with the **cached** keys keep working — a short JWKS outage is invisible to clients.
+- If verification needs a key fetch that fails (e.g. unknown `kid` after a key rotation mid-outage), the request is rejected with **401** and the generic detail `authentication failed`. This is **by design**: the edge never fails open, and infrastructure details (JWKS URL, network errors) are never echoed to clients.
+- The real cause is logged at **ERROR** (`auth: token verification failed with non-token error`). Alert on a sustained rate of this log line — a spike means JWKS trouble, not bad client tokens (those produce plain `invalid token` 401s with no ERROR log).
 
 ---
 
