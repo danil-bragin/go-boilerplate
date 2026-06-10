@@ -62,6 +62,12 @@ type Config struct {
 	// mid-chain). 1.0 (default) samples everything — right for dev and
 	// moderate traffic; lower it (e.g. 0.1) on high-QPS edges.
 	TraceRatio float64 `env:"TELEMETRY_TRACE_RATIO" envDefault:"1.0"`
+	// ShutdownTimeout bounds each provider's flush when the returned
+	// ShutdownFunc runs. Zero (the default — deliberately no env tag) means
+	// the production default of 5s. It exists so tests can inject a short
+	// timeout and not wait out full flush windows against an unreachable
+	// collector; production code should leave it unset.
+	ShutdownTimeout time.Duration `env:"-"`
 }
 
 // ShutdownFunc flushes and stops telemetry providers.
@@ -92,6 +98,12 @@ func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handl
 
 	var shutdowns []func(context.Context) error
 	var metricsHandler http.Handler
+
+	// Per-provider flush budget during shutdown (test-injectable; see Config).
+	shutdownTimeout := cfg.ShutdownTimeout
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = 5 * time.Second
+	}
 
 	// -----------------------------------------------------------------------
 	// Tracer provider
@@ -137,7 +149,7 @@ func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handl
 		otel.SetTracerProvider(tp)
 
 		shutdowns = append(shutdowns, func(_ context.Context) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 			defer cancel()
 			return tp.Shutdown(ctx)
 		})
@@ -178,7 +190,7 @@ func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handl
 		mp := sdkmetric.NewMeterProvider(mpReaders...)
 		otel.SetMeterProvider(mp)
 		shutdowns = append(shutdowns, func(_ context.Context) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 			defer cancel()
 			if err := mp.Shutdown(ctx); err != nil {
 				// Metric flush errors (e.g. collector unreachable) are best-effort;

@@ -163,6 +163,7 @@ func TestSetup_ZeroTraceRatioLogsWarning(t *testing.T) {
 		Enabled:           true,
 		MetricsPrometheus: false,
 		TraceRatio:        0,
+		ShutdownTimeout:   100 * time.Millisecond, // test-only: don't wait out a flush against the dead collector
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -196,6 +197,7 @@ func TestSetup_TraceRatioSamplerApplied(t *testing.T) {
 				Enabled:           true,
 				MetricsPrometheus: false,
 				TraceRatio:        tc.ratio,
+				ShutdownTimeout:   100 * time.Millisecond, // test-only: don't wait out a flush against the dead collector
 			})
 			require.NoError(t, err)
 			t.Cleanup(func() {
