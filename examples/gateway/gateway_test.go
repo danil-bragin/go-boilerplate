@@ -1138,4 +1138,15 @@ func TestGateway_ProjectionPaymentTimeout(t *testing.T) {
 	time.Sleep(3 * time.Second)
 	require.Equal(t, "paid", getStatus(t, baseURL, paidID),
 		"a terminal paid must not be overwritten by a later payment_timeout")
+
+	// Inverse race: a PaymentProcessed landing AFTER the timeout must not
+	// flip the projection back to paid — first terminal event wins, matching
+	// the orders service (whose status='created' guard ignores the late
+	// outcome too).
+	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", orderID, func() proto.Message {
+		return &ordersv1.PaymentProcessed{OrderId: orderID, PaymentId: uuid.New().String(), Status: "success"}
+	})
+	time.Sleep(3 * time.Second)
+	require.Equal(t, "payment_timeout", getStatus(t, baseURL, orderID),
+		"a terminal payment_timeout must not be overwritten by a later paid")
 }
