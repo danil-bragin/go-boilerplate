@@ -34,6 +34,14 @@ on conflict (order_id) do update set
 -- RETURNING created_at feeds the orders.lifecycle.duration histogram: it is
 -- only returned when the terminal write APPLIED, so the projection observes
 -- the order's created→terminal latency exactly once per order.
+--
+-- (xmax = 0) AS inserted distinguishes the INSERT arm from the UPDATE arm of
+-- the upsert: a row written by INSERT has xmax 0, a row touched by the ON
+-- CONFLICT UPDATE has the deleting/locking transaction id in xmax. When the
+-- terminal event arrives BEFORE OrderCreated (reorder), the INSERT arm
+-- creates a placeholder whose created_at is the row insertion time — the
+-- real creation time is unknown, so the projection must SKIP the lifecycle
+-- observation (a ≈0s sample would lie compliant and bias the SLO-2 good leg).
 
 -- name: MarkPaid :one
 insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)
@@ -42,7 +50,7 @@ on conflict (order_id) do update set
   status     = 'paid',
   updated_at = now()
 where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout')
-returning created_at;
+returning created_at, (xmax = 0) as inserted;
 
 -- name: MarkPaymentFailed :one
 insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)
@@ -51,7 +59,7 @@ on conflict (order_id) do update set
   status     = 'payment_failed',
   updated_at = now()
 where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout')
-returning created_at;
+returning created_at, (xmax = 0) as inserted;
 
 -- name: MarkPaymentTimeout :one
 insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at)
@@ -60,7 +68,7 @@ on conflict (order_id) do update set
   status     = 'payment_timeout',
   updated_at = now()
 where orders_read.status not in ('paid', 'payment_failed', 'payment_timeout')
-returning created_at;
+returning created_at, (xmax = 0) as inserted;
 
 -- name: GetOrderView :one
 select order_id, customer_id, amount_cents, currency, status, created_at, updated_at
