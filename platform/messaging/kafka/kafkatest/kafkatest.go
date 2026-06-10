@@ -54,7 +54,7 @@ var (
 	sharedContainer *redpanda.Container
 	sharedBroker    string
 	sharedSRURL     string
-	sharedErr       error
+	errShared       error
 )
 
 // Shared returns the seed-broker address and Schema Registry URL of a
@@ -79,21 +79,21 @@ func Shared(t *testing.T) (broker string, srURL string) {
 
 		container, err := redpanda.Run(ctx, "redpandadata/redpanda:v24.2.7")
 		if err != nil {
-			sharedErr = fmt.Errorf("start redpanda: %w", err)
+			errShared = fmt.Errorf("start redpanda: %w", err)
 			return
 		}
 		sharedContainer = container
 
 		if sharedBroker, err = container.KafkaSeedBroker(ctx); err != nil {
-			sharedErr = fmt.Errorf("get kafka seed broker: %w", err)
+			errShared = fmt.Errorf("get kafka seed broker: %w", err)
 			return
 		}
 		if sharedSRURL, err = container.SchemaRegistryAddress(ctx); err != nil {
-			sharedErr = fmt.Errorf("get schema registry address: %w", err)
+			errShared = fmt.Errorf("get schema registry address: %w", err)
 		}
 	})
-	if sharedErr != nil {
-		t.Fatalf("kafkatest: shared redpanda: %v", sharedErr)
+	if errShared != nil {
+		t.Fatalf("kafkatest: shared redpanda: %v", errShared)
 	}
 	return sharedBroker, sharedSRURL
 }

@@ -23,7 +23,7 @@ func twoPoolsSharedSchema(t *testing.T) (*pg.Pool, *pg.Pool) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (postgres container)")
 	}
-	dsn := pgtest.NewDSN(t)
+	dsn := pgtest.SharedDSN(t)
 	ctx := context.Background()
 	require.NoError(t, pg.Migrate(ctx, dsn, migrations, "migrations"))
 	pool1, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})

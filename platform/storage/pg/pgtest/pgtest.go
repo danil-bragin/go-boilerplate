@@ -49,7 +49,7 @@ var (
 	sharedOnce      sync.Once
 	sharedContainer *postgres.PostgresContainer
 	sharedAdminDSN  string // DSN of the default "app" database (used to CREATE DATABASE)
-	sharedErr       error
+	errShared       error
 )
 
 // SharedDSN returns a DSN pointing at a FRESH database created inside a
@@ -82,17 +82,17 @@ func SharedDSN(t *testing.T) string {
 			),
 		)
 		if err != nil {
-			sharedErr = fmt.Errorf("start postgres: %w", err)
+			errShared = fmt.Errorf("start postgres: %w", err)
 			return
 		}
 		sharedContainer = container
 
 		if sharedAdminDSN, err = container.ConnectionString(ctx, "sslmode=disable"); err != nil {
-			sharedErr = fmt.Errorf("connection string: %w", err)
+			errShared = fmt.Errorf("connection string: %w", err)
 		}
 	})
-	if sharedErr != nil {
-		t.Fatalf("pgtest: shared postgres: %v", sharedErr)
+	if errShared != nil {
+		t.Fatalf("pgtest: shared postgres: %v", errShared)
 	}
 
 	// Create a unique database for this test ("app_" prefix keeps the

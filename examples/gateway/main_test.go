@@ -21,6 +21,11 @@ import (
 // per test (pgtest.SharedDSN) and unique topic names per test
 // (configureTopics).
 func TestMain(m *testing.M) {
+	// No load balancer is watching /readyz in tests: the 5s DRAIN_GRACE
+	// default would add a dead 5s to every app Stop (~20 app starts in this
+	// package). Drain ORDER is still covered by servicekit's lifecycle tests.
+	os.Setenv("DRAIN_GRACE", "0")
+
 	code := m.Run()
 	kafkatest.TerminateShared()
 	pgtest.TerminateShared()
