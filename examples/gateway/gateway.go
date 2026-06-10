@@ -230,8 +230,16 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		svc.Logger().Info("gateway: async pending-row writes enabled (GATEWAY_PENDING_ASYNC=true) — GET immediately after POST may briefly 404")
 	}
 
-	// Apply edge security and mount all routes.
+	// Localization: negotiate Accept-Language and install the problem
+	// localizer for every route group (must precede ALL mounts).
+	bundle, err := newI18nBundle()
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply edge security + i18n middleware and mount all routes.
 	applyEdgeSecurity(cfg, httpSrv.Mux(), limiter, trustedPrefixes)
+	mountI18n(httpSrv.Mux(), bundle)
 	mountAPIRoutes(cfg, httpSrv.Mux(), apiServer, a.verifier)
 	mountAttachmentRoutes(cfg, httpSrv, a.verifier, objStore, flags, svc.Pool())
 	mountSSERoutes(cfg, httpSrv, a.verifier, streamer)

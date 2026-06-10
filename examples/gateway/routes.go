@@ -1,13 +1,17 @@
 package gateway
 
 import (
+	"fmt"
 	"net/http"
 	"net/netip"
 
 	"go-boilerplate/examples/gateway/internal/api"
+	"go-boilerplate/examples/gateway/internal/apperrs"
 	"go-boilerplate/examples/gateway/internal/attachments"
 	"go-boilerplate/examples/gateway/internal/sse"
+	"go-boilerplate/platform/apperr"
 	"go-boilerplate/platform/featureflags"
+	"go-boilerplate/platform/i18n"
 	"go-boilerplate/platform/observability/log"
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/storage/blob"
@@ -20,8 +24,10 @@ import (
 )
 
 // requestErrorHandler maps request-binding errors (malformed JSON, bad params)
-// from the strict handler to an RFC7807 400. Binding errors describe the
-// client's own input, so the message is safe to echo.
+// from the strict handler to a coded RFC 9457 400 (GATEWAY_MALFORMED_REQUEST).
+// Binding errors describe the client's own input, so the message is safe to
+// echo — it travels in params.reason (AIP-193: every message variable is a
+// param) and renders into the detail via the registered template.
 func requestErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	ctx := r.Context()
 	log.From(ctx).InfoContext(
@@ -29,33 +35,58 @@ func requestErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 		"error", err,
 		"request_id", httpserver.RequestIDFromContext(ctx),
 	)
-	httpx.WriteProblem(w, httpx.Problem{
-		Status: http.StatusBadRequest,
-		Title:  "Bad Request",
-		Detail: err.Error(),
-	})
+	httpx.WriteError(w, r, apperr.Wrap(err, apperrs.CodeMalformedRequest).
+		WithParam("reason", err.Error()))
 }
 
-// responseErrorHandler maps handler errors from the strict handler to RFC7807
-// responses. Auth errors keep their status (401/403); everything else is an
-// internal failure: the real error is LOGGED (with request_id for correlation)
-// and the client receives only a generic problem — internal error strings
-// (DSNs, hosts, stack details) must never leak through the edge.
+// responseErrorHandler maps handler errors from the strict handler to RFC 9457
+// problem+json via httpx.FromError: coded apperr errors (GATEWAY_*, AUTH_*,
+// VALIDATION_FAILED, …) keep their registered status/code/params; anything
+// else is an internal failure — the real error is LOGGED (with request_id for
+// correlation) and the client receives only a generic 500 INTERNAL problem.
+// Internal error strings (DSNs, hosts, stack details) must never leak through
+// the edge; httpx.FromError guarantees that for unknown errors.
 func responseErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
-	if api.WriteAuthError(w, err) {
-		return
-	}
 	ctx := r.Context()
-	log.From(ctx).ErrorContext(
-		ctx, "gateway: handler error",
-		"error", err,
-		"request_id", httpserver.RequestIDFromContext(ctx),
-	)
-	httpx.WriteProblem(w, httpx.Problem{
-		Status: http.StatusInternalServerError,
-		Title:  "Internal Server Error",
-		Detail: "internal error",
-	})
+	logger := log.From(ctx)
+	if p := httpx.FromError(err); p.Status >= http.StatusInternalServerError {
+		logger.ErrorContext(
+			ctx, "gateway: handler error",
+			"error", err,
+			"request_id", httpserver.RequestIDFromContext(ctx),
+		)
+	} else {
+		logger.InfoContext(
+			ctx, "gateway: request rejected",
+			"error", err,
+			"code", p.Code,
+			"request_id", httpserver.RequestIDFromContext(ctx),
+		)
+	}
+	httpx.WriteError(w, r, err)
+}
+
+// newI18nBundle builds the gateway's localization bundle: the platform
+// defaults (en+ru for INTERNAL, VALIDATION_FAILED, AUTH_*, validation.<rule>)
+// merged with the gateway's own embedded catalogs for the GATEWAY_* codes.
+func newI18nBundle() (*i18n.Bundle, error) {
+	b, err := i18n.Default()
+	if err != nil {
+		return nil, fmt.Errorf("gateway: building platform i18n bundle: %w", err)
+	}
+	if err := b.Load(apperrs.Catalog, apperrs.CatalogPaths...); err != nil {
+		return nil, fmt.Errorf("gateway: loading gateway i18n catalogs: %w", err)
+	}
+	return b, nil
+}
+
+// mountI18n installs the locale-negotiation middleware on the mux. Must run
+// BEFORE any route is mounted (chi middleware rule) so that every problem
+// response — strict API handlers, SSE, attachments — gets localized
+// title/detail via the httpx.ProblemLocalizer seam. Code and params are
+// never localized: they are the machine-readable contract.
+func mountI18n(mux chi.Router, bundle *i18n.Bundle) {
+	mux.Use(i18n.Middleware(bundle))
 }
 
 // applyEdgeSecurity adds CORS and per-IP rate-limit middleware to the mux.
@@ -87,8 +118,9 @@ func mountAPIRoutes(
 	apiServer api.StrictServerInterface,
 	verifier auth.Verifier,
 ) {
-	// Wrap handler errors: map authError → 403/401, others → generic RFC7807
-	// (real error logged, never echoed — see responseErrorHandler).
+	// Wrap handler errors: coded apperr errors keep their registered
+	// status/code, others → generic 500 INTERNAL (real error logged, never
+	// echoed — see responseErrorHandler).
 	strictOpts := api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  requestErrorHandler,
 		ResponseErrorHandlerFunc: responseErrorHandler,

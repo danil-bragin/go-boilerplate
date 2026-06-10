@@ -98,6 +98,7 @@ paths:
         unscoped.)
       operationId: listOrders
       parameters:
+        - $ref: "#/components/parameters/XTimezone"
         - name: cursor
           in: query
           required: false
@@ -142,6 +143,7 @@ paths:
         admin role may read any order.
       operationId: getOrder
       parameters:
+        - $ref: "#/components/parameters/XTimezone"
         - name: id
           in: path
           required: true
@@ -155,6 +157,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OrderView"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -234,6 +238,21 @@ paths:
           description: OK
 
 components:
+  parameters:
+    XTimezone:
+      name: X-Timezone
+      in: header
+      required: false
+      description: >
+        IANA tz database name (e.g. "Europe/Kyiv", "America/New_York").
+        When present, every order view in the response additionally carries
+        created_at_local rendered in that zone (display-only; the contract
+        field created_at remains UTC). Offsets ("UTC+3", "+02:00"), unknown
+        names and "Local" are rejected with 400 GATEWAY_INVALID_TIMEZONE.
+      schema:
+        type: string
+        maxLength: 64
+
   securitySchemes:
     bearerAuth:
       type: http
@@ -297,7 +316,11 @@ components:
   schemas:
     Problem:
       type: object
-      description: RFC 7807 problem details.
+      description: >
+        RFC 9457 problem details. The machine-readable API contract is the
+        extension pair (code, params): clients switch on code and read
+        params; title and detail are human-readable, may be localized via
+        Accept-Language, and must not be parsed.
       required:
         - title
         - status
@@ -318,10 +341,30 @@ components:
         instance:
           type: string
           description: URI reference identifying this specific occurrence.
+        code:
+          type: string
+          description: >
+            Flat UPPER_SNAKE application error code (e.g.
+            "GATEWAY_ORDER_NOT_FOUND", "VALIDATION_FAILED"). Stable contract;
+            never localized. See docs/errors.md for the registry.
+        params:
+          type: object
+          additionalProperties: true
+          description: >
+            Structured parameters of the error. Every variable referenced by
+            the human-readable message appears here so clients can render
+            their own messages (e.g. {"order_id": "..."} for
+            GATEWAY_ORDER_NOT_FOUND, {"fields": [{field, rule, param}]} for
+            VALIDATION_FAILED).
 
     CreateOrderRequest:
       type: object
-      description: Request body for creating a new order.
+      description: >
+        Request body for creating a new order. Constraints are enforced at
+        the gateway edge BEFORE the command is produced (violations yield a
+        400 problem+json with code VALIDATION_FAILED and per-field
+        params.fields entries); the orders consumer revalidates as defense
+        in depth.
       required:
         - customer_id
         - amount_cents
@@ -329,14 +372,24 @@ components:
       properties:
         customer_id:
           type: string
+          minLength: 1
+          maxLength: 128
           description: The identifier of the customer placing the order.
         amount_cents:
           type: integer
           format: int64
-          description: The total order amount expressed in the smallest currency unit.
+          minimum: 1
+          description: >
+            The total order amount expressed in the smallest currency unit.
+            Must be positive.
         currency:
           type: string
-          description: The ISO 4217 currency code (e.g. "USD").
+          pattern: "^[A-Z]{3}$"
+          description: >
+            The ISO 4217 currency code (e.g. "USD"), uppercase. The gateway
+            additionally checks the code against its supported-currency
+            allowlist (see the service documentation); unsupported codes are
+            rejected with rule "iso4217".
 
     CreateOrderResponse:
       type: object
@@ -356,6 +409,7 @@ components:
         - status
         - amount_cents
         - currency
+        - created_at
       properties:
         order_id:
           type: string
@@ -370,6 +424,24 @@ components:
         currency:
           type: string
           description: The ISO 4217 currency code (e.g. "USD").
+        created_at:
+          type: string
+          format: date-time
+          x-go-type: string
+          description: >
+            Creation time of the order, RFC 3339 in UTC with the "Z" suffix
+            (e.g. "2026-06-10T12:34:56Z"). The API contract is ALWAYS UTC —
+            the X-Timezone header never changes this field; it only adds
+            created_at_local.
+        created_at_local:
+          type: string
+          x-go-type: string
+          description: >
+            Display-only rendering of created_at in the zone named by the
+            request's X-Timezone header, RFC 3339 with the zone's UTC offset
+            (e.g. "2026-06-10T15:34:56+03:00"). Present only when X-Timezone
+            was sent. Clients MUST NOT use it for computation or storage —
+            the contract field is created_at (UTC).
 
     OrderList:
       type: object

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -156,6 +157,20 @@ func TestGateway_GetUnknownOrder404(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "application/problem+json")
+	var prob struct {
+		Status   int            `json:"status"`
+		Code     string         `json:"code"`
+		Detail   string         `json:"detail"`
+		Instance string         `json:"instance"`
+		Params   map[string]any `json:"params"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&prob))
+	assert.Equal(t, http.StatusNotFound, prob.Status)
+	assert.Equal(t, "GATEWAY_ORDER_NOT_FOUND", prob.Code)
+	assert.Equal(t, "order "+unknownID+" not found", prob.Detail)
+	assert.Equal(t, "/v1/orders/"+unknownID, prob.Instance)
+	assert.Equal(t, unknownID, prob.Params["order_id"], "AIP-193: message variables must be params")
 }
 
 // consumeCreateOrderCommand consumes from orders.commands until a CreateOrderCommand
@@ -728,6 +743,11 @@ func TestGateway_AuthzForbidsWithoutRole(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusForbidden, resp.StatusCode, "expected 403 when principal lacks required role")
+	var forbidden struct {
+		Code string `json:"code"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&forbidden))
+	assert.Equal(t, "AUTH_FORBIDDEN", forbidden.Code, "platform auth code must flow through FromError")
 
 	// Now start a second gateway instance with a verifier that includes the "user" role.
 	t.Setenv("KAFKA_CLIENT_ID", "gateway-authz-test2-"+uuid.New().String())
@@ -917,9 +937,11 @@ func TestGateway_IdempotencyKeyBodyMismatch409(t *testing.T) {
 		"key reuse with a different body must be rejected, not absorbed into the first order")
 	assert.Contains(t, resp.Header.Get("Content-Type"), "application/problem+json")
 	var prob struct {
+		Code   string `json:"code"`
 		Detail string `json:"detail"`
 	}
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&prob))
+	assert.Equal(t, "GATEWAY_IDEMPOTENCY_BODY_MISMATCH", prob.Code, "machine-readable code is the contract")
 	assert.Contains(t, prob.Detail, "idempotency key", "problem detail must name the cause")
 
 	// Same key, identical body → still the original id (true retry).
@@ -974,12 +996,20 @@ func TestGateway_PostReturnsLocationAndPendingRow(t *testing.T) {
 	assert.EqualValues(t, 1500, view.AmountCents)
 	assert.Equal(t, "USD", view.Currency)
 
-	// 404 now returns problem+json with the documented shape.
-	nf, err := http.Get(baseURL + "/v1/orders/" + uuid.New().String())
+	// 404 now returns problem+json with the documented coded shape.
+	missingID := uuid.New().String()
+	nf, err := http.Get(baseURL + "/v1/orders/" + missingID)
 	require.NoError(t, err)
 	defer nf.Body.Close()
 	require.Equal(t, http.StatusNotFound, nf.StatusCode)
 	assert.Contains(t, nf.Header.Get("Content-Type"), "application/problem+json")
+	var nfProb struct {
+		Code   string         `json:"code"`
+		Params map[string]any `json:"params"`
+	}
+	require.NoError(t, json.NewDecoder(nf.Body).Decode(&nfProb))
+	assert.Equal(t, "GATEWAY_ORDER_NOT_FOUND", nfProb.Code)
+	assert.Equal(t, missingID, nfProb.Params["order_id"])
 }
 
 // TestGateway_PendingUpgradesAndReorderSafety verifies the projection status
@@ -1185,6 +1215,11 @@ func TestGateway_ListOrdersKeysetPagination(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	assert.Contains(t, resp.Header.Get("Content-Type"), "application/problem+json")
+	var cursorProb struct {
+		Code string `json:"code"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&cursorProb))
+	assert.Equal(t, "GATEWAY_INVALID_CURSOR", cursorProb.Code)
 
 	// limit above the documented maximum (100) is capped server-side; the
 	// request still succeeds (no kernel validation middleware is mounted).
@@ -1327,4 +1362,155 @@ func TestGateway_ProjectionPaymentTimeout(t *testing.T) {
 	time.Sleep(3 * time.Second)
 	require.Equal(t, "payment_timeout", getStatus(t, baseURL, orderID),
 		"a terminal payment_timeout must not be overwritten by a later paid")
+}
+
+// TestGateway_I18nLocalizedProblemsOverHTTP proves the i18n middleware is
+// actually mounted in NewApp: Accept-Language: ru localizes the
+// human-readable title/detail of problem responses over real HTTP, the en
+// default applies otherwise, and the machine-readable code/params pair is
+// identical in both locales.
+func TestGateway_I18nLocalizedProblemsOverHTTP(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
+	baseURL := startApp(t, broker, dsn)
+
+	getProblem := func(method, url, lang string, body []byte) (int, map[string]any) {
+		t.Helper()
+		var rd io.Reader
+		if body != nil {
+			rd = bytes.NewReader(body)
+		}
+		req, err := http.NewRequest(method, url, rd)
+		require.NoError(t, err)
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if lang != "" {
+			req.Header.Set("Accept-Language", lang)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Contains(t, resp.Header.Get("Content-Type"), "application/problem+json")
+		var p map[string]any
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&p))
+		return resp.StatusCode, p
+	}
+
+	// 404 — ru vs en (default).
+	unknownID := uuid.New().String()
+	st, ru := getProblem(http.MethodGet, baseURL+"/v1/orders/"+unknownID, "ru", nil)
+	require.Equal(t, http.StatusNotFound, st)
+	assert.Equal(t, "Заказ "+unknownID+" не найден.", ru["detail"])
+	assert.Equal(t, "Заказ не найден", ru["title"])
+
+	st, en := getProblem(http.MethodGet, baseURL+"/v1/orders/"+unknownID, "", nil)
+	require.Equal(t, http.StatusNotFound, st)
+	assert.Equal(t, "Order "+unknownID+" was not found.", en["detail"])
+
+	for _, p := range []map[string]any{ru, en} {
+		assert.Equal(t, "GATEWAY_ORDER_NOT_FOUND", p["code"], "code is locale-independent")
+		params, ok := p["params"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, unknownID, params["order_id"], "params are locale-independent")
+	}
+
+	// Validation 400 — ru localizes the platform VALIDATION_FAILED message;
+	// the structured fields params survive untouched.
+	badBody := []byte(`{"customer_id":"c1","amount_cents":-5,"currency":"USD"}`)
+	st, vru := getProblem(http.MethodPost, baseURL+"/v1/orders", "ru, en;q=0.5", badBody)
+	require.Equal(t, http.StatusBadRequest, st)
+	assert.Equal(t, "VALIDATION_FAILED", vru["code"])
+	assert.Equal(t, "Одно или несколько полей заполнены неверно.", vru["detail"])
+	vparams, ok := vru["params"].(map[string]any)
+	require.True(t, ok)
+	assert.NotEmpty(t, vparams["fields"], "structured fields must survive localization")
+}
+
+// TestGateway_CreatedAtAndTimezone proves the time contract over real HTTP:
+// created_at is RFC 3339 UTC ("Z"), X-Timezone adds a display-only
+// created_at_local with the zone's offset, an invalid zone is a coded 400,
+// and list items carry the same fields.
+func TestGateway_CreatedAtAndTimezone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
+	baseURL := startApp(t, broker, dsn)
+
+	orderID := uuid.New().String()
+	produceEvent(t, broker, topicOrdersEvents, "orders.OrderCreated.v1", orderID, func() proto.Message {
+		return &ordersv1.OrderCreated{OrderId: orderID, CustomerId: "cust-tz", AmountCents: 700, Currency: "USD"}
+	})
+	pollOrderStatus(t, baseURL, orderID, "created", 30*time.Second)
+
+	getView := func(tz string) (int, map[string]any) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, baseURL+"/v1/orders/"+orderID, http.NoBody)
+		require.NoError(t, err)
+		if tz != "" {
+			req.Header.Set("X-Timezone", tz)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		var v map[string]any
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&v))
+		return resp.StatusCode, v
+	}
+
+	// No header: created_at present, UTC Z, parseable; no local field.
+	st, v := getView("")
+	require.Equal(t, http.StatusOK, st)
+	createdAt, _ := v["created_at"].(string)
+	require.NotEmpty(t, createdAt, "created_at must be present")
+	assert.True(t, strings.HasSuffix(createdAt, "Z"), "created_at must be UTC with Z suffix, got %q", createdAt)
+	parsed, err := time.Parse(time.RFC3339, createdAt)
+	require.NoError(t, err, "created_at must be RFC 3339")
+	assert.WithinDuration(t, time.Now().UTC(), parsed, 5*time.Minute)
+	_, hasLocal := v["created_at_local"]
+	assert.False(t, hasLocal, "created_at_local must be absent without X-Timezone")
+
+	// Valid zone: created_at unchanged, created_at_local added with offset.
+	st, v = getView("Europe/Kyiv")
+	require.Equal(t, http.StatusOK, st)
+	assert.Equal(t, createdAt, v["created_at"], "contract field is identical with or without X-Timezone")
+	local, _ := v["created_at_local"].(string)
+	require.NotEmpty(t, local)
+	localParsed, err := time.Parse(time.RFC3339, local)
+	require.NoError(t, err)
+	assert.True(t, localParsed.Equal(parsed), "created_at_local must be the same instant")
+	assert.False(t, strings.HasSuffix(local, "Z"), "created_at_local carries the zone offset, got %q", local)
+
+	// Invalid zone: coded 400, offending value in params.
+	st, v = getView("UTC+3")
+	require.Equal(t, http.StatusBadRequest, st)
+	assert.Equal(t, "GATEWAY_INVALID_TIMEZONE", v["code"])
+	params, ok := v["params"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "UTC+3", params["timezone"])
+
+	// List items carry created_at too (and local with the header).
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/v1/orders?limit=5", http.NoBody)
+	require.NoError(t, err)
+	req.Header.Set("X-Timezone", "America/New_York")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&page))
+	require.NotEmpty(t, page.Items)
+	itemCreated, _ := page.Items[0]["created_at"].(string)
+	assert.True(t, strings.HasSuffix(itemCreated, "Z"), "list created_at must be UTC Z, got %q", itemCreated)
+	itemLocal, _ := page.Items[0]["created_at_local"].(string)
+	assert.NotEmpty(t, itemLocal, "list items must carry created_at_local with X-Timezone")
 }

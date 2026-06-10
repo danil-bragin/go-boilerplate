@@ -13,7 +13,7 @@ import (
 )
 
 const getOrderView = `-- name: GetOrderView :one
-select order_id, customer_id, amount_cents, currency, status, updated_at
+select order_id, customer_id, amount_cents, currency, status, created_at, updated_at
 from orders_read
 where order_id = $1
 `
@@ -24,6 +24,7 @@ type GetOrderViewRow struct {
 	AmountCents int64
 	Currency    string
 	Status      string
+	CreatedAt   pgtype.Timestamptz
 	UpdatedAt   pgtype.Timestamptz
 }
 
@@ -36,6 +37,7 @@ func (q *Queries) GetOrderView(ctx context.Context, orderID uuid.UUID) (GetOrder
 		&i.AmountCents,
 		&i.Currency,
 		&i.Status,
+		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err

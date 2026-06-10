@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -341,6 +342,73 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	assert.Equal(t, orderCreatedRec.Headers["message-id"], paymentProcessedRec.Headers["causation-id"],
 		"PaymentProcessed's causation must be OrderCreated's message id")
 	t.Log("Step 5 OK: correlation/causation chain verified")
+
+	// --- Step 6: coded problem+json contract on the edge ---
+	// Proves: error responses carry the machine-readable (code, params) pair
+	// alongside the RFC 9457 members — clients switch on code, not on detail.
+	t.Log("Step 6: asserting coded problem payload for an unknown order")
+	unknownID := uuid.New().String()
+	nf, err := http.Get(baseURL + "/v1/orders/" + unknownID)
+	require.NoError(t, err)
+	defer nf.Body.Close()
+	require.Equal(t, http.StatusNotFound, nf.StatusCode)
+	require.Contains(t, nf.Header.Get("Content-Type"), "application/problem+json")
+	var prob struct {
+		Status int            `json:"status"`
+		Code   string         `json:"code"`
+		Params map[string]any `json:"params"`
+	}
+	require.NoError(t, json.NewDecoder(nf.Body).Decode(&prob))
+	assert.Equal(t, http.StatusNotFound, prob.Status)
+	assert.Equal(t, "GATEWAY_ORDER_NOT_FOUND", prob.Code)
+	assert.Equal(t, unknownID, prob.Params["order_id"])
+	t.Log("Step 6 OK: problem payload carries code and params")
+
+	// --- Step 7: edge validation — invalid body is rejected before produce ---
+	// Proves: the gateway validates the command at the edge (400
+	// VALIDATION_FAILED with structured params.fields) instead of producing a
+	// command that the orders consumer would only dead-letter.
+	t.Log("Step 7: asserting edge validation rejects a negative amount")
+	badBody := []byte(`{"customer_id":"cust-e2e","amount_cents":-5,"currency":"USD"}`)
+	badResp, err := http.Post(baseURL+"/v1/orders", "application/json", bytes.NewReader(badBody))
+	require.NoError(t, err)
+	defer badResp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, badResp.StatusCode)
+	require.Contains(t, badResp.Header.Get("Content-Type"), "application/problem+json")
+	var vprob struct {
+		Code   string `json:"code"`
+		Params struct {
+			Fields []struct {
+				Field string `json:"field"`
+				Rule  string `json:"rule"`
+			} `json:"fields"`
+		} `json:"params"`
+	}
+	require.NoError(t, json.NewDecoder(badResp.Body).Decode(&vprob))
+	assert.Equal(t, "VALIDATION_FAILED", vprob.Code)
+	require.NotEmpty(t, vprob.Params.Fields)
+	assert.Equal(t, "amount_cents", vprob.Params.Fields[0].Field)
+	assert.Equal(t, "gt", vprob.Params.Fields[0].Rule)
+	t.Log("Step 7 OK: invalid body rejected with VALIDATION_FAILED + fields")
+
+	// --- Step 8: time contract — created_at is RFC 3339 UTC ("Z") ---
+	// Proves: the read model's created_at flows through the projection into
+	// the API response in the documented always-UTC format.
+	t.Log("Step 8: asserting created_at on the paid order view")
+	viewResp, err := http.Get(baseURL + "/v1/orders/" + orderID)
+	require.NoError(t, err)
+	defer viewResp.Body.Close()
+	require.Equal(t, http.StatusOK, viewResp.StatusCode)
+	var view struct {
+		CreatedAt string `json:"created_at"`
+	}
+	require.NoError(t, json.NewDecoder(viewResp.Body).Decode(&view))
+	require.NotEmpty(t, view.CreatedAt, "created_at must be present")
+	require.True(t, strings.HasSuffix(view.CreatedAt, "Z"),
+		"created_at must be UTC with Z suffix, got %q", view.CreatedAt)
+	_, err = time.Parse(time.RFC3339, view.CreatedAt)
+	require.NoError(t, err, "created_at must be RFC 3339")
+	t.Log("Step 8 OK: created_at is RFC 3339 UTC")
 }
 
 // consumeRawEvent consumes raw records from topic until one matches the given

@@ -6,12 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"slices"
 	"time"
 
 	"go-boilerplate/examples/gateway/internal/app"
+	"go-boilerplate/examples/gateway/internal/apperrs"
 	"go-boilerplate/examples/gateway/internal/attachments"
+	"go-boilerplate/platform/apperr"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/kafka"
@@ -20,7 +21,6 @@ import (
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/security/authz"
 	"go-boilerplate/platform/storage/pg"
-	"go-boilerplate/platform/web/httpx"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -114,6 +114,11 @@ func (s *Server) HealthCheck(_ context.Context, _ HealthCheckRequestObject) (Hea
 // ctx must hold the "user" or "admin" role (enforced via authz.Require RBAC).
 // A missing or insufficiently-privileged principal yields 403.
 //
+// Validation: the outgoing command is validated at the edge (same rules as
+// the orders consumer — see validateCreateOrderCommand) before any DB read
+// or Kafka produce; violations yield 400 VALIDATION_FAILED with
+// params.fields = [{field, rule, param}].
+//
 // The Kafka publish is wrapped in a resilience policy (Retry×3 + Timeout 2 s)
 // to handle transient broker hiccups without failing the request immediately.
 func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObject) (CreateOrderResponseObject, error) {
@@ -123,15 +128,17 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 	}
 
 	// RBAC authorization: skip when auth is disabled (e.g. in e2e / dev).
+	// Both denials are apperr-coded platform sentinels (AUTH_UNAUTHENTICATED
+	// 401 / AUTH_FORBIDDEN 403) mapped by httpx.FromError at the edge.
 	if !s.authDisabled {
 		p, ok := auth.From(ctx)
 		if !ok {
 			// No principal — auth middleware should have blocked this, but
 			// be defensive: fail closed.
-			return nil, &authError{status: http.StatusUnauthorized, msg: "no authenticated principal"}
+			return nil, authz.ErrUnauthenticated
 		}
 		if err := rbacPolicy.Authorize(ctx, p, "order:create", nil); err != nil {
-			return nil, &authError{status: http.StatusForbidden, msg: "insufficient privileges"}
+			return nil, err
 		}
 	}
 
@@ -146,21 +153,14 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 	// share one global namespace and are only collision-safe between
 	// cooperating clients (documented in openapi.yaml).
 	var orderID string
+	hasIdempotencyKey := false
 	if key := request.Params.IdempotencyKey; key != nil && *key != "" {
 		seed := *key
 		if p, ok := auth.From(ctx); ok && p.Subject != "" {
 			seed = p.Subject + "\x00" + *key
 		}
 		orderID = uuid.NewSHA1(idempotencyNS, []byte(seed)).String()
-
-		// Key reuse with a DIFFERENT body is a client bug, not a retry:
-		// absorbing it would silently drop the second order. Compare against
-		// the existing pending/projection row and reject mismatches.
-		if resp, err := s.rejectIdempotentBodyMismatch(ctx, orderID, body); err != nil {
-			return nil, err
-		} else if resp != nil {
-			return resp, nil
-		}
+		hasIdempotencyKey = true
 	} else {
 		orderID = uuid.New().String()
 	}
@@ -171,6 +171,26 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 		AmountCents: body.AmountCents,
 		Currency:    body.Currency,
 	}
+
+	// Edge validation BEFORE any DB read or Kafka produce: invalid input is
+	// rejected with 400 VALIDATION_FAILED + params.fields and never reaches
+	// the idempotency lookup, the broker, or the read model. The orders
+	// consumer revalidates the same rules (defense in depth — a failure
+	// there is permanent and goes straight to the DLT).
+	if err := validateCreateOrderCommand(cmd); err != nil {
+		return nil, err
+	}
+
+	// Key reuse with a DIFFERENT body is a client bug, not a retry:
+	// absorbing it would silently drop the second order. Compare against
+	// the existing pending/projection row and reject mismatches
+	// (GATEWAY_IDEMPOTENCY_BODY_MISMATCH → 409 via httpx.FromError).
+	if hasIdempotencyKey {
+		if err := s.rejectIdempotentBodyMismatch(ctx, orderID, body); err != nil {
+			return nil, err
+		}
+	}
+
 	var payload []byte
 	var err error
 	if s.encoder != nil {
@@ -248,9 +268,10 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 // rejectIdempotentBodyMismatch checks whether the deterministic orderID
 // derived from an Idempotency-Key already has a read-model row whose
 // (customer_id, amount_cents, currency) differ from the incoming body. A
-// mismatch yields a 409 problem+json response; a match (true retry), a
-// missing row, or a placeholder row written by a payment event before
-// OrderCreated (empty customer/currency) yields (nil, nil) — proceed.
+// mismatch yields a coded apperr (GATEWAY_IDEMPOTENCY_BODY_MISMATCH → 409
+// problem+json at the edge); a match (true retry), a missing row, or a
+// placeholder row written by a payment event before OrderCreated (empty
+// customer/currency) yields nil — proceed.
 //
 // The check reads the READER pool (pg.FromContextRead) so idempotency
 // lookups never queue on the writer — POST's only mandatory writer work
@@ -271,10 +292,10 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 // Without a replica (default) Reader() == Writer() and behavior is exactly
 // as before. A read failure degrades gracefully: the request proceeds
 // exactly as before this guard existed (logged).
-func (s *Server) rejectIdempotentBodyMismatch(ctx context.Context, orderID string, body *CreateOrderRequest) (CreateOrderResponseObject, error) {
+func (s *Server) rejectIdempotentBodyMismatch(ctx context.Context, orderID string, body *CreateOrderRequest) error {
 	id, err := uuid.Parse(orderID)
 	if err != nil {
-		return nil, fmt.Errorf("gateway: parse derived order id: %w", err)
+		return fmt.Errorf("gateway: parse derived order id: %w", err)
 	}
 	row, err := storegen.New(pg.FromContextRead(ctx, s.pool)).GetOrderView(ctx, id)
 	if err != nil {
@@ -282,30 +303,30 @@ func (s *Server) rejectIdempotentBodyMismatch(ctx context.Context, orderID strin
 			s.logger.WarnContext(ctx, "gateway: idempotency body-mismatch check skipped (read failed)",
 				"order_id", orderID, "error", err)
 		}
-		return nil, nil //nolint:nilnil // nil response + nil error = proceed
+		return nil // proceed
 	}
 	if row.CustomerID == "" && row.Currency == "" && row.AmountCents == 0 {
 		// Placeholder row upserted by a payment-outcome event that raced
 		// ahead of OrderCreated — nothing meaningful to compare against.
-		return nil, nil //nolint:nilnil // nil response + nil error = proceed
+		return nil // proceed
 	}
 	if row.CustomerID != body.CustomerId || row.AmountCents != body.AmountCents || row.Currency != body.Currency {
-		detail := "idempotency key reused with different request body; replay the original request unchanged or use a new key"
-		return CreateOrder409ApplicationProblemPlusJSONResponse{
-			ConflictApplicationProblemPlusJSONResponse(Problem{
-				Title:  http.StatusText(http.StatusConflict),
-				Status: http.StatusConflict,
-				Detail: &detail,
-			}),
-		}, nil
+		return apperr.New(apperrs.CodeIdempotencyBodyMismatch)
 	}
-	return nil, nil //nolint:nilnil // nil response + nil error = proceed
+	return nil // proceed
 }
 
 // ListOrders implements StrictServerInterface: cursor-paginated listing of
 // the read model (keyset over (created_at, order_id) descending). An
 // undecodable cursor maps to 400 problem+json.
 func (s *Server) ListOrders(ctx context.Context, request ListOrdersRequestObject) (ListOrdersResponseObject, error) {
+	// X-Timezone (optional): validated up front so a bad zone is a clean 400
+	// before any read. nil loc = no created_at_local fields.
+	loc, err := parseTimezone(request.Params.XTimezone)
+	if err != nil {
+		return nil, err
+	}
+
 	q := app.ListOrders{}
 	if request.Params.Cursor != nil {
 		q.Cursor = *request.Params.Cursor
@@ -320,25 +341,18 @@ func (s *Server) ListOrders(ctx context.Context, request ListOrdersRequestObject
 	if !s.authDisabled {
 		p, ok := auth.From(ctx)
 		if !ok {
-			return nil, &authError{status: http.StatusUnauthorized, msg: "no authenticated principal"}
+			return nil, authz.ErrUnauthenticated
 		}
 		if !slices.Contains(p.Roles, attachments.AdminRole) {
 			q.CustomerID = p.Subject
 		}
 	}
 
+	// Errors flow to responseErrorHandler: a bad cursor is the coded
+	// app.ErrInvalidCursor (GATEWAY_INVALID_CURSOR → 400 via
+	// httpx.FromError); anything else maps to 500 INTERNAL without leaking.
 	page, err := s.listOrdersHandler(ctx, q)
 	if err != nil {
-		if errors.Is(err, app.ErrInvalidCursor) {
-			detail := "invalid cursor parameter"
-			return ListOrders400ApplicationProblemPlusJSONResponse{
-				BadRequestApplicationProblemPlusJSONResponse(Problem{
-					Title:  http.StatusText(http.StatusBadRequest),
-					Status: http.StatusBadRequest,
-					Detail: &detail,
-				}),
-			}, nil
-		}
 		return nil, fmt.Errorf("gateway: list orders: %w", err)
 	}
 
@@ -349,6 +363,11 @@ func (s *Server) ListOrders(ctx context.Context, request ListOrdersRequestObject
 			Status:      v.Status,
 			AmountCents: v.AmountCents,
 			Currency:    v.Currency,
+			CreatedAt:   formatCreatedAt(v.CreatedAt),
+		}
+		if loc != nil {
+			local := formatCreatedAtLocal(v.CreatedAt, loc)
+			items[i].CreatedAtLocal = &local
 		}
 	}
 	out := ListOrders200JSONResponse{Items: items}
@@ -360,28 +379,26 @@ func (s *Server) ListOrders(ctx context.Context, request ListOrdersRequestObject
 
 // GetOrder implements StrictServerInterface.
 // It delegates to the decorated CQRS query handler (Logging+Tracing+Metrics+
-// optional Caching), mapping ErrOrderNotFound → 404.
+// optional Caching). A missing order is the coded app.ErrOrderNotFound
+// (GATEWAY_ORDER_NOT_FOUND → 404 problem+json via httpx.FromError in
+// responseErrorHandler).
 //
 // Ownership: when auth is enabled, non-admin principals may only read orders
 // whose customer_id equals their subject. A non-owner receives the SAME 404
 // as a nonexistent order — 403 would be an existence oracle, letting any
 // authenticated client enumerate which order ids exist.
 func (s *Server) GetOrder(ctx context.Context, request GetOrderRequestObject) (GetOrderResponseObject, error) {
-	notFound := func() GetOrderResponseObject {
-		detail := "order " + request.Id + " not found"
-		return GetOrder404ApplicationProblemPlusJSONResponse{
-			NotFoundApplicationProblemPlusJSONResponse(Problem{
-				Title:  http.StatusText(http.StatusNotFound),
-				Status: http.StatusNotFound,
-				Detail: &detail,
-			}),
-		}
+	// X-Timezone (optional): validated up front so a bad zone is a clean 400
+	// before the read. nil loc = no created_at_local field.
+	loc, err := parseTimezone(request.Params.XTimezone)
+	if err != nil {
+		return nil, err
 	}
 
 	view, err := s.getOrderHandler(ctx, app.GetOrder{OrderID: request.Id})
 	if err != nil {
 		if errors.Is(err, app.ErrOrderNotFound) {
-			return notFound(), nil
+			return nil, app.OrderNotFound(request.Id)
 		}
 		return nil, fmt.Errorf("gateway: get order: %w", err)
 	}
@@ -389,41 +406,23 @@ func (s *Server) GetOrder(ctx context.Context, request GetOrderRequestObject) (G
 	if !s.authDisabled {
 		p, ok := auth.From(ctx)
 		if !ok {
-			return nil, &authError{status: http.StatusUnauthorized, msg: "no authenticated principal"}
+			return nil, authz.ErrUnauthenticated
 		}
 		if !slices.Contains(p.Roles, attachments.AdminRole) && view.CustomerID != p.Subject {
-			return notFound(), nil
+			return nil, app.OrderNotFound(request.Id)
 		}
 	}
 
-	return GetOrder200JSONResponse{
+	resp := GetOrder200JSONResponse{
 		OrderId:     view.OrderID,
 		Status:      view.Status,
 		AmountCents: view.AmountCents,
 		Currency:    view.Currency,
-	}, nil
-}
-
-// authError carries an HTTP status code so gateway.go can map it correctly.
-type authError struct {
-	status int
-	msg    string
-}
-
-func (e *authError) Error() string { return e.msg }
-
-// WriteAuthError writes an authError as a problem+json response if err is an
-// *authError. Returns true when the error was handled, false otherwise.
-// Used by the strict handler's ResponseErrorHandlerFunc.
-func WriteAuthError(w http.ResponseWriter, err error) bool {
-	var ae *authError
-	if errors.As(err, &ae) {
-		httpx.WriteProblem(w, httpx.Problem{
-			Status: ae.status,
-			Title:  http.StatusText(ae.status),
-			Detail: ae.msg,
-		})
-		return true
+		CreatedAt:   formatCreatedAt(view.CreatedAt),
 	}
-	return false
+	if loc != nil {
+		local := formatCreatedAtLocal(view.CreatedAt, loc)
+		resp.CreatedAtLocal = &local
+	}
+	return resp, nil
 }

@@ -1,0 +1,39 @@
+# Gateway catalog (base language) for the GATEWAY_* codes this service owns,
+# plus title overrides for platform codes as they appear on gateway responses.
+# Message IDs are apperr codes; "<code>.title" overrides the problem title
+# (status text is kept when absent). Template params bind to apperr params.
+
+[GATEWAY_ORDER_NOT_FOUND]
+other = "Order {{.order_id}} was not found."
+
+["GATEWAY_ORDER_NOT_FOUND.title"]
+other = "Order not found"
+
+[GATEWAY_INVALID_CURSOR]
+other = "The pagination cursor is invalid. Pass the next_cursor value returned by a previous page, unchanged."
+
+[GATEWAY_IDEMPOTENCY_BODY_MISMATCH]
+other = "This Idempotency-Key was already used with a different request body. Replay the original request unchanged, or use a new key."
+
+[GATEWAY_MALFORMED_REQUEST]
+other = "The request could not be parsed: {{.reason}}"
+
+[GATEWAY_INVALID_TIMEZONE]
+other = "The X-Timezone value {{.timezone}} is not a valid IANA time zone name (for example Europe/Kyiv)."
+
+[GATEWAY_ATTACHMENTS_DISABLED]
+other = "Attachments are not available."
+
+[GATEWAY_ATTACHMENT_INVALID_ORDER_ID]
+other = "The order id is not a valid UUID."
+
+[GATEWAY_ATTACHMENT_INVALID_FILENAME]
+other = "The attachment filename is not valid."
+
+[GATEWAY_ATTACHMENT_NOT_FOUND]
+other = "Attachment {{.filename}} for order {{.order_id}} was not found."
+
+# Title override for the platform validation code on gateway responses
+# (the detail text itself ships with the platform catalog).
+["VALIDATION_FAILED.title"]
+other = "Invalid request"

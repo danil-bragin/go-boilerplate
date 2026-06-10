@@ -71,8 +71,11 @@ import (
 	"sync"
 	"time"
 
+	"go-boilerplate/examples/gateway/internal/apperrs"
 	"go-boilerplate/examples/gateway/internal/attachments"
+	"go-boilerplate/platform/apperr"
 	"go-boilerplate/platform/security/auth"
+	"go-boilerplate/platform/security/authz"
 	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/web/httpx"
 
@@ -514,7 +517,7 @@ func (s *Streamer) Stream(w http.ResponseWriter, r *http.Request) {
 
 	status, owner, err := s.currentStatus(ctx, orderID)
 	if err != nil && !errors.Is(err, errNotFound) {
-		writeProblem(w, http.StatusInternalServerError, "internal error")
+		writeProblem(w, r, err) // unknown error → 500 INTERNAL, no leak
 		return
 	}
 	notFound := errors.Is(err, errNotFound)
@@ -525,7 +528,7 @@ func (s *Streamer) Stream(w http.ResponseWriter, r *http.Request) {
 	if !s.authDisabled {
 		p, ok := auth.From(ctx)
 		if !ok {
-			writeProblem(w, http.StatusUnauthorized, "authentication required")
+			writeProblem(w, r, authz.ErrUnauthenticated)
 			return
 		}
 		if !slices.Contains(p.Roles, attachments.AdminRole) && (notFound || owner != p.Subject) {
@@ -533,7 +536,7 @@ func (s *Streamer) Stream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if notFound {
-		writeProblem(w, http.StatusNotFound, "order "+orderID+" not found")
+		writeProblem(w, r, apperr.New(apperrs.CodeOrderNotFound).WithParam("order_id", orderID))
 		return
 	}
 
@@ -667,12 +670,10 @@ func (s *Streamer) Stream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// writeProblem emits the same RFC7807 problem+json shape as the generated
-// API error paths.
-func writeProblem(w http.ResponseWriter, status int, detail string) {
-	httpx.WriteProblem(w, httpx.Problem{
-		Status: status,
-		Title:  http.StatusText(status),
-		Detail: detail,
-	})
+// writeProblem emits the same coded RFC 9457 problem+json shape as the rest
+// of the gateway: httpx.FromError maps coded apperr errors to their
+// registered status/code/params (localized title/detail when the i18n
+// middleware ran) and unknown errors to 500 INTERNAL without leaking.
+func writeProblem(w http.ResponseWriter, r *http.Request, err error) {
+	httpx.WriteError(w, r, err)
 }

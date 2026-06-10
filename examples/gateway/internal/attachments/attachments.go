@@ -31,6 +31,8 @@ import (
 	"strings"
 	"time"
 
+	"go-boilerplate/examples/gateway/internal/apperrs"
+	"go-boilerplate/platform/apperr"
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/security/authz"
 	"go-boilerplate/platform/storage/blob"
@@ -174,11 +176,11 @@ func hasRole(p auth.Principal, role string) bool {
 func (h *Handler) roleGate(w http.ResponseWriter, r *http.Request) (auth.Principal, bool) {
 	p, ok := auth.From(r.Context())
 	if !ok {
-		httpx.Error(w, http.StatusUnauthorized, "authentication required")
+		httpx.WriteError(w, r, authz.ErrUnauthenticated)
 		return auth.Principal{}, false
 	}
 	if !hasRole(p, h.requiredRole) && !hasRole(p, AdminRole) {
-		httpx.Error(w, http.StatusForbidden, "required role: "+h.requiredRole)
+		httpx.WriteError(w, r, apperr.Wrap(authz.ErrForbidden, apperr.CodeAuthForbidden).WithParam("role", h.requiredRole))
 		return auth.Principal{}, false
 	}
 	return p, true
@@ -195,15 +197,15 @@ func (h *Handler) checkOwnership(w http.ResponseWriter, r *http.Request, p auth.
 	owner, err := h.ownerLookup(ctx, orderID)
 	if err != nil {
 		if errors.Is(err, ErrOwnerNotFound) {
-			httpx.Error(w, http.StatusNotFound, "order not found")
+			httpx.WriteError(w, r, apperr.Wrap(err, apperrs.CodeOrderNotFound).WithParam("order_id", orderID))
 		} else {
 			// Fail closed: an unavailable read model must never grant access.
-			httpx.Error(w, http.StatusInternalServerError, "failed to verify order ownership")
+			httpx.WriteError(w, r, err) // unknown error -> 500 INTERNAL, no leak
 		}
 		return false
 	}
 	if err := h.ownership.Authorize(ctx, p, "attachment:access", owner); err != nil {
-		httpx.Error(w, http.StatusForbidden, "not the order owner")
+		httpx.WriteError(w, r, err) // authz.ErrForbidden -> 403 AUTH_FORBIDDEN
 		return false
 	}
 	return true
@@ -220,7 +222,7 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	if !h.flagBool(ctx, h.flagKey, false) {
-		httpx.Error(w, http.StatusNotFound, "attachments disabled")
+		httpx.WriteError(w, r, apperr.New(apperrs.CodeAttachmentsDisabled))
 		return
 	}
 
@@ -233,7 +235,7 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	// Validate {id}: must be a valid UUID.
 	rawID := chi.URLParam(r, "id")
 	if _, err := uuid.Parse(rawID); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid order id")
+		httpx.WriteError(w, r, apperr.Wrap(err, apperrs.CodeAttachmentInvalidOrderID))
 		return
 	}
 
@@ -248,7 +250,7 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	}
 	filename, ok := sanitizeName(rawFilename)
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, "invalid filename")
+		httpx.WriteError(w, r, apperr.New(apperrs.CodeAttachmentInvalidFilename))
 		return
 	}
 
@@ -259,14 +261,14 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "failed to read request body")
+		httpx.WriteError(w, r, err)
 		return
 	}
 
 	key := "orders/" + rawID + "/" + filename
 
 	if err := h.store.Put(ctx, key, bytes.NewReader(body), int64(len(body)), contentType); err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "failed to store attachment")
+		httpx.WriteError(w, r, err)
 		return
 	}
 
@@ -284,7 +286,7 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	if !h.flagBool(ctx, h.flagKey, false) {
-		httpx.Error(w, http.StatusNotFound, "attachments disabled")
+		httpx.WriteError(w, r, apperr.New(apperrs.CodeAttachmentsDisabled))
 		return
 	}
 
@@ -297,7 +299,7 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 	// Validate {id}: must be a valid UUID.
 	rawID := chi.URLParam(r, "id")
 	if _, err := uuid.Parse(rawID); err != nil {
-		httpx.Error(w, http.StatusBadRequest, "invalid order id")
+		httpx.WriteError(w, r, apperr.Wrap(err, apperrs.CodeAttachmentInvalidOrderID))
 		return
 	}
 
@@ -309,7 +311,7 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 	rawName := chi.URLParam(r, "name")
 	name, ok := sanitizeName(rawName)
 	if !ok {
-		httpx.Error(w, http.StatusBadRequest, "invalid filename")
+		httpx.WriteError(w, r, apperr.New(apperrs.CodeAttachmentInvalidFilename))
 		return
 	}
 
@@ -317,17 +319,17 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 
 	exists, err := h.store.Exists(ctx, key)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "failed to check attachment existence")
+		httpx.WriteError(w, r, err)
 		return
 	}
 	if !exists {
-		httpx.Error(w, http.StatusNotFound, "attachment not found")
+		httpx.WriteError(w, r, apperr.New(apperrs.CodeAttachmentNotFound).WithParams(map[string]any{"order_id": rawID, "filename": name}))
 		return
 	}
 
 	u, err := h.store.PresignGet(ctx, key, h.presignTTL)
 	if err != nil {
-		httpx.Error(w, http.StatusInternalServerError, "failed to generate download URL")
+		httpx.WriteError(w, r, err)
 		return
 	}
 

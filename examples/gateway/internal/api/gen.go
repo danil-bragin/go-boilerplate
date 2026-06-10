@@ -18,12 +18,12 @@ const (
 	BearerAuthScopes = "bearerAuth.Scopes"
 )
 
-// CreateOrderRequest Request body for creating a new order.
+// CreateOrderRequest Request body for creating a new order. Constraints are enforced at the gateway edge BEFORE the command is produced (violations yield a 400 problem+json with code VALIDATION_FAILED and per-field params.fields entries); the orders consumer revalidates as defense in depth.
 type CreateOrderRequest struct {
-	// AmountCents The total order amount expressed in the smallest currency unit.
+	// AmountCents The total order amount expressed in the smallest currency unit. Must be positive.
 	AmountCents int64 `json:"amount_cents"`
 
-	// Currency The ISO 4217 currency code (e.g. "USD").
+	// Currency The ISO 4217 currency code (e.g. "USD"), uppercase. The gateway additionally checks the code against its supported-currency allowlist (see the service documentation); unsupported codes are rejected with rule "iso4217".
 	Currency string `json:"currency"`
 
 	// CustomerId The identifier of the customer placing the order.
@@ -49,6 +49,12 @@ type OrderView struct {
 	// AmountCents The total order amount expressed in the smallest currency unit.
 	AmountCents int64 `json:"amount_cents"`
 
+	// CreatedAt Creation time of the order, RFC 3339 in UTC with the "Z" suffix (e.g. "2026-06-10T12:34:56Z"). The API contract is ALWAYS UTC — the X-Timezone header never changes this field; it only adds created_at_local.
+	CreatedAt string `json:"created_at"`
+
+	// CreatedAtLocal Display-only rendering of created_at in the zone named by the request's X-Timezone header, RFC 3339 with the zone's UTC offset (e.g. "2026-06-10T15:34:56+03:00"). Present only when X-Timezone was sent. Clients MUST NOT use it for computation or storage — the contract field is created_at (UTC).
+	CreatedAtLocal *string `json:"created_at_local,omitempty"`
+
 	// Currency The ISO 4217 currency code (e.g. "USD").
 	Currency string `json:"currency"`
 
@@ -59,13 +65,19 @@ type OrderView struct {
 	Status string `json:"status"`
 }
 
-// Problem RFC 7807 problem details.
+// Problem RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type Problem struct {
+	// Code Flat UPPER_SNAKE application error code (e.g. "GATEWAY_ORDER_NOT_FOUND", "VALIDATION_FAILED"). Stable contract; never localized. See docs/errors.md for the registry.
+	Code *string `json:"code,omitempty"`
+
 	// Detail Human-readable explanation specific to this occurrence.
 	Detail *string `json:"detail,omitempty"`
 
 	// Instance URI reference identifying this specific occurrence.
 	Instance *string `json:"instance,omitempty"`
+
+	// Params Structured parameters of the error. Every variable referenced by the human-readable message appears here so clients can render their own messages (e.g. {"order_id": "..."} for GATEWAY_ORDER_NOT_FOUND, {"fields": [{field, rule, param}]} for VALIDATION_FAILED).
+	Params *map[string]interface{} `json:"params,omitempty"`
 
 	// Status HTTP status code.
 	Status int `json:"status"`
@@ -77,25 +89,28 @@ type Problem struct {
 	Type *string `json:"type,omitempty"`
 }
 
-// BadRequest RFC 7807 problem details.
+// XTimezone defines model for XTimezone.
+type XTimezone = string
+
+// BadRequest RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type BadRequest = Problem
 
-// Conflict RFC 7807 problem details.
+// Conflict RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type Conflict = Problem
 
-// Forbidden RFC 7807 problem details.
+// Forbidden RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type Forbidden = Problem
 
-// NotFound RFC 7807 problem details.
+// NotFound RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type NotFound = Problem
 
-// ServiceUnavailable RFC 7807 problem details.
+// ServiceUnavailable RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type ServiceUnavailable = Problem
 
-// TooManyRequests RFC 7807 problem details.
+// TooManyRequests RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type TooManyRequests = Problem
 
-// Unauthorized RFC 7807 problem details.
+// Unauthorized RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type Unauthorized = Problem
 
 // ListOrdersParams defines parameters for ListOrders.
@@ -105,6 +120,9 @@ type ListOrdersParams struct {
 
 	// Limit Page size (default 20, maximum 100).
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// XTimezone IANA tz database name (e.g. "Europe/Kyiv", "America/New_York"). When present, every order view in the response additionally carries created_at_local rendered in that zone (display-only; the contract field created_at remains UTC). Offsets ("UTC+3", "+02:00"), unknown names and "Local" are rejected with 400 GATEWAY_INVALID_TIMEZONE.
+	XTimezone *XTimezone `json:"X-Timezone,omitempty"`
 }
 
 // CreateOrderParams defines parameters for CreateOrder.
@@ -113,6 +131,12 @@ type CreateOrderParams struct {
 	// Scope: keys are namespaced per authenticated principal (token subject) — two clients may use the same key without colliding. When the gateway runs with auth disabled there is no principal to scope by, so keys share one global namespace and are only collision-safe between cooperating clients.
 	// Reuse: replaying a key with a DIFFERENT request body (customer_id, amount_cents or currency changed) is rejected with 409 Conflict — a key identifies one logical request, not a slot to overwrite. Mismatch detection reads a replica when one is configured: a reuse with a different body within the replication-lag window may return 202 instead of 409 — the conflicting request is still discarded downstream (commands deduplicate by order id); only the 409 signal is lost within that window. Note that order ids are derived deterministically from the (principal, key) pair — key alone when auth is disabled — so they are predictable to whoever knows both; treat keys as secrets shared only between the client and the gateway.
 	IdempotencyKey *string `json:"Idempotency-Key,omitempty"`
+}
+
+// GetOrderParams defines parameters for GetOrder.
+type GetOrderParams struct {
+	// XTimezone IANA tz database name (e.g. "Europe/Kyiv", "America/New_York"). When present, every order view in the response additionally carries created_at_local rendered in that zone (display-only; the contract field created_at remains UTC). Offsets ("UTC+3", "+02:00"), unknown names and "Local" are rejected with 400 GATEWAY_INVALID_TIMEZONE.
+	XTimezone *XTimezone `json:"X-Timezone,omitempty"`
 }
 
 // CreateOrderJSONRequestBody defines body for CreateOrder for application/json ContentType.
@@ -131,7 +155,7 @@ type ServerInterface interface {
 	CreateOrder(w http.ResponseWriter, r *http.Request, params CreateOrderParams)
 	// Get order by ID
 	// (GET /v1/orders/{id})
-	GetOrder(w http.ResponseWriter, r *http.Request, id string)
+	GetOrder(w http.ResponseWriter, r *http.Request, id string, params GetOrderParams)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -158,7 +182,7 @@ func (_ Unimplemented) CreateOrder(w http.ResponseWriter, r *http.Request, param
 
 // Get order by ID
 // (GET /v1/orders/{id})
-func (_ Unimplemented) GetOrder(w http.ResponseWriter, r *http.Request, id string) {
+func (_ Unimplemented) GetOrder(w http.ResponseWriter, r *http.Request, id string, params GetOrderParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -213,6 +237,27 @@ func (siw *ServerInterfaceWrapper) ListOrders(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
 		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Timezone" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Timezone")]; found {
+		var XTimezone XTimezone
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Timezone", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Timezone", valueList[0], &XTimezone, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Timezone", Err: err})
+			return
+		}
+
+		params.XTimezone = &XTimezone
+
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -292,8 +337,32 @@ func (siw *ServerInterfaceWrapper) GetOrder(w http.ResponseWriter, r *http.Reque
 
 	r = r.WithContext(ctx)
 
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetOrderParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Timezone" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Timezone")]; found {
+		var XTimezone XTimezone
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Timezone", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Timezone", valueList[0], &XTimezone, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Timezone", Err: err})
+			return
+		}
+
+		params.XTimezone = &XTimezone
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetOrder(w, r, id)
+		siw.Handler.GetOrder(w, r, id, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -615,7 +684,8 @@ func (response CreateOrder503ApplicationProblemPlusJSONResponse) VisitCreateOrde
 }
 
 type GetOrderRequestObject struct {
-	Id string `json:"id"`
+	Id     string `json:"id"`
+	Params GetOrderParams
 }
 
 type GetOrderResponseObject interface {
@@ -627,6 +697,17 @@ type GetOrder200JSONResponse OrderView
 func (response GetOrder200JSONResponse) VisitGetOrderResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetOrder400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response GetOrder400ApplicationProblemPlusJSONResponse) VisitGetOrderResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -804,10 +885,11 @@ func (sh *strictHandler) CreateOrder(w http.ResponseWriter, r *http.Request, par
 }
 
 // GetOrder operation middleware
-func (sh *strictHandler) GetOrder(w http.ResponseWriter, r *http.Request, id string) {
+func (sh *strictHandler) GetOrder(w http.ResponseWriter, r *http.Request, id string, params GetOrderParams) {
 	var request GetOrderRequestObject
 
 	request.Id = id
+	request.Params = params
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.GetOrder(ctx, request.(GetOrderRequestObject))
