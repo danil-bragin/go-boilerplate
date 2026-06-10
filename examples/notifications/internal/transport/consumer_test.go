@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"go-boilerplate/examples/notifications/internal/domain/notification"
 	"go-boilerplate/examples/notifications/internal/transport"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/outbox"
@@ -17,7 +18,7 @@ import (
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
 
-type notification struct{ orderID, paymentID, status string }
+type notified struct{ orderID, paymentID, status string }
 
 // TestNewEventHandler_NotifiesPerOutcome drives the REAL notifications
 // pipeline (header dispatch → proto decode → notifier call) through
@@ -30,29 +31,29 @@ func TestNewEventHandler_NotifiesPerOutcome(t *testing.T) {
 		name      string
 		eventType string
 		event     proto.Message
-		want      notification
+		want      notified
 	}{
 		{
 			name:      "PaymentProcessed notifies with payment id and status",
 			eventType: transport.PaymentProcessedEventType,
 			event:     &ordersv1.PaymentProcessed{OrderId: "order-1", PaymentId: "pay-1", Status: "processed"},
-			want:      notification{orderID: "order-1", paymentID: "pay-1", status: "processed"},
+			want:      notified{orderID: "order-1", paymentID: "pay-1", status: "processed"},
 		},
 		{
 			name:      "PaymentFailed notifies with empty payment id and failed status",
 			eventType: transport.PaymentFailedEventType,
 			event:     &ordersv1.PaymentFailed{OrderId: "order-2", Reason: "declined"},
-			want:      notification{orderID: "order-2", paymentID: "", status: "failed"},
+			want:      notified{orderID: "order-2", paymentID: "", status: "failed"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			broker := fakes.NewBroker()
-			var got []notification
-			handler := transport.NewEventHandler(nil, func(orderID, paymentID, status string) {
-				got = append(got, notification{orderID, paymentID, status})
-			}, consume.WithoutInbox())
+			var got []notified
+			handler := transport.NewEventHandler(nil, notification.NewService(func(orderID, paymentID, status string) {
+				got = append(got, notified{orderID, paymentID, status})
+			}), consume.WithoutInbox())
 			broker.Subscribe("payments.events", handler)
 
 			payload, err := proto.Marshal(tt.event)
@@ -75,14 +76,14 @@ func TestNewEventHandler_NotifiesPerOutcome(t *testing.T) {
 func TestNewEventHandler_SkipsUnknownEventTypes(t *testing.T) {
 	t.Parallel()
 	broker := fakes.NewBroker()
-	notified := 0
-	handler := transport.NewEventHandler(nil, func(_, _, _ string) {
-		notified++
-	}, consume.WithoutInbox())
+	count := 0
+	handler := transport.NewEventHandler(nil, notification.NewService(func(_, _, _ string) {
+		count++
+	}), consume.WithoutInbox())
 	broker.Subscribe("payments.events", handler)
 
 	require.NoError(t, broker.Publish(context.Background(), outbox.Message{
 		ID: uuid.New(), Topic: "payments.events", EventType: "orders.PaymentRefunded.v1",
 	}))
-	assert.Zero(t, notified, "unknown event types must be skipped silently")
+	assert.Zero(t, count, "unknown event types must be skipped silently")
 }
