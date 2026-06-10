@@ -42,15 +42,15 @@ groups:
 
   - name: latency-kafka
     rules:
-      # Consumer handler duration by service + topic (seconds) — lane-B
-      # instrument (kafka.consumer.handler.duration); empty until it ships.
+      # Consumer handler duration by service + topic (seconds) —
+      # kafka.consumer.handler.duration.
       - record: job_topic:kafka_consumer_handler_duration_seconds:p50_5m
         expr: histogram_quantile(0.50, sum by (job, topic) (rate(otel_kafka_consumer_handler_duration_seconds[5m])))
       - record: job_topic:kafka_consumer_handler_duration_seconds:p95_5m
         expr: histogram_quantile(0.95, sum by (job, topic) (rate(otel_kafka_consumer_handler_duration_seconds[5m])))
       - record: job_topic:kafka_consumer_handler_duration_seconds:p99_5m
         expr: histogram_quantile(0.99, sum by (job, topic) (rate(otel_kafka_consumer_handler_duration_seconds[5m])))
-      # Producer publish round-trip by service + topic (seconds) — lane-B.
+      # Producer publish round-trip by service + topic (seconds).
       - record: job_topic:kafka_producer_publish_duration_seconds:p50_5m
         expr: histogram_quantile(0.50, sum by (job, topic) (rate(otel_kafka_producer_publish_duration_seconds[5m])))
       - record: job_topic:kafka_producer_publish_duration_seconds:p95_5m
@@ -61,7 +61,7 @@ groups:
   - name: latency-outbox
     rules:
       # Outbox end-to-end publish lag: row created_at → Kafka publish
-      # (seconds) — lane-B instrument (outbox.publish_lag).
+      # (seconds) — outbox.publish_lag.
       - record: job:outbox_publish_lag_seconds:p50_5m
         expr: histogram_quantile(0.50, sum by (job) (rate(otel_outbox_publish_lag_seconds[5m])))
       - record: job:outbox_publish_lag_seconds:p95_5m
@@ -72,7 +72,7 @@ groups:
   - name: latency-pg
     rules:
       # Postgres query duration by service + sqlc query name + pool
-      # (seconds) — lane-B instrument (pg.query.duration).
+      # (seconds) — pg.query.duration.
       - record: job_query:pg_query_duration_seconds:p50_5m
         expr: histogram_quantile(0.50, sum by (job, query, pool) (rate(otel_pg_query_duration_seconds[5m])))
       - record: job_query:pg_query_duration_seconds:p95_5m
@@ -83,7 +83,7 @@ groups:
   - name: latency-lifecycle
     rules:
       # Business choreography: order created → terminal status (seconds) —
-      # lane-B instrument (orders.lifecycle.duration).
+      # orders.lifecycle.duration.
       - record: terminal_status:orders_lifecycle_duration_seconds:p50_5m
         expr: histogram_quantile(0.50, sum by (terminal_status) (rate(otel_orders_lifecycle_duration_seconds[5m])))
       - record: terminal_status:orders_lifecycle_duration_seconds:p95_5m

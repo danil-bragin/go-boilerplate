@@ -10,7 +10,7 @@
 # │        scripts/k6/order-flow.js)                                         │
 # │                                                                          │
 # │ SLO-2  Order choreography: 99% of orders reach a terminal status         │
-# │        (paid / payment_failed / cancelled) in < 60 s of creation,        │
+# │        (paid / payment_failed / payment_timeout) in < 60 s of creation,  │
 # │        over a rolling 30-day window.                                     │
 # │        Caveat: orders that NEVER reach a terminal status are not         │
 # │        observed by the lifecycle histogram — the OutboxBacklogGrowing /  │
