@@ -221,3 +221,33 @@ Rules:
 1. **One helper per key shape.** Define a single `XxxCacheKey(id)` function and use it from BOTH the read path (`cqrs.Caching` keyFor) and every write path that busts the entry (`cache.Delete`). Two hand-rolled format strings will eventually drift and invalidation silently misses.
 2. **Bump the version on shape change.** When the cached struct gains/renames fields or changes semantics, bump `v1` → `v2`. Old entries become unreachable and expire naturally — no flush, no mixed-shape unmarshalling.
 3. **Never reuse a version.** A rolled-back deploy that reused `v2` with a different shape would poison the cache for the roll-forward.
+
+---
+
+## 7. CQRS pipeline: `StandardPipeline` vs raw `Decorate`
+
+**`cqrs.StandardPipeline` is the default.** It assembles the canonical stack
+(Tracing → Logging → Metrics → Validation) in the required order, with fluent
+options for the conditional behaviors:
+
+```go
+return cqrs.StandardPipeline[CreateOrder, CreateOrderResult]("CreateOrder").
+    Use(audit.Audit[CreateOrder, CreateOrderResult](auditStore, "order:create",
+        func(cmd CreateOrder) string { return cmd.OrderID })).
+    Decorate(handler)
+```
+
+Use `WithCache` for queries, `WithAuthz`/`WithDeadline` as needed, and `Use(...)`
+for domain behaviors (Audit, custom checks) — they run innermost. `WithTransaction`
+is for command handlers invoked OUTSIDE a consumer; handlers run via
+`inbox.ProcessOnce` already execute inside the inbox transaction (see the
+`cqrs.Pipeline.WithTransaction` godoc).
+
+**Raw `cqrs.Decorate` is the escape hatch** for genuinely custom behavior orders
+(e.g. a behavior that must wrap Tracing, or a stack that intentionally drops a
+standard behavior). If you reach for it, comment WHY the canonical order doesn't
+fit — otherwise reviewers should push back to `StandardPipeline`.
+
+Resilience (retries, circuit breaking, rate limiting) is never a pipeline
+behavior: it stays at the transport level (httpserver middleware, kafka/retry
+escalation, `platform/resilience` around outbound calls).
