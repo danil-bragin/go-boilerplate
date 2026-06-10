@@ -135,6 +135,15 @@ jobs:
       - name: doc-test (adding-a-service.md code blocks)
         run: ./scripts/doc-test.sh
 
+      # Error-registry drift gate (BLOCKING): docs/errors.md is generated
+      # from the live apperr registry (cmd/errgen). Adding/changing a code
+      # without running `just errgen` fails here instead of silently
+      # drifting the documented contract.
+      - name: errgen (docs/errors.md in sync)
+        run: |
+          go run ./cmd/errgen
+          git diff --exit-code docs/errors.md
+
   # ── Integration tests ─────────────────────────────────────────────────────
   test:
     name: Test

@@ -56,14 +56,26 @@ examples/shipping/
 │   │   ├── sqlc.yaml
 │   │   ├── queries/         # .sql query files
 │   │   └── gen/             # sqlc output (committed)
+│   ├── domain/
+│   │   └── shipment/        # THE business layer (conventions.md §9):
+│   │       ├── codes.go     #   SHIPPING_* apperr codes, registered in init()
+│   │       ├── repository.go#   Repository interface (consumer-side)
+│   │       ├── pg.go        #   Postgres impl over sqlc (ambient tx via pg.FromContext)
+│   │       └── service.go   #   Service owning every business rule
 │   ├── app/
-│   │   └── arrange_shipment.go  # cqrs command handler + Decorate
+│   │   └── arrange_shipment.go  # cqrs command — THIN adapter over the Service + Decorate
 │   └── transport/
-│       └── consumer.go      # consume.Typed event handlers
+│       └── consumer.go      # consume.Typed event handlers — decode + dispatch only
 ├── migrations_export.go     # exposes Migrations fs.FS for cmd/migrate
 ├── shipping.go              # Config + NewApp / Start / Stop / Closer
 └── shipping_test.go         # integration test (testcontainers)
 ```
+
+Every service gets the same `internal/domain/<aggregate>` layer, even when it is
+a few lines (`examples/notifications`) — the examples are templates, and a copied
+template with a ready seam beats one where the first business rule lands in a
+Kafka handler. Rules, rationale and the ambient-transaction invariant:
+[`docs/conventions.md`](conventions.md) §9.
 
 ---
 
@@ -161,14 +173,15 @@ The base config already carries everything the harness needs: `PG_DSN`/`PG_MIGRA
 
 ---
 
-## 6. The service file: handler, transport, wiring
+## 6. The service file: domain layer, handler, transport, wiring
 
-The complete pattern in one compiling file. In the real layout the handler lives in `internal/app/`, the consumer in `internal/transport/`, and the embed in `internal/migrations/` (see §2) — they are inlined here so the example is self-contained.
+The complete pattern in one compiling file. In the real layout the domain layer lives in `internal/domain/shipment/`, the handler in `internal/app/`, the consumer in `internal/transport/`, and the embed in `internal/migrations/` (see §2) — they are inlined here so the example is self-contained. The real reference is `examples/payments` (same shape, split into those packages).
 
 ```go
-// Package shipping demonstrates the full servicekit wiring pattern:
-// consume an event with consume.Typed (inbox-deduped), write a row and
-// enqueue a follow-up event in the same transaction (outbox), publish via
+// Package shipping demonstrates the full servicekit wiring pattern with the
+// uniform domain layering: consume an event with consume.Typed
+// (inbox-deduped), delegate to a domain Service that writes a row and
+// enqueues a follow-up event in the same transaction (outbox), publish via
 // the relay.
 package shipping
 
@@ -178,6 +191,7 @@ import (
 	"fmt"
 	"time"
 
+	"go-boilerplate/platform/apperr"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/messaging/consume"
@@ -217,7 +231,117 @@ type Config struct {
 	EventsTopic string `env:"ORDERS_EVENTS_TOPIC" envDefault:"orders.events"`
 }
 
+// ─── Domain layer — in the real layout: internal/domain/shipment ────────────
+
+// CodeInvalidOrderID is a SHIPPING_* error code owned by this service,
+// registered with the platform registry at init (duplicate registration
+// panics at startup). Permanent: no retry can fix a malformed id — consumers
+// short-circuit it to the DLT. After adding codes, wire the service into
+// cmd/errgen and run `just errgen` (checklist, §10).
+const CodeInvalidOrderID = "SHIPPING_INVALID_ORDER_ID"
+
+func init() {
+	apperr.Register(CodeInvalidOrderID, 400, true, "invalid order id {order_id}", "order_id")
+}
+
+// Shipment is the domain view of a shipment row.
+type Shipment struct {
+	ID      uuid.UUID
+	OrderID string
+	Status  string
+}
+
+// Repository is the shipment persistence port, defined CONSUMER-SIDE
+// (conventions.md §9): the Service declares what it needs; the Postgres
+// adapter below satisfies it.
+type Repository interface {
+	Insert(ctx context.Context, s Shipment) error
+}
+
+// EventPublisher is the outbox port the Service enqueues domain events
+// through; *outbox.Repository implements it directly.
+type EventPublisher interface {
+	Enqueue(ctx context.Context, msg outbox.Message) error
+}
+
+// PgRepository is the Postgres Repository. Every method resolves its query
+// surface via pg.FromContext, so the SAME code joins the ambient transaction
+// (inbox.ProcessOnce, cqrs.Transaction, or pg.RunInTx) when one is active —
+// that is what makes "shipment row + outbox event commit together" hold.
+type PgRepository struct{ pool *pg.Pool }
+
+// NewPgRepository builds the Postgres repository over pool.
+func NewPgRepository(pool *pg.Pool) *PgRepository { return &PgRepository{pool: pool} }
+
+// Insert writes the shipment row. Real services use their sqlc-generated
+// store here: gen.New(pg.FromContext(ctx, r.pool)).InsertShipment(ctx, …).
+func (r *PgRepository) Insert(ctx context.Context, s Shipment) error {
+	db := pg.FromContext(ctx, r.pool)
+	if _, err := db.Exec(ctx,
+		`insert into shipments (id, order_id, status) values ($1, $2, $3)`,
+		s.ID, s.OrderID, s.Status,
+	); err != nil {
+		return fmt.Errorf("shipping: insert shipment: %w", err)
+	}
+	return nil
+}
+
+// Service owns the shipping business rules. Entry points (cqrs handler,
+// Kafka transport) are thin adapters over its methods — logic shared by two
+// entry points lives here, never in one handler calling another ("cmd never
+// calls cmd"). Inject platform/clock.Clock here IF a rule reads "now" (see
+// payments' Service); arranging a shipment does not.
+type Service struct {
+	repo   Repository
+	events EventPublisher
+}
+
+// NewService builds the shipping domain service.
+func NewService(repo Repository, events EventPublisher) *Service {
+	return &Service{repo: repo, events: events}
+}
+
+// Arrange writes the shipment row and enqueues the follow-up event. Run it
+// under a transaction (the inbox.ProcessOnce ambient tx in production) so
+// row and event commit atomically — both writes resolve their DBTX from ctx.
+func (s *Service) Arrange(ctx context.Context, orderID string) (uuid.UUID, error) {
+	if _, err := uuid.Parse(orderID); err != nil {
+		return uuid.Nil, apperr.Wrap(err, CodeInvalidOrderID).WithParam("order_id", orderID)
+	}
+
+	shipmentID := uuid.New()
+	if err := s.repo.Insert(ctx, Shipment{ID: shipmentID, OrderID: orderID, Status: "arranged"}); err != nil {
+		return uuid.Nil, err
+	}
+
+	// TODO(new-service): marshal your own shipping/v1 event here.
+	payload, err := proto.Marshal(&ordersv1.OrderCreated{OrderId: orderID})
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("shipping: marshal event: %w", err)
+	}
+
+	// Topic is the explicit destination; correlation-id/causation-id headers
+	// are stamped automatically from ctx (consume.Typed put the chain
+	// lineage there).
+	if err := s.events.Enqueue(ctx, outbox.Message{
+		ID:            uuid.New(),
+		Topic:         "shipping.events",
+		AggregateType: "shipment",
+		AggregateID:   orderID,
+		EventType:     shipmentArrangedEventType,
+		Payload:       payload,
+	}); err != nil {
+		return uuid.Nil, fmt.Errorf("shipping: enqueue event: %w", err)
+	}
+	return shipmentID, nil
+}
+
+// ─── Application layer — in the real layout: internal/app ───────────────────
+
 // ArrangeShipment is the command handled when an OrderCreated event arrives.
+// Struct-tag validation is enforced by the pipeline's Validation behavior; a
+// tag failure becomes a permanent VALIDATION_FAILED apperr (straight to the
+// DLT under retry/DLT consumers).
 type ArrangeShipment struct {
 	OrderID string `validate:"required"`
 }
@@ -225,45 +349,17 @@ type ArrangeShipment struct {
 // ArrangeShipmentResult is the command result.
 type ArrangeShipmentResult struct{ ShipmentID string }
 
-// ArrangeShipmentHandler writes the shipment row and enqueues the follow-up
-// event to the outbox. It runs inside the inbox transaction opened by
-// consume.Typed, so pg.FromContext returns the ambient transaction and the
-// row + outbox event + inbox dedup marker commit atomically.
-func ArrangeShipmentHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.HandlerFunc[ArrangeShipment, ArrangeShipmentResult] {
+// ArrangeShipmentHandler is a THIN adapter over the domain service: it maps
+// the command to Service.Arrange and nothing else. It runs inside the inbox
+// transaction opened by consume.Typed, so the row + outbox event + inbox
+// dedup marker commit atomically.
+func ArrangeShipmentHandler(svc *Service) cqrs.HandlerFunc[ArrangeShipment, ArrangeShipmentResult] {
 	return func(ctx context.Context, cmd ArrangeShipment) (ArrangeShipmentResult, error) {
-		shipmentID := uuid.New()
-
-		// Real services use their sqlc-generated store here, e.g.
-		// gen.New(pg.FromContext(ctx, pool)).InsertShipment(ctx, …).
-		db := pg.FromContext(ctx, pool)
-		if _, err := db.Exec(ctx,
-			`insert into shipments (id, order_id, status) values ($1, $2, 'arranged')`,
-			shipmentID, cmd.OrderID,
-		); err != nil {
-			return ArrangeShipmentResult{}, fmt.Errorf("shipping: insert shipment: %w", err)
-		}
-
-		// TODO(new-service): marshal your own shipping/v1 event here.
-		payload, err := proto.Marshal(&ordersv1.OrderCreated{OrderId: cmd.OrderID})
+		id, err := svc.Arrange(ctx, cmd.OrderID)
 		if err != nil {
-			return ArrangeShipmentResult{}, fmt.Errorf("shipping: marshal event: %w", err)
+			return ArrangeShipmentResult{}, err
 		}
-
-		// Topic is the explicit destination; correlation-id/causation-id
-		// headers are stamped automatically from ctx (consume.Typed put the
-		// chain lineage there).
-		if err := outboxRepo.Enqueue(ctx, outbox.Message{
-			ID:            uuid.New(),
-			Topic:         "shipping.events",
-			AggregateType: "shipment",
-			AggregateID:   cmd.OrderID,
-			EventType:     shipmentArrangedEventType,
-			Payload:       payload,
-		}); err != nil {
-			return ArrangeShipmentResult{}, fmt.Errorf("shipping: enqueue event: %w", err)
-		}
-
-		return ArrangeShipmentResult{ShipmentID: shipmentID.String()}, nil
+		return ArrangeShipmentResult{ShipmentID: id.String()}, nil
 	}
 }
 
@@ -281,12 +377,15 @@ func DecorateArrangeShipmentHandler(
 		Decorate(h)
 }
 
+// ─── Transport — in the real layout: internal/transport ─────────────────────
+
 // NewEventHandler is the Kafka transport: consume.Typed decodes the record
 // (Schema Registry wire format when a serde is injected, raw protobuf
 // otherwise), dispatches on the event-type header, deduplicates via the
 // inbox, installs principal + correlation/causation ids into ctx, and runs
 // the handler inside the inbox transaction. Unknown event types are skipped,
-// never errored (forward compatibility).
+// never errored (forward compatibility). The transport stays decode +
+// dispatch ONLY — business branching belongs in the Service.
 func NewEventHandler(
 	pool *pg.Pool,
 	handler cqrs.HandlerFunc[ArrangeShipment, ArrangeShipmentResult],
@@ -299,6 +398,8 @@ func NewEventHandler(
 		}),
 	)
 }
+
+// ─── Wiring — in the real layout: shipping.go at the service root ───────────
 
 // App holds all wired components for the shipping service.
 type App struct {
@@ -342,9 +443,11 @@ func NewApp(ctx context.Context) (*App, error) {
 		return nil, err
 	}
 
-	// Domain handler + behavior pipeline.
+	// Domain service over its ports (Postgres repository + outbox), then the
+	// thin handler adapter + behavior pipeline.
 	auditStore := audit.NewPgStore(svc.Pool())
-	handler := DecorateArrangeShipmentHandler(ArrangeShipmentHandler(svc.Pool(), outboxRepo), auditStore)
+	domain := NewService(NewPgRepository(svc.Pool()), outboxRepo)
+	handler := DecorateArrangeShipmentHandler(ArrangeShipmentHandler(domain), auditStore)
 	var consumeOpts []consume.Option
 	if sd := svc.Serde(); sd != nil {
 		consumeOpts = append(consumeOpts, consume.WithSerde(sd))
@@ -454,6 +557,8 @@ Flow: `FastAttempts` in-process attempts → escalate to `<topic>.retry.0`, `.re
 - [ ] **Env:** document new variables in `.env.example`.
 - [ ] **justfile:** add `shipping` to the hardcoded `build-images` recipe.
 - [ ] **cmd/migrate:** add a `migrations_export.go` (copy from payments) and register `shipping.Migrations` in the `services` map in `cmd/migrate/main.go`.
+- [ ] **Error codes (cmd/errgen):** if the service registers `SHIPPING_*` apperr codes, blank-import `go-boilerplate/examples/shipping` in `cmd/errgen/main.go`, run `just errgen`, and commit the regenerated `docs/errors.md` (CI regenerates and diffs it, blocking). Registry rules: [`docs/conventions.md`](conventions.md) §10.
+- [ ] **i18n catalogs:** only when the new codes surface on localized HTTP responses — embed `catalog/en.toml` (+ translations) next to the codes package and merge into the bundle via `i18n.Bundle.Load` (pattern: `examples/gateway/internal/apperrs`). Consumer-only codes need no catalog ([`docs/conventions.md`](conventions.md) §12).
 
 ---
 
@@ -477,12 +582,13 @@ The complete template lives in `examples/payments/`. Key files:
 
 | File | What it shows |
 |---|---|
-| `payments.go` | `Config` + `NewApp` servicekit wiring |
+| `payments.go` | `Config` + `NewApp` servicekit wiring (domain service over its ports) |
 | `cmd/payments/main.go` | `servicekit.Main` entry point |
-| `internal/app/process_payment.go` | command handler + outbox enqueue + `Decorate*` pipeline |
-| `internal/transport/consumer.go` | `consume.Typed` event handler |
+| `internal/domain/payment/` | the domain layer: consumer-side `Repository` + pg implementation (ambient tx), `Service.Process` (decision rule, injected `platform/clock`, outbox enqueue) |
+| `internal/app/process_payment.go` | thin command-handler adapter + `Decorate*` pipeline |
+| `internal/transport/consumer.go` | `consume.Typed` event handler (decode + dispatch only) |
 | `internal/migrations/` | goose `sql/` embed pattern |
 | `migrations_export.go` | migration export for `cmd/migrate` |
 | `payments_test.go` | integration test with testcontainers |
 
-The orders service (`examples/orders/`) additionally shows `AddConsumerWithRetry` (tiered retry), a second consumer, and `AddWorker` (unpaid-order deadline watcher). The gateway (`examples/gateway/`) shows `AddHTTPServer` and the read-model projection.
+The orders service (`examples/orders/`) additionally shows `AddConsumerWithRetry` (tiered retry), a second consumer, `AddWorker` (unpaid-order deadline watcher), and a fuller domain layer (`internal/domain/order`: table-driven state machine, `ORDERS_*` codes). The gateway (`examples/gateway/`) shows `AddHTTPServer`, the read-model projection, its `GATEWAY_*` codes + i18n catalogs (`internal/apperrs`), and edge validation.

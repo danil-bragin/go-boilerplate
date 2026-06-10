@@ -241,6 +241,27 @@ func Lookup(code string) (Registration, bool) {
 	return reg, ok
 }
 
+// RegisteredCode is one row of the registry snapshot returned by Registered:
+// a code paired with its Registration. Treat the embedded Params slice as
+// read-only.
+type RegisteredCode struct {
+	Code string
+	Registration
+}
+
+// Registered returns a snapshot of the full registry sorted by code — the
+// deterministic input of the docs generator (cmd/errgen → docs/errors.md).
+func Registered() []RegisteredCode {
+	regMu.RLock()
+	defer regMu.RUnlock()
+	out := make([]RegisteredCode, 0, len(registry))
+	for c, r := range registry {
+		out = append(out, RegisteredCode{Code: c, Registration: r})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
+	return out
+}
+
 // Codes returns all registered codes, sorted — the registry snapshot used by
 // the template invariant test and the docs generator.
 func Codes() []string {

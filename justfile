@@ -41,6 +41,10 @@ gen:
     go generate ./platform/testkit/mocks/...
     goimports -w -local go-boilerplate platform/testkit/mocks/
 
+# Regenerate docs/errors.md from the live apperr registry — CI fails when it is out of sync
+errgen:
+    go run ./cmd/errgen
+
 # Regenerate the gateway HTTP server from openapi.yaml (oapi-codegen)
 oapi:
     cd examples/gateway && oapi-codegen --config oapi.gen.yaml openapi.yaml

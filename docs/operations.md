@@ -499,6 +499,17 @@ name, so retry policies can be retuned without stranding in-flight records.
 The consumer group for all of a service's retry tiers is `<group>.retry`.
 After the last tier a record lands on `<base>.DLT`.
 
+**Permanent errors skip the tiers.** When the handler failure chain contains a
+permanent `apperr` error (`apperr.IsPermanent` — validation failures, invalid
+state transitions: nothing a redelivery can fix), both `kafka.WithRetry` and
+the tiered escalator short-circuit after the **first** attempt and produce the
+record straight to the DLT, stamping the `x-error-code` header with the apperr
+code. Triage DLT records by that header first — the code's meaning, HTTP
+mapping and permanence are documented in the generated registry,
+[`docs/errors.md`](errors.md). A DLT dominated by one permanent code is a
+producer-side bug (bad payloads), not a downstream outage; redriving those
+records unchanged will only dead-letter them again.
+
 ### Day-2 checks
 
 | Step | Action |
@@ -571,6 +582,7 @@ Semantics worth knowing (see `cmd/redrive` package docs):
 | `retry-due-at` | retry escalator | unix-millis redelivery due time |
 | `retry-last-error` | retry escalator | last handler error (truncated to 512 bytes) |
 | `x-error`, `x-attempts`, `x-original-topic` | `kafka.WithRetry` on DLT produce | last error / attempt count / source topic for in-process-retry DLTs |
+| `x-error-code` | `kafka.WithRetry` and the retry escalator on DLT produce | `apperr` code of the dead-lettering error (when the chain carries one) — triage key; see [`docs/errors.md`](errors.md) |
 
 ---
 
