@@ -1,0 +1,34 @@
+# Russian demo catalog. Untranslated messages fall back to en.
+
+[INTERNAL]
+other = "Что-то пошло не так на нашей стороне. Повторите попытку позже."
+
+[VALIDATION_FAILED]
+other = "Одно или несколько полей заполнены неверно."
+
+[AUTH_UNAUTHENTICATED]
+other = "Для доступа к этому ресурсу требуется аутентификация."
+
+[AUTH_FORBIDDEN]
+other = "У вас нет прав для выполнения этого действия."
+
+["validation.required"]
+other = "Поле {{.field}} обязательно."
+
+["validation.min"]
+other = "Поле {{.field}} должно быть не меньше {{.param}}."
+
+["validation.max"]
+other = "Поле {{.field}} должно быть не больше {{.param}}."
+
+["validation.len"]
+other = "Поле {{.field}} должно содержать ровно {{.param}} символов."
+
+["validation.email"]
+other = "Поле {{.field}} должно быть корректным адресом электронной почты."
+
+["validation.uuid"]
+other = "Поле {{.field}} должно быть корректным UUID."
+
+["validation.oneof"]
+other = "Поле {{.field}} должно быть одним из: {{.param}}."

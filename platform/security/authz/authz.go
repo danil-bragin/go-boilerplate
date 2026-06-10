@@ -4,18 +4,22 @@ package authz
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
+	"go-boilerplate/platform/apperr"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/security/auth"
 )
 
+// Both sentinels are apperr errors (AUTH_UNAUTHENTICATED / AUTH_FORBIDDEN),
+// so httpx.FromError maps them to 401/403 with stable codes automatically.
+// errors.Is against the sentinels keeps working: apperr matches by code,
+// including through fmt.Errorf("%w", …) wrapping.
 var (
 	// ErrUnauthenticated is returned when no principal is present in the context.
-	ErrUnauthenticated = errors.New("authz: no authenticated principal")
+	ErrUnauthenticated error = apperr.New(apperr.CodeAuthUnauthenticated)
 	// ErrForbidden is returned when the principal lacks the required role.
-	ErrForbidden = errors.New("authz: forbidden")
+	ErrForbidden error = apperr.New(apperr.CodeAuthForbidden)
 )
 
 // Policy decides whether a principal may perform an action on a resource.

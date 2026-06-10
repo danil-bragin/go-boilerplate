@@ -2,9 +2,12 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
+
+	"go-boilerplate/platform/apperr"
 )
 
 // RetryOpts configures WithRetry.
@@ -31,6 +34,13 @@ type RetryOpts struct {
 // x-error, x-attempts, and x-original-topic headers preserved) and the
 // wrapper returns nil so the consumer commits the offset — the poison
 // message is parked in the DLT and no longer blocks the partition.
+//
+// PERMANENT errors short-circuit: when the handler error chain contains a
+// permanent apperr.Error (apperr.IsPermanent), remaining attempts are
+// skipped and the record goes straight to the DLT after the FIRST failure —
+// retrying an unfixable payload (validation failure, malformed input) only
+// burns time and blocks the partition. The DLT record additionally carries
+// the x-error-code header with the apperr code.
 //
 // NOTE: in-process retry blocks the partition during the retry window —
 // but it never reorders per-key records. For non-blocking tiered
@@ -66,11 +76,19 @@ func WithRetry(h HandlerFunc, opts RetryOpts) HandlerFunc {
 
 	return func(ctx context.Context, rec Record) error {
 		var lastErr error
+		attempts := 0
 
 		for attempt := 1; attempt <= opts.MaxAttempts; attempt++ {
 			lastErr = h(ctx, rec)
+			attempts = attempt
 			if lastErr == nil {
 				return nil
+			}
+
+			// Permanent errors cannot be fixed by retrying — stop burning
+			// attempts and route straight to the DLT.
+			if apperr.IsPermanent(lastErr) {
+				break
 			}
 
 			// Handler failed. If more attempts remain, sleep with ctx awareness.
@@ -84,21 +102,25 @@ func WithRetry(h HandlerFunc, opts RetryOpts) HandlerFunc {
 			}
 		}
 
-		// All attempts exhausted — check whether ctx was cancelled before
-		// attempting the DLT write.
+		// All attempts exhausted (or short-circuited) — check whether ctx was
+		// cancelled before attempting the DLT write.
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 
 		// Build the DLT record. Copy headers from the original record and
 		// add diagnostic metadata.
-		dltHeaders := make(map[string]string, len(rec.Headers)+3)
+		dltHeaders := make(map[string]string, len(rec.Headers)+4)
 		for k, v := range rec.Headers {
 			dltHeaders[k] = v
 		}
 		dltHeaders[HeaderDLTError] = lastErr.Error()
-		dltHeaders[HeaderDLTAttempts] = strconv.Itoa(opts.MaxAttempts)
+		dltHeaders[HeaderDLTAttempts] = strconv.Itoa(attempts)
 		dltHeaders[HeaderDLTOriginalTopic] = rec.Topic
+		var ae *apperr.Error
+		if errors.As(lastErr, &ae) {
+			dltHeaders[HeaderDLTErrorCode] = ae.Code
+		}
 
 		dltRec := Record{
 			Topic:   opts.DLTTopic(rec.Topic),

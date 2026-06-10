@@ -3,10 +3,12 @@ package kafka_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/apperr"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/kafka/kafkatest"
 
@@ -209,4 +211,54 @@ func TestWithRetry_CtxCancelStopsRetry(t *testing.T) {
 	// DLT must be empty.
 	dltRecords := pollDLT(t, broker, dltTopic, 1, 3*time.Second)
 	assert.Empty(t, dltRecords, "no records should appear on the DLT when ctx is cancelled")
+}
+
+// TestWithRetry_PermanentErrorShortCircuitsToDLT verifies that a handler
+// returning a permanent apperr is NOT retried: the record goes to the DLT
+// after exactly one attempt with x-attempts=1 and the x-error-code header
+// carrying the apperr code.
+func TestWithRetry_PermanentErrorShortCircuitsToDLT(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
+	broker, _ := kafkatest.Shared(t)
+	ctx := context.Background()
+
+	topic := uniqueName("work-perm")
+	dltTopic := topic + ".DLT"
+
+	cl, err := kafka.NewClient(kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "dlq-test-admin-perm",
+	})
+	require.NoError(t, err)
+	defer cl.Close()
+
+	require.NoError(t, kafka.EnsureTopics(ctx, cl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, topic, dltTopic))
+
+	producer := kafka.NewProducer(cl)
+
+	var callCount atomic.Int32
+	handler := func(_ context.Context, _ kafka.Record) error {
+		callCount.Add(1)
+		return fmt.Errorf("handler: %w", apperr.New(apperr.CodeValidationFailed))
+	}
+
+	wrapped := kafka.WithRetry(handler, kafka.RetryOpts{
+		MaxAttempts: 5,
+		Producer:    producer,
+		Backoff:     time.Millisecond,
+	})
+
+	err = wrapped(ctx, kafka.Record{Topic: topic, Key: []byte("k"), Value: []byte("v")})
+	require.NoError(t, err, "WithRetry must return nil after routing to DLT")
+
+	assert.Equal(t, int32(1), callCount.Load(), "permanent error must not be retried")
+
+	dltRecords := pollDLT(t, broker, dltTopic, 1, 30*time.Second)
+	require.Len(t, dltRecords, 1)
+	dlt := dltRecords[0]
+	assert.Equal(t, "1", headerVal(dlt, "x-attempts"), "exactly one attempt before DLT")
+	assert.Equal(t, apperr.CodeValidationFailed, headerVal(dlt, "x-error-code"))
+	assert.Equal(t, topic, headerVal(dlt, "x-original-topic"))
 }

@@ -1,0 +1,8 @@
+["test.greeting"]
+other = "привет"
+
+["test.items"]
+one = "{{.count}} поле неверно"
+few = "{{.count}} поля неверны"
+many = "{{.count}} полей неверны"
+other = "{{.count}} поля неверны"

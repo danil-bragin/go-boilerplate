@@ -10,6 +10,7 @@ import (
 	"go-boilerplate/platform/storage/pg/pgtest"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
 
@@ -85,4 +86,37 @@ func TestPool_ReaderSizingDefaultsToWriter(t *testing.T) {
 
 	require.Equal(t, int32(8), pool.Reader().Config().MaxConns, "reader defaults to writer MaxConns")
 	require.Equal(t, int32(2), pool.Reader().Config().MinConns, "reader defaults to writer MinConns")
+}
+
+// TestPool_TimestamptzScansUTC pins the ScanLocation registration: without
+// it pgx returns timestamptz values in time.Local, making behavior depend
+// on the host (or container) timezone. Both pool handles must scan UTC even
+// when the SESSION timezone is changed — the wire value is an absolute
+// instant; only its Go representation is at stake.
+func TestPool_TimestamptzScansUTC(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (postgres container)")
+	}
+	ctx := context.Background()
+	dsn := pgtest.SharedDSN(t)
+
+	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pool.Close(context.Background()) })
+
+	for name, p := range map[string]*pgxpool.Pool{"writer": pool.Writer(), "reader": pool.Reader()} {
+		t.Run(name, func(t *testing.T) {
+			conn, err := p.Acquire(ctx)
+			require.NoError(t, err)
+			defer conn.Release()
+
+			_, err = conn.Exec(ctx, `SET TIME ZONE 'America/New_York'`)
+			require.NoError(t, err)
+
+			var ts time.Time
+			require.NoError(t, conn.QueryRow(ctx, `select now()`).Scan(&ts))
+			require.Equal(t, time.UTC, ts.Location(),
+				"timestamptz must scan as UTC regardless of session time zone")
+		})
+	}
 }

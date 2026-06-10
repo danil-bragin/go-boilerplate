@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"go-boilerplate/platform/apperr"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/kafka"
@@ -424,4 +425,27 @@ func TestTyped_WithoutInbox_FastLane(t *testing.T) {
 		}),
 	)
 	require.ErrorIs(t, hErr(ctx, rec), boom)
+}
+
+// TestTyped_PermanentAppErrFlowsThroughWrap pins the W1.4 contract: consume
+// wraps handler errors with fmt.Errorf("consume: process …: %w"), and a
+// permanent apperr returned by the typed handler must stay detectable
+// through that wrap so the retry layers can short-circuit to the DLT.
+func TestTyped_PermanentAppErrFlowsThroughWrap(t *testing.T) {
+	t.Parallel()
+	h := consume.New(nil, "grp", consume.WithoutInbox()).Handler(
+		consume.Typed("orders.OrderCreated.v1", func(context.Context, *ordersv1.OrderCreated) error {
+			return apperr.New(apperr.CodeValidationFailed)
+		}),
+	)
+
+	rec := orderCreatedRecord(t, map[string]string{
+		"event-type": "orders.OrderCreated.v1",
+		"message-id": "m-perm-1",
+	}, 0, 3)
+
+	err := h(context.Background(), rec)
+	require.Error(t, err)
+	assert.True(t, apperr.IsPermanent(err), "permanence must survive the consume wrap")
+	assert.Equal(t, apperr.CodeValidationFailed, apperr.Code(err))
 }

@@ -1,0 +1,36 @@
+# Platform default catalog (base language). Message IDs are apperr codes
+# plus "validation.<rule>" keys. Services ship their own catalogs for their
+# own codes and merge them via Bundle.Load.
+
+[INTERNAL]
+other = "Something went wrong on our side. Please try again later."
+
+[VALIDATION_FAILED]
+other = "One or more fields are invalid."
+
+[AUTH_UNAUTHENTICATED]
+other = "Authentication is required to access this resource."
+
+[AUTH_FORBIDDEN]
+other = "You do not have permission to perform this action."
+
+["validation.required"]
+other = "{{.field}} is required."
+
+["validation.min"]
+other = "{{.field}} must be at least {{.param}}."
+
+["validation.max"]
+other = "{{.field}} must be at most {{.param}}."
+
+["validation.len"]
+other = "{{.field}} must have exactly {{.param}} characters."
+
+["validation.email"]
+other = "{{.field}} must be a valid email address."
+
+["validation.uuid"]
+other = "{{.field}} must be a valid UUID."
+
+["validation.oneof"]
+other = "{{.field}} must be one of: {{.param}}."

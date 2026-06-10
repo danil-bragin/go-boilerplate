@@ -7,6 +7,7 @@ import (
 	"errors"
 	"testing"
 
+	"go-boilerplate/platform/apperr"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/observability/log"
 
@@ -273,10 +274,11 @@ func TestValidation_RejectsInvalidStruct(t *testing.T) {
 	})
 	decorated := cqrs.Decorate(handler, cqrs.Validation[createOrderCmd, string]())
 
-	// Empty CustomerID → required validation fails
+	// Empty CustomerID → required validation fails (typed VALIDATION_FAILED,
+	// see validation_test.go for the full params contract)
 	_, err := decorated(context.Background(), createOrderCmd{})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "cqrs: validation:")
+	require.Equal(t, apperr.CodeValidationFailed, apperr.Code(err))
 	require.False(t, nextCalled, "next must not be called on validation failure")
 }
 
