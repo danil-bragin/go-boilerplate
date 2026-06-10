@@ -71,6 +71,13 @@ test-cover:
     go test -short -coverprofile=coverage.out ./...
     go tool cover -func=coverage.out | tail -1
 
+# Fuzz the attacker-facing parsers (default 30s per target; e.g. just fuzz 5m)
+fuzz fuzztime='30s':
+    go test -fuzz=FuzzClientIPKey      -fuzztime={{fuzztime}} -run='^$' ./platform/web/httpserver
+    go test -fuzz=FuzzHTTPXDecode      -fuzztime={{fuzztime}} -run='^$' ./platform/web/httpx
+    go test -fuzz=FuzzParseRetryHeaders -fuzztime={{fuzztime}} -run='^$' ./platform/messaging/retry
+    go test -fuzz=FuzzCursorDecode     -fuzztime={{fuzztime}} -run='^$' ./examples/gateway/internal/app
+
 # ── Linting & formatting ───────────────────────────────────────────────────────
 
 # Run golangci-lint
