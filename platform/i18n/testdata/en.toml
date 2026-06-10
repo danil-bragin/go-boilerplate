@@ -1,0 +1,9 @@
+["test.greeting"]
+other = "hello"
+
+["test.named"]
+other = "hello {{.name}}"
+
+["test.items"]
+one = "{{.count}} item is invalid"
+other = "{{.count}} items are invalid"

@@ -168,3 +168,37 @@ func TestDecode_ValidationErrorDetails(t *testing.T) {
 	assert.Equal(t, httpx.FieldError{Field: "amount_cents", Rule: "min", Param: "1"}, byField["amount_cents"])
 	assert.Equal(t, httpx.FieldError{Field: "name", Rule: "required", Param: ""}, byField["name"])
 }
+
+// TestWriteError_UsesProblemLocalizer pins the localization seam owned by
+// httpx: a ProblemLocalizer installed in the request ctx overrides
+// title/detail while code/params stay untouched. ok=false keeps defaults.
+func TestWriteError_UsesProblemLocalizer(t *testing.T) {
+	loc := httpx.ProblemLocalizer(func(code string, params map[string]any) (string, string, bool) {
+		if code != "TEST_HTTPX_NOT_FOUND" {
+			return "", "", false
+		}
+		return "Не найдено", "заказ " + params["order_id"].(string) + " не найден", true
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/orders/42", http.NoBody)
+	req = req.WithContext(httpx.WithProblemLocalizer(req.Context(), loc))
+	rec := httptest.NewRecorder()
+
+	httpx.WriteError(rec, req, apperr.New("TEST_HTTPX_NOT_FOUND").WithParam("order_id", "42"))
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, "Не найдено", body["title"])
+	assert.Equal(t, "заказ 42 не найден", body["detail"])
+	assert.Equal(t, "TEST_HTTPX_NOT_FOUND", body["code"], "code stays locale-independent")
+
+	// Localizer that reports no translation → developer detail kept.
+	miss := httpx.ProblemLocalizer(func(string, map[string]any) (string, string, bool) { return "", "", false })
+	req2 := httptest.NewRequest(http.MethodGet, "/orders/42", http.NoBody)
+	req2 = req2.WithContext(httpx.WithProblemLocalizer(req2.Context(), miss))
+	rec2 := httptest.NewRecorder()
+	httpx.WriteError(rec2, req2, apperr.New("TEST_HTTPX_NOT_FOUND").WithParam("order_id", "42"))
+	var body2 map[string]any
+	require.NoError(t, json.Unmarshal(rec2.Body.Bytes(), &body2))
+	assert.Equal(t, "order 42 not found", body2["detail"])
+}

@@ -110,14 +110,27 @@ func problemForCode(code string) Problem {
 }
 
 // WriteError maps err via FromError, fills Instance from the request path,
-// and writes the problem. The standard way for handlers to answer with an
-// error:
+// localizes Title/Detail when the request ctx carries a ProblemLocalizer
+// (installed by i18n middleware — Code and Params stay untouched), and
+// writes the problem. The standard way for handlers to answer with an error:
 //
 //	if err != nil { httpx.WriteError(w, r, err); return }
 func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	p := FromError(err)
-	if p.Instance == "" && r != nil && r.URL != nil {
-		p.Instance = r.URL.Path
+	if r != nil {
+		if p.Instance == "" && r.URL != nil {
+			p.Instance = r.URL.Path
+		}
+		if loc, ok := ProblemLocalizerFrom(r.Context()); ok && p.Code != "" {
+			if title, detail, ok := loc(p.Code, p.Params); ok {
+				if title != "" {
+					p.Title = title
+				}
+				if detail != "" {
+					p.Detail = detail
+				}
+			}
+		}
 	}
 	WriteProblem(w, p)
 }
