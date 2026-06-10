@@ -182,6 +182,37 @@ CI runs the integration job with `-p 1 -timeout 25m` (job `timeout-minutes:
 30`) for the same reason. The `-short` fast lane is unaffected — it starts no
 containers and keeps full parallelism.
 
+### Chaos testing (broker outage)
+
+`examples/e2e/chaos_test.go` (`TestE2E_ChaosBrokerOutageMidFlow`, skipped in
+`-short`) drives the full four-service stack, **pauses the Redpanda container
+mid-flow** (docker pause = SIGSTOP: every client connection freezes at once),
+waits past the outbox relay's backoff, unpauses, and asserts the system's two
+core delivery invariants:
+
+- **Zero loss** — the order accepted just before the outage still completes
+  (`created → paid` end to end; projection row correct).
+- **Zero duplicate side effects** — exactly one `orders` row, one `payments`
+  row, one projection row, and one notification per order: the post-heal
+  redelivery storm (relay re-publishes, consumer-group replays) is absorbed
+  by the inbox dedup.
+
+Why pause/unpause instead of a toxiproxy in front of the broker: Kafka
+clients only *bootstrap* through the seed address — metadata then redirects
+them to the broker's **advertised listener**, which testcontainers points
+straight at the container's mapped port, so a proxy on the seed address is
+bypassed and "disabling" it cuts nothing. Freezing the container partitions
+every client reliably and heals to the same broker (same ports, same data).
+
+Deadlines in this test are deliberately generous (up to 120s post-heal):
+recovery latency = consumer reconnect + outbox relay backoff (capped
+exponential, ≤30s) + normal choreography latency, and CI runners are slow.
+Run it alone with:
+
+```bash
+go test ./examples/e2e/ -run TestE2E_ChaosBrokerOutageMidFlow -count=1
+```
+
 ---
 
 ## 6. Mock Regeneration
