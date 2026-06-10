@@ -153,6 +153,14 @@ go test -short -coverprofile=coverage.out ./... \
   && go tool cover -func=coverage.out | tail -1       # coverage summary
 ```
 
+### Ephemeral admin ports (mandatory in integration tests)
+
+Any test that boots a service through `servicekit` MUST set
+`t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")`. Admin bind failure is fatal by
+design (no half-alive pods), and the default `:9090` collides with anything
+else on the machine — including other projects' Prometheus containers. A test
+that forgets this passes locally until some unrelated stack takes the port.
+
 ### Docker capacity & parallelism
 
 Integration packages each start real containers (Postgres, Redpanda, Redis,

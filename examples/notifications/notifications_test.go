@@ -54,6 +54,7 @@ func buildApp(
 	t.Helper()
 
 	t.Setenv("PG_DSN", pgtest.NewDSN(t))
+	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0") // ephemeral: never collide with other stacks on :9090
 	t.Setenv("KAFKA_BROKERS", broker)
 	t.Setenv("PAYMENTS_EVENTS_TOPIC", "payments.events")
 	// Disable telemetry in tests.
