@@ -194,10 +194,11 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	}
 
 	// Public HTTP server (separate from the admin server on AdminAddr).
+	// AddHTTPServer owns its lifecycle: Start binds it (bind failure fatal,
+	// like the admin server) and teardown shuts it down right after the
+	// drain-gate — before consumers are cancelled and kafka/pg close.
 	httpSrv := httpserver.New(cfg.HTTP)
-	svc.Closer().Add("http-server", func(ctx context.Context) error {
-		return httpSrv.Shutdown(ctx)
-	})
+	svc.AddHTTPServer("public", httpSrv)
 	a.server = httpSrv
 
 	// Wire the API server (strict handler) with RBAC and resilience.
@@ -222,15 +223,11 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	return a, nil
 }
 
-// Start launches background goroutines (projection consumer + public HTTP server).
-// Non-blocking.
+// Start launches background goroutines (projection consumer + public HTTP
+// server, both managed by the servicekit harness). Non-blocking.
 func (a *App) Start() {
 	if err := a.svc.Start(); err != nil {
 		a.svc.Logger().Error("failed to start service", "error", err)
-	}
-
-	if err := a.server.Start(); err != nil {
-		a.svc.Logger().Error("http server failed to start", "error", err)
 		return
 	}
 

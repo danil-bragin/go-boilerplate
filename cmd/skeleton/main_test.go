@@ -17,7 +17,10 @@ func TestApp_StartHealthAndStop(t *testing.T) {
 		goleak.IgnoreTopFunction("go.opentelemetry.io/otel/sdk/trace.(*batchSpanProcessor).processQueue"),
 	)
 
-	t.Setenv("HTTP_ADDR", ":0") // use a random free port
+	t.Setenv("HTTP_ADDR", ":0")                // use a random free port
+	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0") // harness admin server: ephemeral port
+	t.Setenv("DRAIN_GRACE", "0")
+	t.Setenv("OTEL_ENABLED", "false")
 
 	app, err := newApp(context.Background())
 	require.NoError(t, err)

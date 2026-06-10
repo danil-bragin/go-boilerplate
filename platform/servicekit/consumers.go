@@ -2,6 +2,7 @@ package servicekit
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -17,6 +18,9 @@ import (
 func (s *Service) EnsureTopics(ctx context.Context, topics ...string) error {
 	if !s.cfg.EnsureTopics {
 		return nil
+	}
+	if s.kafkaClient == nil {
+		return errNoKafka("EnsureTopics")
 	}
 	spec := kafka.TopicSpec{
 		Partitions:        s.cfg.TopicPartitions,
@@ -35,6 +39,10 @@ func (s *Service) EnsureTopics(ctx context.Context, topics ...string) error {
 // DLT topics (topic+".DLT") are also created via EnsureTopics.
 // Must be called before Start.
 func (s *Service) AddConsumer(ctx context.Context, groupID string, topics []string, handler kafka.HandlerFunc) error {
+	if s.kafkaClient == nil {
+		return errNoKafka("AddConsumer")
+	}
+
 	// Ensure DLT topics exist alongside the source topics.
 	allTopics := make([]string, 0, len(topics)*2)
 	allTopics = append(allTopics, topics...)
@@ -83,6 +91,10 @@ func (s *Service) AddConsumer(ctx context.Context, groupID string, topics []stri
 // reorder-safe or policy.KeyParkingWindow is set (best-effort key parking —
 // see the retry package documentation for the full trade-off).
 func (s *Service) AddConsumerWithRetry(ctx context.Context, groupID string, topics []string, handler kafka.HandlerFunc, policy retry.Policy) error {
+	if s.kafkaClient == nil {
+		return errNoKafka("AddConsumerWithRetry")
+	}
+
 	// 1. Provision all required topics: base + tier + DLT.
 	allTopics := make([]string, 0, len(topics)*(2+len(policy.Tiers)))
 	allTopics = append(allTopics, topics...)
@@ -154,4 +166,10 @@ func (s *Service) consumerOnError(groupID string) kafka.ConsumerOption {
 		s.logger.ErrorContext(ctx, "kafka consumer error",
 			"group", groupID, "stage", stage, "error", err)
 	})
+}
+
+// errNoKafka is the uniform error for kafka-dependent methods on a Service
+// built with WithoutKafka.
+func errNoKafka(method string) error {
+	return fmt.Errorf("servicekit: %s requires kafka, but the service was built with WithoutKafka()", method)
 }

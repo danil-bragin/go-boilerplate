@@ -89,9 +89,11 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 
 	// Outbox relay + cleaner (publishes PaymentProcessed events).
 	outboxRepo := outbox.NewRepository(svc.Pool())
-	svc.AddOutboxRelay(svc.DefaultOutboxPublisher(), outbox.RelayConfig{
+	if err := svc.AddOutboxRelay(svc.DefaultOutboxPublisher(), outbox.RelayConfig{
 		PollInterval: 200 * time.Millisecond,
-	})
+	}); err != nil {
+		return nil, err
+	}
 
 	// Build the domain handler.
 	auditStore := audit.NewPgStore(svc.Pool())

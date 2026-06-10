@@ -1,11 +1,14 @@
-// Command skeleton is a minimal runnable service that wires the platform
-// foundation packages together: config, logging, telemetry, HTTP server,
-// health endpoints, and graceful shutdown via the Closer.
+// Command skeleton is a minimal runnable HTTP service built on the shared
+// servicekit harness — the same wiring pattern every example service uses.
+// It runs with NO Kafka and NO Postgres (servicekit.WithoutKafka /
+// servicekit.WithoutPG): the harness still provides logger, telemetry,
+// admin HTTP server (/livez /readyz /metrics), optional pyroscope profiling,
+// and readiness-first graceful teardown; the skeleton adds a public HTTP
+// server with demo routes that exercise the full middleware stack.
 package main
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,35 +17,22 @@ import (
 
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/observability/health"
-	"go-boilerplate/platform/observability/log"
-	"go-boilerplate/platform/observability/telemetry"
 	"go-boilerplate/platform/run"
+	"go-boilerplate/platform/servicekit"
 	"go-boilerplate/platform/web/httpserver"
 	"go-boilerplate/platform/web/httpx"
-
-	"github.com/grafana/pyroscope-go"
-
-	// automaxprocs sets GOMAXPROCS to match the container CPU quota at startup.
-	// Go 1.25+ also does this natively when GOMAXPROCS is unset, but automaxprocs
-	// is the belt-and-suspenders standard and works across all supported versions.
-	_ "go.uber.org/automaxprocs"
 )
 
 type appConfig struct {
-	Log       log.Config
-	Telemetry telemetry.Config
-	HTTP      httpserver.Config
-	// PyroscopeAddr enables continuous profiling when set (e.g.
-	// "http://pyroscope:4040"). Empty (default) = no profiler started.
-	PyroscopeAddr string `env:"PYROSCOPE_ADDR" envDefault:""`
+	servicekit.Config
+	HTTP httpserver.Config
 }
 
 type app struct {
 	cfg    appConfig
-	logger *slog.Logger
+	svc    *servicekit.Service
 	server *httpserver.Server
 	health *health.Health
-	closer *run.Closer
 }
 
 func newApp(ctx context.Context) (*app, error) {
@@ -51,43 +41,19 @@ func newApp(ctx context.Context) (*app, error) {
 		return nil, err
 	}
 
-	logger, logSync := log.New(cfg.Log, os.Stdout)
-	slog.SetDefault(logger)
-
-	closer := run.NewCloser()
-	// log-sync is registered first so it runs last in the reverse-order
-	// shutdown sequence — buffered logs are flushed after every other
-	// component has finished logging its own shutdown messages.
-	closer.Add("log-sync", func(context.Context) error {
-		_ = logSync() // stdout sync errors are benign; ignore
-		return nil
-	})
-
-	shutdownTel, err := telemetry.Setup(ctx, cfg.Telemetry)
+	// The harness without Kafka and without Postgres: nothing is dialed,
+	// only logger/telemetry/admin-server/lifecycle wiring remains.
+	svc, err := servicekit.New(ctx, cfg.Config, nil, "",
+		servicekit.WithoutKafka(), servicekit.WithoutPG())
 	if err != nil {
 		return nil, err
 	}
-	closer.Add("telemetry", func(ctx context.Context) error {
-		return shutdownTel(ctx)
-	})
 
-	// Continuous profiling (opt-in via PYROSCOPE_ADDR). No-op when unset.
-	if cfg.PyroscopeAddr != "" {
-		profiler, err := pyroscope.Start(pyroscope.Config{
-			ApplicationName: cfg.Telemetry.ServiceName,
-			ServerAddress:   cfg.PyroscopeAddr,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("skeleton: starting pyroscope profiler: %w", err)
-		}
-		closer.Add("pyroscope", func(context.Context) error {
-			return profiler.Stop()
-		})
-		logger.Info("pyroscope continuous profiling enabled", "addr", cfg.PyroscopeAddr)
-	}
-
-	h := health.New()
+	h := svc.Health()
 	server := httpserver.New(cfg.HTTP)
+
+	// Health endpoints on the PUBLIC server too (the admin server already
+	// serves them): handy for single-port deployments and exercised by e2e.
 	server.Mux().Method("GET", "/livez", h.LivezHandler())
 	server.Mux().Method("GET", "/readyz", h.ReadyzHandler())
 
@@ -114,31 +80,31 @@ func newApp(ctx context.Context) (*app, error) {
 	// Trivial passing readiness check so /readyz exercises the check path.
 	h.AddReadiness("self", func(context.Context) error { return nil })
 
-	closer.Add("http-server", func(ctx context.Context) error {
-		h.SetNotReady() // stop accepting traffic before draining
-		return server.Shutdown(ctx)
-	})
+	// The harness starts the server in svc.Start (bind failure fatal) and
+	// shuts it down right after the drain-gate during teardown.
+	svc.AddHTTPServer("public", server)
 
-	// A1: emit "service stopping" at the START of shutdown; registered last so
-	// it executes first in the reverse-order teardown sequence.
-	closer.Add("shutdown-log", func(context.Context) error {
-		logger.Info("service stopping")
-		return nil
-	})
-
-	return &app{cfg: cfg, logger: logger, server: server, health: h, closer: closer}, nil
+	return &app{cfg: cfg, svc: svc, server: server, health: h}, nil
 }
 
 func (a *app) start() error {
-	if err := a.server.Start(); err != nil {
+	if err := a.svc.Start(); err != nil {
 		return err
 	}
-	a.logger.Info("service started", "addr", a.server.Addr())
+
+	// A1: emit "service stopping" at the START of shutdown; registered after
+	// svc.Start so it executes before even the drain-gate in LIFO teardown.
+	a.svc.Closer().Add("shutdown-log", func(context.Context) error {
+		a.svc.Logger().Info("service stopping")
+		return nil
+	})
+
+	a.svc.Logger().Info("service started", "addr", a.server.Addr())
 	return nil
 }
 
 func (a *app) stop(ctx context.Context) error {
-	return a.closer.Close(ctx)
+	return a.svc.Stop(ctx)
 }
 
 func main() {
@@ -156,22 +122,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	// A fatal serve error (listener dies unexpectedly) triggers graceful
-	// shutdown by canceling the run context.
-	go func() {
-		if serveErr := <-a.server.Notify(); serveErr != nil {
-			a.logger.Error("http server failed", "error", serveErr)
-			cancel()
-		}
-	}()
-
-	// Block until SIGINT/SIGTERM or a fatal serve error, then close
-	// resources (reverse order).
-	if err := run.Run(ctx, run.Options{ShutdownTimeout: 15 * time.Second}, a.closer); err != nil {
+	// Block until SIGINT/SIGTERM, then close resources (reverse order).
+	if err := run.Run(ctx, run.Options{ShutdownTimeout: 15 * time.Second}, a.svc.Closer()); err != nil {
 		cancel()
-		a.logger.Error("shutdown completed with errors", "error", err)
+		slog.Error("shutdown completed with errors", "error", err)
 		os.Exit(1)
 	}
 	cancel()
-	a.logger.Info("shutdown complete")
+	slog.Info("shutdown complete")
 }

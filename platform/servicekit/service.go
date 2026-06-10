@@ -11,11 +11,12 @@
 //
 //	  1. drain-gate      — /readyz flips to 503, then sleeps DRAIN_GRACE so load
 //	                       balancers stop routing before anything shuts down.
-//	  2. consumers-cancel — stops goroutines and WAITS for them to exit.
-//	  3. service closers  — public HTTP servers, caches, … (whatever the service
-//	                       registered after New).
-//	  4. kafka-producer flushes+closes, pg pool closes, telemetry shuts down, log syncs.
-//	  5. admin-server     — LAST, so /readyz keeps answering 503 for the entire drain.
+//	  2. public HTTP servers (AddHTTPServer) — drain in-flight requests while
+//	                       kafka/pg are still available to the handlers.
+//	  3. consumers-cancel — stops goroutines and WAITS for them to exit.
+//	  4. service closers  — caches, … (whatever the service registered after New).
+//	  5. kafka-producer flushes+closes, pg pool closes, telemetry shuts down, log syncs.
+//	  6. admin-server     — LAST, so /readyz keeps answering 503 for the entire drain.
 package servicekit
 
 import (
@@ -42,6 +43,12 @@ import (
 // goroutineFunc is a background goroutine registered via AddConsumer or AddOutboxRelay.
 type goroutineFunc func(ctx context.Context)
 
+// namedServer is a public HTTP server registered via AddHTTPServer.
+type namedServer struct {
+	name string
+	srv  *httpserver.Server
+}
+
 // Service holds all shared wired components.
 type Service struct {
 	cfg         Config
@@ -54,6 +61,7 @@ type Service struct {
 	adminServer *httpserver.Server
 	serde       *serde.Serde
 	goroutines  []goroutineFunc
+	httpServers []namedServer
 	runCtx      context.Context //nolint:containedctx
 	cancelRun   context.CancelFunc
 	// wg tracks every goroutine launched in Start. Teardown waits for them
@@ -69,7 +77,15 @@ type Service struct {
 // migrations and migrationsDir are passed to pg.Migrate (advisory-locked).
 // Pass a nil fs.FS and empty string to skip migrations (useful in tests that
 // handle migrations themselves).
-func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string) (*Service, error) {
+//
+// Options: WithoutKafka and WithoutPG switch off the respective subsystem
+// entirely — no client construction, no dial, no readiness check; the
+// dependent Add* methods return errors instead.
+func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string, opts ...Option) (*Service, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	// 1. Logger + log-sync (registered first → runs last in LIFO closer).
 	logger, logSync := log.New(cfg.Log, os.Stdout)
 	slog.SetDefault(logger)
@@ -135,44 +151,60 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 		logger.Info("pyroscope continuous profiling enabled", "addr", cfg.PyroscopeAddr)
 	}
 
-	// 3. Postgres pool.
-	pool, err := pg.New(ctx, cfg.PG)
-	if err != nil {
-		return nil, err
-	}
-	closer.Add("pg", func(ctx context.Context) error {
-		return pool.Close(ctx)
-	})
-
-	// 4. Migrations (advisory-locked; idempotent). MIGRATE_ON_START=false
-	// skips them (production: a dedicated migrate job owns schema changes).
-	// MigrateDSN honors PG_MIGRATE_URL — required behind PgBouncer.
-	if cfg.MigrateOnStart && migrations != nil && migrationsDir != "" {
-		if err := pg.Migrate(ctx, cfg.PG.MigrateDSN(), migrations, migrationsDir); err != nil {
+	// 3. Postgres pool (skipped entirely with WithoutPG — no dial).
+	var pool *pg.Pool
+	if !o.withoutPG {
+		pool, err = pg.New(ctx, cfg.PG)
+		if err != nil {
 			return nil, err
+		}
+		pgPool := pool
+		closer.Add("pg", func(ctx context.Context) error {
+			return pgPool.Close(ctx)
+		})
+
+		// 4. Migrations (advisory-locked; idempotent). MIGRATE_ON_START=false
+		// skips them (production: a dedicated migrate job owns schema changes).
+		// MigrateDSN honors PG_MIGRATE_URL — required behind PgBouncer.
+		if cfg.MigrateOnStart && migrations != nil && migrationsDir != "" {
+			if err := pg.Migrate(ctx, cfg.PG.MigrateDSN(), migrations, migrationsDir); err != nil {
+				return nil, err
+			}
 		}
 	}
 
-	// 5. Kafka client (producer-only, no group) + producer.
-	producerCfg := cfg.Kafka
-	producerCfg.GroupID = ""
-	kafkaClient, err := kafka.NewClient(producerCfg)
-	if err != nil {
-		return nil, err
+	// 5. Kafka client (producer-only, no group) + producer (skipped entirely
+	// with WithoutKafka — no client construction).
+	var (
+		kafkaClient *kgo.Client
+		producer    *kafka.Producer
+	)
+	if !o.withoutKafka {
+		producerCfg := cfg.Kafka
+		producerCfg.GroupID = ""
+		kafkaClient, err = kafka.NewClient(producerCfg)
+		if err != nil {
+			return nil, err
+		}
+		producer = kafka.NewProducer(kafkaClient)
+		kProducer := producer
+		closer.Add("kafka-producer", func(ctx context.Context) error {
+			return kProducer.Close(ctx)
+		})
 	}
-	producer := kafka.NewProducer(kafkaClient)
-	closer.Add("kafka-producer", func(ctx context.Context) error {
-		return producer.Close(ctx)
-	})
 
-	// 6. Health: pg + kafka readiness checks.
+	// 6. Health: pg + kafka readiness checks (only for the wired subsystems).
 	h := health.New()
-	h.AddReadiness("postgres", health.Check(func(ctx context.Context) error {
-		return pool.HealthCheck(ctx)
-	}))
-	h.AddReadiness("kafka", health.Check(func(ctx context.Context) error {
-		return producer.Ping(ctx)
-	}))
+	if pool != nil {
+		h.AddReadiness("postgres", health.Check(func(ctx context.Context) error {
+			return pool.HealthCheck(ctx)
+		}))
+	}
+	if producer != nil {
+		h.AddReadiness("kafka", health.Check(func(ctx context.Context) error {
+			return producer.Ping(ctx)
+		}))
+	}
 
 	// 7. Admin HTTP server: /livez, /readyz, /metrics.
 	adminAddr := cfg.AdminAddr
@@ -242,4 +274,20 @@ func (s *Service) AddWorker(name string, fn func(context.Context)) {
 		s.logger.Debug("worker started", "worker", name)
 		fn(ctx)
 	})
+}
+
+// AddHTTPServer registers a public HTTP server under the service lifecycle:
+// Start binds and serves it (bind failure is fatal, same contract as the
+// admin server), and teardown shuts it down gracefully in the slot between
+// the drain-gate and consumers-cancel:
+//
+//	drain-gate (readyz→503 + DRAIN_GRACE) → public HTTP shutdown (drains
+//	in-flight requests) → consumers-cancel → kafka/pg close → admin last.
+//
+// In-flight request handlers may therefore still use the kafka producer and
+// pg pool while the server drains. A fatal serve error after startup (e.g.
+// the listener dying) flips readiness to 503 so orchestrators restart the
+// pod. Must be called before Start.
+func (s *Service) AddHTTPServer(name string, srv *httpserver.Server) {
+	s.httpServers = append(s.httpServers, namedServer{name: name, srv: srv})
 }

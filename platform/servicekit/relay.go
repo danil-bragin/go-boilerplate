@@ -2,6 +2,7 @@ package servicekit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -19,7 +20,13 @@ import (
 // relay runs in advisory-lock leader mode: only one instance of the service
 // publishes at a time, preserving per-aggregate event order across replicas.
 // Set OUTBOX_SINGLE_ACTIVE=false only when consumers are reorder-safe.
-func (s *Service) AddOutboxRelay(publisher outbox.Publisher, cfg outbox.RelayConfig) {
+//
+// Returns an error when the service was built with WithoutPG — the outbox
+// lives in Postgres.
+func (s *Service) AddOutboxRelay(publisher outbox.Publisher, cfg outbox.RelayConfig) error {
+	if s.pool == nil {
+		return errors.New("servicekit: AddOutboxRelay requires postgres, but the service was built with WithoutPG()")
+	}
 	var opts []outbox.RelayOption
 	if cfg.SingleActive {
 		opts = append(opts, outbox.WithSingleActive(s.pool.Writer()))
@@ -56,6 +63,7 @@ func (s *Service) AddOutboxRelay(publisher outbox.Publisher, cfg outbox.RelayCon
 			}
 		},
 	)
+	return nil
 }
 
 // DefaultOutboxPublisher builds the standard outboxkafka publisher backed by

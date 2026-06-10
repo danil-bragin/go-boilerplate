@@ -21,6 +21,8 @@ import (
 func startTestApp(t *testing.T) (*app, string) {
 	t.Helper()
 	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0") // harness admin server: ephemeral port
+	t.Setenv("DRAIN_GRACE", "0")               // no LB drain window needed in tests
 	t.Setenv("OTEL_ENABLED", "false")
 	a, err := newApp(context.Background())
 	require.NoError(t, err)
