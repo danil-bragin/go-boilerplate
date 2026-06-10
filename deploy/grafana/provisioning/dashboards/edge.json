@@ -19,7 +19,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (job, http_route) (rate(otel_http_server_duration_milliseconds_count[5m]))",
+          "expr": "histogram_count(sum by (job, http_route) (rate(otel_http_server_duration_milliseconds[5m])))",
           "legendFormat": "{{job}} {{http_route}}"
         }
       ]
@@ -34,7 +34,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (job, http_route) (rate(otel_http_server_duration_milliseconds_count{http_response_status_code=~\"5..\"}[5m]))",
+          "expr": "histogram_count(sum by (job, http_route) (rate(otel_http_server_duration_milliseconds{http_response_status_code=~\"5..\"}[5m])))",
           "legendFormat": "{{job}} {{http_route}}"
         }
       ]
@@ -42,24 +42,25 @@
     {
       "id": 3,
       "type": "timeseries",
-      "title": "Latency quantiles (all routes)",
+      "title": "Latency quantiles (all routes, native histogram)",
+      "description": "Native-histogram syntax: histogram_quantile over the rate of the histogram series directly — no le label. See docs/operations.md §Latency tails.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(otel_http_server_duration_milliseconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.50, sum(rate(otel_http_server_duration_milliseconds[5m])))",
           "legendFormat": "p50"
         },
         {
           "refId": "B",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(otel_http_server_duration_milliseconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum(rate(otel_http_server_duration_milliseconds[5m])))",
           "legendFormat": "p95"
         },
         {
           "refId": "C",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(otel_http_server_duration_milliseconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.99, sum(rate(otel_http_server_duration_milliseconds[5m])))",
           "legendFormat": "p99"
         }
       ]
@@ -67,15 +68,15 @@
     {
       "id": 4,
       "type": "timeseries",
-      "title": "p99 latency by route",
+      "title": "p99 latency by route (recording rule)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.99, sum by (http_route, le) (rate(otel_http_server_duration_milliseconds_bucket[5m])))",
-          "legendFormat": "{{http_route}}"
+          "expr": "job_route:http_server_duration_milliseconds:p99_5m",
+          "legendFormat": "{{job}} {{http_route}}"
         }
       ]
     },
@@ -90,7 +91,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (job) (rate(otel_http_server_duration_milliseconds_count{http_response_status_code=\"429\"}[5m]))",
+          "expr": "histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds{http_response_status_code=\"429\"}[5m])))",
           "legendFormat": "{{job}}"
         }
       ]
@@ -105,7 +106,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (job, http_route) (rate(otel_http_server_duration_milliseconds_count{http_response_status_code=\"503\"}[5m]))",
+          "expr": "histogram_count(sum by (job, http_route) (rate(otel_http_server_duration_milliseconds{http_response_status_code=\"503\"}[5m])))",
           "legendFormat": "{{job}} {{http_route}}"
         }
       ]
@@ -133,7 +134,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(otel_http_server_duration_milliseconds_count{http_response_status_code=~\"5..\"}[5m])) / sum(rate(otel_http_server_duration_milliseconds_count[5m]))",
+          "expr": "histogram_count(sum(rate(otel_http_server_duration_milliseconds{http_response_status_code=~\"5..\"}[5m]))) / histogram_count(sum(rate(otel_http_server_duration_milliseconds[5m])))",
           "legendFormat": "5xx ratio"
         }
       ]

@@ -32,9 +32,12 @@ const TOKEN = __ENV.TOKEN || '';
 
 export const options = {
   thresholds: {
-    // p99 latency budget for ALL http requests issued by this script.
+    // Mirrors SLO-1 (deploy/prometheus/slo.yaml — the single source of truth
+    // for SLO targets): 99% of HTTP requests < 500 ms. Change it there first,
+    // then keep this threshold aligned.
     http_req_duration: ['p(99)<500'],
-    // <1% of checks may fail (connection errors, non-2xx, never-settled polls).
+    // <1% of checks may fail (connection errors, non-2xx, never-settled
+    // polls) — the load-test proxy for SLO-1's 99% availability leg.
     checks: ['rate>0.99'],
   },
 };

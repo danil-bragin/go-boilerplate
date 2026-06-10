@@ -392,13 +392,117 @@ the integration legitimately needs cross-customer reads.
 
 ---
 
+## Latency tails & SLOs
+
+### Histogram engine: exponential → Prometheus native
+
+Every duration instrument (`http.server.duration`, `cqrs.handler.duration_ms`
+and the per-signal kafka/outbox/pg/lifecycle histograms) is aggregated as a
+**base-2 exponential histogram** by an SDK view
+(`platform/observability/telemetry/views.go`, MaxSize 160 / MaxScale 20),
+applied to both the OTLP-push and Prometheus-pull readers. Exponential
+histograms keep ~1% relative error from microseconds to minutes with a fixed
+memory budget — accurate p99s without per-signal bucket tuning.
+
+Downstream they become **Prometheus native histograms**:
+
+- collector lane: otelcol-contrib ≥ 0.153 `prometheus` exporter converts them
+  automatically; Prometheus v3.12 ingests them because
+  `deploy/prometheus.yml` sets `scrape_native_histograms: true` (which also
+  flips scrape negotiation to the protobuf format);
+- app-direct lane (`/metrics`): the OTel Go prometheus exporter emits
+  client_golang native histograms — same protobuf scrape, no `otel_`
+  namespace on the names.
+
+Both lanes were verified live (probe → `histogram_quantile` returns tail
+values; see the PromQL below).
+
+**Classic fallback:** environments whose Prometheus cannot ingest native
+histograms set `TELEMETRY_CLASSIC_HISTOGRAMS=true` — duration instruments
+flip to per-signal tuned explicit buckets (tables in `views.go`), exported as
+ordinary `*_bucket` series. The recording rules/dashboards in this repo are
+native-first; under the fallback adapt expressions to
+`sum by (le, ...) (rate(<metric>_bucket[5m]))`.
+
+### PromQL: native histograms have no `le`
+
+Native histograms are ONE series per label set — no `_bucket`, `_sum`,
+`_count`. The query shapes change:
+
+```promql
+# quantile: rate the histogram series directly, no le grouping
+histogram_quantile(0.99, sum by (job, http_route) (rate(otel_http_server_duration_milliseconds[5m])))
+
+# request count (replaces rate(..._count)):
+histogram_count(sum by (job) (rate(otel_http_server_duration_milliseconds[5m])))
+
+# fraction of observations in [0, 500ms] — powers the latency SLO:
+histogram_fraction(0, 500, sum(rate(otel_http_server_duration_milliseconds[5m])))
+```
+
+Note the OTLP push interval (`OTEL_METRIC_EXPORT_INTERVAL`, default 60s)
+quantizes the collector lane: `rate()` windows must span at least two export
+intervals — the standard 5m windows are fine, ad-hoc `[1m]` queries return
+empty/NaN between exports.
+
+### Recording rules (`deploy/prometheus/rules-latency.yaml`)
+
+Per-signal p50/p95/p99 over 5m windows, named
+`<level>:<metric>:<quantile>_<window>`, e.g.
+`job_route:http_server_duration_milliseconds:p99_5m`,
+`job_topic:kafka_consumer_handler_duration_seconds:p99_5m`,
+`job_query:pg_query_duration_seconds:p99_5m`,
+`terminal_status:orders_lifecycle_duration_seconds:p99_5m`. Dashboards
+(`latency-tails`, `edge`) consume the rules; ad-hoc exploration can always
+fall back to the raw native series.
+
+### SLOs & burn-rate alerts (`deploy/prometheus/slo.yaml`)
+
+The SLO targets live in ONE place — the comment block at the top of
+`deploy/prometheus/slo.yaml`; docs and the k6 thresholds reference it:
+
+- **SLO-1**: 99% of HTTP requests < 500 ms and non-5xx, 30-day window
+  (k6 mirrors this as `http_req_duration: p(99)<500`).
+- **SLO-2**: 99% of orders reach a terminal status < 60 s, 30-day window.
+
+Alerts follow the Google SRE workbook multiwindow shape: **fast burn** at
+14.4× the budget rate over 1h AND 5m (critical — 2% of the 30d budget/hour),
+**slow burn** at 6× over 6h AND 30m (warning). The long window catches the
+sustained problem; the AND with the short window stops alerting promptly
+after recovery and ignores brief spikes.
+
+**Changing a target:** edit the error-ratio expressions (the `500`/`60`
+thresholds inside `histogram_fraction`) and the alert thresholds
+(`14.4 * <budget>` / `6 * <budget>` where budget = 1 − target), update the
+slo.yaml comment block, re-run the promtool unit tests
+(`deploy/prometheus/tests/slo_test.yaml` — synthetic native-histogram series
+prove the burn arithmetic), and align `scripts/k6/order-flow.js` thresholds:
+
+```bash
+docker run --rm -v $PWD/deploy/prometheus:/r --entrypoint promtool \
+  prom/prometheus:v3.12.0 test rules /r/tests/slo_test.yaml
+```
+
+### Exemplars (latency spike → exact trace)
+
+Set `OTEL_METRICS_EXEMPLAR_FILTER=trace_based` (and keep
+`TELEMETRY_TRACE_RATIO > 0`): histogram recordings made inside a sampled span
+carry trace-linked exemplars, and Grafana renders them as dots that pivot to
+Jaeger. Caveats today: the collector's pull exporter does not attach
+exemplars to NATIVE histograms (classic fallback only), and recording-rule
+series never carry exemplars — query the raw series for exemplar overlays.
+
+---
+
 ## Load testing (k6)
 
 `scripts/k6/order-flow.js` exercises the full asynchronous order flow:
 `POST /v1/orders` with a unique `Idempotency-Key` per iteration (amount below
 the payments decline threshold), then polls `GET /v1/orders/{id}` until the
 projection reaches `created`/`paid`. Thresholds: `http_req_duration p(99)<500`
-and check success rate > 99% — k6 exits non-zero when either trips.
+and check success rate > 99% — k6 exits non-zero when either trips. Both
+mirror SLO-1 in `deploy/prometheus/slo.yaml` (the single source of truth for
+SLO targets; see §Latency tails & SLOs above) — change targets there first.
 
 ```bash
 just up-apps            # gateway + services + infra

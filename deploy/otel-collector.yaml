@@ -17,6 +17,11 @@ exporters:
     tls:
       insecure: true
 
+  # Exposes OTLP metrics for the Prometheus scrape on :8889. Since contrib
+  # v0.153 exponential histograms are converted to Prometheus NATIVE
+  # histograms automatically and served via the protobuf exposition format —
+  # the scraper must negotiate protobuf and enable native ingestion
+  # (deploy/prometheus.yml sets `scrape_native_histograms: true`).
   prometheus:
     endpoint: 0.0.0.0:8889
     namespace: otel
