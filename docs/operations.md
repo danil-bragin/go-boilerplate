@@ -188,6 +188,34 @@ constraint here: the wiring sequence is inherently order-dependent.
 
 ---
 
+## Logging
+
+Every service logs structured JSON to **stdout** (`LOG_LEVEL`, `LOG_FORMAT`);
+the container runtime / log shipper owns collection. Context-aware calls
+(`InfoContext` etc.) inside a span carry `trace_id`/`span_id` fields for
+trace correlation.
+
+**OTLP log export (opt-in):** set `TELEMETRY_LOGS=true` to additionally ship
+log records to the OTel collector over OTLP/gRPC (`OTEL_EXPORTER_OTLP_ENDPOINT`,
+same endpoint as traces/metrics). Mechanics:
+
+- `telemetry.SetupAll` constructs an `otlploggrpc` exporter + SDK
+  `LoggerProvider` (batched); servicekit wires it into `log.New` via
+  `log.WithOTelBridge`, which fans every record out to stdout **and** the
+  collector — stdout always stays the primary sink, and a down collector
+  never blocks logging (export is best-effort, flushed on shutdown).
+- Records emitted inside a span carry native OTLP trace correlation
+  (trace/span IDs on the log record itself), so a logs backend can join them
+  to Jaeger traces without parsing JSON fields.
+- The collector's `logs` pipeline (`deploy/otel-collector.yaml`) currently
+  ends in the `debug` exporter; point it at Loki/Elastic/etc. when a log
+  backend joins the stack.
+
+Default is `false`: with no log backend in the compose stack, exporting to
+the collector only duplicates stdout into the collector's own stdout.
+
+---
+
 ## Per-IP rate limiting (gateway)
 
 The gateway applies a per-client-IP token-bucket rate limiter at the edge. Configure via:

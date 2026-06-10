@@ -211,3 +211,39 @@ func TestSetup_TraceRatioSamplerApplied(t *testing.T) {
 		})
 	}
 }
+
+// TestSetupAll_LogsDisabledNoLoggerProvider verifies the default: without
+// TELEMETRY_LOGS no OTLP log provider is constructed at all.
+func TestSetupAll_LogsDisabledNoLoggerProvider(t *testing.T) {
+	p, err := telemetry.SetupAll(context.Background(), telemetry.Config{
+		ServiceName:       "logs-off-svc",
+		Enabled:           false,
+		MetricsPrometheus: false,
+		LogsEnabled:       false,
+	})
+	require.NoError(t, err)
+	require.Nil(t, p.LoggerProvider)
+	require.NoError(t, p.Shutdown(context.Background()))
+}
+
+// TestSetupAll_LogsEnabledConstructsLoggerProvider verifies the opt-in:
+// TELEMETRY_LOGS=true yields a usable LoggerProvider (otlploggrpc is lazy, so
+// no collector needs to be running) and Shutdown stays clean.
+func TestSetupAll_LogsEnabledConstructsLoggerProvider(t *testing.T) {
+	p, err := telemetry.SetupAll(context.Background(), telemetry.Config{
+		ServiceName:       "logs-on-svc",
+		OTLPEndpoint:      "localhost:1", // never dialled eagerly
+		Enabled:           false,
+		MetricsPrometheus: false,
+		LogsEnabled:       true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, p.LoggerProvider)
+
+	// The provider hands out working loggers.
+	require.NotNil(t, p.LoggerProvider.Logger("test-scope"))
+
+	// Shutdown flushes (empty queue) and must not error even though the
+	// endpoint is unreachable — log export is best-effort.
+	require.NoError(t, p.Shutdown(context.Background()))
+}

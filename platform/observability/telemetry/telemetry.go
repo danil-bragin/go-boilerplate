@@ -9,7 +9,14 @@
 //   - When Enabled is true an OTLP-push reader is also registered so metrics
 //     flow to the collector alongside traces.
 //
-// Use SetupWithMetrics to obtain the http.Handler for the /metrics endpoint.
+// Logs pipeline (opt-in): when LogsEnabled (TELEMETRY_LOGS=true) an OTLP log
+// exporter + SDK LoggerProvider are constructed; SetupAll exposes the provider
+// so the caller can bridge slog records to the collector (see
+// platform/observability/log WithOTelBridge). Default off — stdout stays the
+// primary log sink either way.
+//
+// Use SetupWithMetrics to obtain the http.Handler for the /metrics endpoint,
+// or SetupAll for the full Providers bundle (metrics handler + log provider).
 // The top-level Setup function is kept for backward compatibility and discards
 // the metrics handler (useful when the caller mounts /metrics separately or
 // does not need Prometheus exposition).
@@ -27,10 +34,14 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	otelruntime "go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	promexporter "go.opentelemetry.io/otel/exporters/prometheus"
+	otellog "go.opentelemetry.io/otel/log"
+	logglobal "go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -56,6 +67,13 @@ type Config struct {
 	OTLPEndpoint      string `env:"OTEL_EXPORTER_OTLP_ENDPOINT" envDefault:"localhost:4317"`
 	Enabled           bool   `env:"OTEL_ENABLED"              envDefault:"false"`
 	MetricsPrometheus bool   `env:"OTEL_METRICS_PROMETHEUS"   envDefault:"true"`
+	// LogsEnabled (TELEMETRY_LOGS) opts in to OTLP log export: an otlploggrpc
+	// exporter pushing to OTLPEndpoint plus an SDK LoggerProvider (exposed via
+	// SetupAll's Providers.LoggerProvider and the otel global). Stdout logging
+	// is unaffected — when servicekit wires the provider into log.New, log
+	// records FAN OUT to stdout AND the collector. Default false: logs stay
+	// stdout-only (the container runtime / log shipper owns collection).
+	LogsEnabled bool `env:"TELEMETRY_LOGS" envDefault:"false"`
 	// TraceRatio is the head-sampling ratio for ROOT spans, applied as
 	// ParentBased(TraceIDRatioBased(ratio)): locally-started traces are
 	// sampled at this ratio, while spans with a remote parent follow the
@@ -85,7 +103,33 @@ func Setup(ctx context.Context, cfg Config) (ShutdownFunc, error) {
 //   - http.Handler – a Prometheus /metrics handler (nil when MetricsPrometheus
 //     is false).
 //   - error
+//
+// Callers that need the OTLP log provider (Config.LogsEnabled) should use
+// SetupAll instead; this wrapper discards it.
 func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handler, error) {
+	p, err := SetupAll(ctx, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return p.Shutdown, p.MetricsHandler, nil
+}
+
+// Providers bundles everything SetupAll installs.
+type Providers struct {
+	// Shutdown flushes and stops all constructed providers (reverse order).
+	Shutdown ShutdownFunc
+	// MetricsHandler serves Prometheus exposition; nil when
+	// Config.MetricsPrometheus is false.
+	MetricsHandler http.Handler
+	// LoggerProvider is the OTLP log provider; nil unless Config.LogsEnabled.
+	// Wire it into log.New (log.WithOTelBridge) to fan log records out to the
+	// collector in addition to stdout. Also installed as the otel global.
+	LoggerProvider otellog.LoggerProvider
+}
+
+// SetupAll installs the global tracer, meter and (opt-in) logger providers
+// plus W3C propagation, returning all handles in one Providers value.
+func SetupAll(ctx context.Context, cfg Config) (Providers, error) {
 	// Always configure W3C propagation regardless of Enabled.
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{}, propagation.Baggage{},
@@ -106,7 +150,7 @@ func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handl
 		if errors.Is(err, resource.ErrPartialResource) || errors.Is(err, resource.ErrSchemaURLConflict) {
 			slog.Warn("telemetry: partial resource", "error", err)
 		} else {
-			return nil, nil, fmt.Errorf("telemetry: resource: %w", err)
+			return Providers{}, fmt.Errorf("telemetry: resource: %w", err)
 		}
 	}
 
@@ -122,7 +166,7 @@ func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handl
 			otlptracegrpc.WithInsecure(),
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf("telemetry: otlp trace exporter: %w", err)
+			return Providers{}, fmt.Errorf("telemetry: otlp trace exporter: %w", err)
 		}
 
 		// Hand-built Configs (no config.Load) get TraceRatio's zero value,
@@ -161,7 +205,7 @@ func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handl
 			promexporter.WithRegisterer(reg),
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf("telemetry: prometheus exporter: %w", err)
+			return Providers{}, fmt.Errorf("telemetry: prometheus exporter: %w", err)
 		}
 		mpReaders = append(mpReaders, sdkmetric.WithReader(promExp))
 		metricsHandler = promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
@@ -174,7 +218,7 @@ func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handl
 			otlpmetricgrpc.WithInsecure(),
 		)
 		if err != nil {
-			return nil, nil, fmt.Errorf("telemetry: otlp metric exporter: %w", err)
+			return Providers{}, fmt.Errorf("telemetry: otlp metric exporter: %w", err)
 		}
 		mpReaders = append(mpReaders, sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp)))
 	}
@@ -201,6 +245,37 @@ func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handl
 		})
 	}
 
+	// -----------------------------------------------------------------------
+	// Logger provider (opt-in OTLP log export, TELEMETRY_LOGS=true)
+	// -----------------------------------------------------------------------
+	var loggerProvider otellog.LoggerProvider
+	if cfg.LogsEnabled {
+		logExp, err := otlploggrpc.New(
+			ctx,
+			otlploggrpc.WithEndpoint(cfg.OTLPEndpoint),
+			otlploggrpc.WithInsecure(),
+		)
+		if err != nil {
+			return Providers{}, fmt.Errorf("telemetry: otlp log exporter: %w", err)
+		}
+		lp := sdklog.NewLoggerProvider(
+			sdklog.WithResource(res),
+			sdklog.WithProcessor(sdklog.NewBatchProcessor(logExp)),
+		)
+		logglobal.SetLoggerProvider(lp)
+		loggerProvider = lp
+		shutdowns = append(shutdowns, func(_ context.Context) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := lp.Shutdown(ctx); err != nil {
+				// Log flush errors (collector unreachable) are best-effort —
+				// stdout still has every record; do not fail shutdown.
+				slog.Warn("telemetry: logger provider shutdown error", "error", err)
+			}
+			return nil
+		})
+	}
+
 	shutdown := func(_ context.Context) error {
 		var errs []error
 		for i := len(shutdowns) - 1; i >= 0; i-- {
@@ -210,5 +285,9 @@ func SetupWithMetrics(ctx context.Context, cfg Config) (ShutdownFunc, http.Handl
 		}
 		return errors.Join(errs...)
 	}
-	return shutdown, metricsHandler, nil
+	return Providers{
+		Shutdown:       shutdown,
+		MetricsHandler: metricsHandler,
+		LoggerProvider: loggerProvider,
+	}, nil
 }

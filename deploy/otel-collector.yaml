@@ -35,3 +35,13 @@ service:
       receivers: [otlp]
       processors: [batch]
       exporters: [prometheus, debug]
+
+    # Logs arrive only from services started with TELEMETRY_LOGS=true (the
+    # opt-in otlploggrpc exporter + otelslog bridge; stdout logging is
+    # unaffected). `debug` prints them on the collector's stdout — swap in /
+    # add a real backend exporter (e.g. `loki` or `otlphttp` toward
+    # Loki/Elastic) when one joins the compose stack.
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
