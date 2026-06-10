@@ -2,6 +2,10 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Alerting rules — compose mounts deploy/prometheus/rules.yaml at this path.
+rule_files:
+  - /etc/prometheus/rules.yaml
+
 scrape_configs:
   # Scrape Prometheus itself.
   - job_name: prometheus
@@ -19,3 +23,15 @@ scrape_configs:
   - job_name: pyroscope
     static_configs:
       - targets: ["pyroscope:4040"]
+
+  # App admin servers (/metrics on :9090, compose-internal). Secondary to the
+  # collector path above; primarily provides the `up` series that the
+  # ServiceFlapping alert (deploy/prometheus/rules.yaml) watches. Targets are
+  # down (not flapping) when the `apps` compose profile is not running.
+  - job_name: apps
+    static_configs:
+      - targets:
+          - gateway:9090
+          - orders:9090
+          - payments:9090
+          - notifications:9090
