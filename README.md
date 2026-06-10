@@ -214,3 +214,5 @@ go-boilerplate/
 See [`docs/adding-a-service.md`](docs/adding-a-service.md) for a step-by-step guide.
 
 See [`docs/conventions.md`](docs/conventions.md) for file-organisation conventions, package boundaries, tooling map, and error-handling rules.
+
+Deploying? `deploy/k8s/` has reference manifests (see [`docs/operations.md`](docs/operations.md)); [`docs/aws-notes.md`](docs/aws-notes.md) condenses the AWS service mapping (MSK, RDS, ElastiCache, ALB+SSE, EKS/KEDA, AMP/ADOT).
