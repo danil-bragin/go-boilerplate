@@ -187,6 +187,48 @@ constraint here: the wiring sequence is inherently order-dependent.
 
 ---
 
+## Secrets sourcing
+
+`config.Secret` fields support two file-based sourcing mechanisms; both keep
+raw credentials out of the process environment (`/proc/<pid>/environ`, crash
+dumps, `docker inspect`):
+
+1. **`<NAME>_FILE` convention (preferred)** — implemented in
+   `platform/config.Load`: when `NAME` is unset but `NAME_FILE` is set, the
+   secret is read from that file with the trailing newline trimmed.
+   Precedence: explicit `NAME` env var > `NAME_FILE` > `envDefault`. A set
+   but unreadable `NAME_FILE` fails startup (fail-fast — an empty credential
+   would otherwise surface as confusing auth errors much later). No struct-tag
+   changes needed; it works for every `config.Secret` field automatically,
+   including nested/embedded configs (`servicekit.Config` → `pg.Config`).
+2. **caarlos0 `,file` tag modifier** — `env:"PG_DSN,file"` makes `PG_DSN`
+   itself hold a *path*. Works, but changes the meaning of the variable for
+   every environment (local dev must then also point at a file), so the
+   boilerplate's own configs do not use it.
+
+How the platforms map onto `_FILE`:
+
+- **Docker (Swarm secrets / compose `secrets:`):** the secret is mounted at
+  `/run/secrets/<name>`; set `PG_DSN_FILE=/run/secrets/pg_dsn`. Same shape for
+  plain bind-mounted credential files.
+- **Kubernetes:** mount a `Secret` as a volume and point `PG_DSN_FILE` at the
+  mounted key (e.g. `/var/run/secrets/app/pg-dsn`). With
+  [external-secrets-operator](https://external-secrets.io) the `Secret` object
+  is synced from AWS Secrets Manager / Vault / GCP SM — the pod spec stays
+  identical. Prefer the volume + `_FILE` route over `secretKeyRef` env
+  injection: volume-mounted secrets are updated in place on rotation and never
+  appear in the pod's environment.
+- **SOPS (encrypted files in git):** decrypt at deploy time
+  (`sops -d secrets.enc.yaml`) into a mounted file or a K8s `Secret` (via
+  ksops/FluxCD's SOPS integration); the service still just reads `_FILE`. Do
+  not decrypt into `.env` files on long-lived hosts.
+
+`.env` files remain the local-dev path: insecure defaults live in
+`.env.example`, and `config.Secret` keeps whatever arrives out of logs and
+`%v` dumps (audit leak points with `git grep "\.Reveal()"`).
+
+---
+
 ## Logging
 
 Every service logs structured JSON to **stdout** (`LOG_LEVEL`, `LOG_FORMAT`);
