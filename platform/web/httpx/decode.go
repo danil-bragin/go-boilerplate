@@ -33,9 +33,22 @@ const MaxBodyBytes int64 = 1 << 20
 // is present and is not application/json.
 var ErrUnsupportedMediaType = errors.New("httpx: unsupported media type")
 
-// ValidationError reports field-level validation failures.
+// FieldError is one structured validation failure: the JSON field name (the
+// json tag when present, the Go field name otherwise), the validator rule
+// that failed ("required", "min", …) and the rule's parameter ("1" for
+// min=1; empty for parameterless rules).
+type FieldError struct {
+	Field string
+	Rule  string
+	Param string
+}
+
+// ValidationError reports field-level validation failures. Fields is the
+// legacy human-readable map (kept for backward compatibility); Details
+// carries the structured per-field data used for Problem.Params["fields"].
 type ValidationError struct {
-	Fields map[string]string
+	Fields  map[string]string
+	Details []FieldError
 }
 
 func (e *ValidationError) Error() string {
@@ -77,10 +90,12 @@ func Decode[T any](r *http.Request) (T, error) {
 		var verrs validator.ValidationErrors
 		if errors.As(err, &verrs) {
 			fields := make(map[string]string, len(verrs))
+			details := make([]FieldError, 0, len(verrs))
 			for _, fe := range verrs {
 				fields[fe.Field()] = fmt.Sprintf("failed on '%s'", fe.Tag())
+				details = append(details, FieldError{Field: fe.Field(), Rule: fe.Tag(), Param: fe.Param()})
 			}
-			return v, &ValidationError{Fields: fields}
+			return v, &ValidationError{Fields: fields, Details: details}
 		}
 		return v, fmt.Errorf("httpx: validate: %w", err)
 	}
@@ -91,11 +106,9 @@ func Decode[T any](r *http.Request) (T, error) {
 func WriteDecodeError(w http.ResponseWriter, err error) {
 	var ve *ValidationError
 	if errors.As(err, &ve) {
-		WriteProblem(w, Problem{
-			Status: http.StatusUnprocessableEntity,
-			Title:  "Validation Failed",
-			Errors: ve.Fields,
-		})
+		// FromError keeps the historical 422 + Errors map and adds the
+		// VALIDATION_FAILED code with Params["fields"].
+		WriteProblem(w, FromError(ve))
 		return
 	}
 	if errors.Is(err, ErrUnsupportedMediaType) {

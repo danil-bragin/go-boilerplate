@@ -2,16 +2,18 @@ package cqrs
 
 import (
 	"context"
-	"errors"
 	"time"
 
+	"go-boilerplate/platform/apperr"
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/storage/pg"
 )
 
 // ErrUnauthenticated is returned by the WithAuthz pipeline option when no
-// principal is present in the context.
-var ErrUnauthenticated = errors.New("cqrs: no authenticated principal")
+// principal is present in the context. It is an apperr error carrying
+// AUTH_UNAUTHENTICATED, so httpx.FromError maps it to 401 automatically;
+// errors.Is(err, cqrs.ErrUnauthenticated) keeps working (code equality).
+var ErrUnauthenticated error = apperr.New(apperr.CodeAuthUnauthenticated)
 
 // AuthzPolicy decides whether a principal may perform an action on a resource.
 // It is structurally identical to platform/security/authz.Policy (declared
