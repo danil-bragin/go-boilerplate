@@ -114,6 +114,11 @@ func (s *Server) HealthCheck(_ context.Context, _ HealthCheckRequestObject) (Hea
 // ctx must hold the "user" or "admin" role (enforced via authz.Require RBAC).
 // A missing or insufficiently-privileged principal yields 403.
 //
+// Validation: the outgoing command is validated at the edge (same rules as
+// the orders consumer — see validateCreateOrderCommand) before any DB read
+// or Kafka produce; violations yield 400 VALIDATION_FAILED with
+// params.fields = [{field, rule, param}].
+//
 // The Kafka publish is wrapped in a resilience policy (Retry×3 + Timeout 2 s)
 // to handle transient broker hiccups without failing the request immediately.
 func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObject) (CreateOrderResponseObject, error) {
@@ -148,20 +153,14 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 	// share one global namespace and are only collision-safe between
 	// cooperating clients (documented in openapi.yaml).
 	var orderID string
+	hasIdempotencyKey := false
 	if key := request.Params.IdempotencyKey; key != nil && *key != "" {
 		seed := *key
 		if p, ok := auth.From(ctx); ok && p.Subject != "" {
 			seed = p.Subject + "\x00" + *key
 		}
 		orderID = uuid.NewSHA1(idempotencyNS, []byte(seed)).String()
-
-		// Key reuse with a DIFFERENT body is a client bug, not a retry:
-		// absorbing it would silently drop the second order. Compare against
-		// the existing pending/projection row and reject mismatches
-		// (GATEWAY_IDEMPOTENCY_BODY_MISMATCH → 409 via httpx.FromError).
-		if err := s.rejectIdempotentBodyMismatch(ctx, orderID, body); err != nil {
-			return nil, err
-		}
+		hasIdempotencyKey = true
 	} else {
 		orderID = uuid.New().String()
 	}
@@ -172,6 +171,26 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 		AmountCents: body.AmountCents,
 		Currency:    body.Currency,
 	}
+
+	// Edge validation BEFORE any DB read or Kafka produce: invalid input is
+	// rejected with 400 VALIDATION_FAILED + params.fields and never reaches
+	// the idempotency lookup, the broker, or the read model. The orders
+	// consumer revalidates the same rules (defense in depth — a failure
+	// there is permanent and goes straight to the DLT).
+	if err := validateCreateOrderCommand(cmd); err != nil {
+		return nil, err
+	}
+
+	// Key reuse with a DIFFERENT body is a client bug, not a retry:
+	// absorbing it would silently drop the second order. Compare against
+	// the existing pending/projection row and reject mismatches
+	// (GATEWAY_IDEMPOTENCY_BODY_MISMATCH → 409 via httpx.FromError).
+	if hasIdempotencyKey {
+		if err := s.rejectIdempotentBodyMismatch(ctx, orderID, body); err != nil {
+			return nil, err
+		}
+	}
+
 	var payload []byte
 	var err error
 	if s.encoder != nil {

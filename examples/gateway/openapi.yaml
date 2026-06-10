@@ -340,7 +340,12 @@ components:
 
     CreateOrderRequest:
       type: object
-      description: Request body for creating a new order.
+      description: >
+        Request body for creating a new order. Constraints are enforced at
+        the gateway edge BEFORE the command is produced (violations yield a
+        400 problem+json with code VALIDATION_FAILED and per-field
+        params.fields entries); the orders consumer revalidates as defense
+        in depth.
       required:
         - customer_id
         - amount_cents
@@ -348,14 +353,24 @@ components:
       properties:
         customer_id:
           type: string
+          minLength: 1
+          maxLength: 128
           description: The identifier of the customer placing the order.
         amount_cents:
           type: integer
           format: int64
-          description: The total order amount expressed in the smallest currency unit.
+          minimum: 1
+          description: >
+            The total order amount expressed in the smallest currency unit.
+            Must be positive.
         currency:
           type: string
-          description: The ISO 4217 currency code (e.g. "USD").
+          pattern: "^[A-Z]{3}$"
+          description: >
+            The ISO 4217 currency code (e.g. "USD"), uppercase. The gateway
+            additionally checks the code against its supported-currency
+            allowlist (see the service documentation); unsupported codes are
+            rejected with rule "iso4217".
 
     CreateOrderResponse:
       type: object

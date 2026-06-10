@@ -362,6 +362,33 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	assert.Equal(t, "GATEWAY_ORDER_NOT_FOUND", prob.Code)
 	assert.Equal(t, unknownID, prob.Params["order_id"])
 	t.Log("Step 6 OK: problem payload carries code and params")
+
+	// --- Step 7: edge validation — invalid body is rejected before produce ---
+	// Proves: the gateway validates the command at the edge (400
+	// VALIDATION_FAILED with structured params.fields) instead of producing a
+	// command that the orders consumer would only dead-letter.
+	t.Log("Step 7: asserting edge validation rejects a negative amount")
+	badBody := []byte(`{"customer_id":"cust-e2e","amount_cents":-5,"currency":"USD"}`)
+	badResp, err := http.Post(baseURL+"/v1/orders", "application/json", bytes.NewReader(badBody))
+	require.NoError(t, err)
+	defer badResp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, badResp.StatusCode)
+	require.Contains(t, badResp.Header.Get("Content-Type"), "application/problem+json")
+	var vprob struct {
+		Code   string `json:"code"`
+		Params struct {
+			Fields []struct {
+				Field string `json:"field"`
+				Rule  string `json:"rule"`
+			} `json:"fields"`
+		} `json:"params"`
+	}
+	require.NoError(t, json.NewDecoder(badResp.Body).Decode(&vprob))
+	assert.Equal(t, "VALIDATION_FAILED", vprob.Code)
+	require.NotEmpty(t, vprob.Params.Fields)
+	assert.Equal(t, "amount_cents", vprob.Params.Fields[0].Field)
+	assert.Equal(t, "gt", vprob.Params.Fields[0].Rule)
+	t.Log("Step 7 OK: invalid body rejected with VALIDATION_FAILED + fields")
 }
 
 // consumeRawEvent consumes raw records from topic until one matches the given

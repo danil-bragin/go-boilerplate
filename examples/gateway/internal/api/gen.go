@@ -18,12 +18,12 @@ const (
 	BearerAuthScopes = "bearerAuth.Scopes"
 )
 
-// CreateOrderRequest Request body for creating a new order.
+// CreateOrderRequest Request body for creating a new order. Constraints are enforced at the gateway edge BEFORE the command is produced (violations yield a 400 problem+json with code VALIDATION_FAILED and per-field params.fields entries); the orders consumer revalidates as defense in depth.
 type CreateOrderRequest struct {
-	// AmountCents The total order amount expressed in the smallest currency unit.
+	// AmountCents The total order amount expressed in the smallest currency unit. Must be positive.
 	AmountCents int64 `json:"amount_cents"`
 
-	// Currency The ISO 4217 currency code (e.g. "USD").
+	// Currency The ISO 4217 currency code (e.g. "USD"), uppercase. The gateway additionally checks the code against its supported-currency allowlist (see the service documentation); unsupported codes are rejected with rule "iso4217".
 	Currency string `json:"currency"`
 
 	// CustomerId The identifier of the customer placing the order.
