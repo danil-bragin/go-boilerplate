@@ -33,10 +33,12 @@ Practical reference for contributors. Read this before adding a new file, packag
 |---|---|
 | `service.go` | `Service` type, `New()` constructor (full wiring: logger, telemetry, pg, kafka, health, admin server) |
 | `config.go` | `Config` struct (embeddable base config for all consumer services) |
-| `consumers.go` | `EnsureTopics`, `AddConsumer` (Kafka consumer wiring with DLT) |
-| `relay.go` | `AddOutboxRelay`, `DefaultOutboxPublisher` (outbox relay + cleaner wiring) |
+| `consumers.go` | `EnsureTopics`, `AddConsumer`, `AddConsumerWithRetry` (Kafka consumer wiring with DLT / tiered retry) |
+| `relay.go` | `AddOutboxRelay`, `DefaultOutboxPublisher`, `RegisterSchema` (outbox relay + serde wiring) |
 | `cleanup.go` | `AddAuditCleanup`, `startInboxCleanup` (retention cleanup goroutines) |
-| `lifecycle.go` | `Start`, `Stop` (goroutine launch and ordered shutdown) |
+| `lifecycle.go` | `Start`, `Stop` (goroutine launch and readiness-first ordered shutdown) |
+| `options.go` | `WithoutKafka` / `WithoutPG` construction options |
+| `main.go` | `Main` shared process entry point (automaxprocs, signal handling, Closer teardown, exit codes) |
 
 **`examples/gateway`** — the REST edge service split by concern:
 
@@ -68,12 +70,12 @@ Split when a file mixes two or more responsibilities **or** exceeds ~200–250 l
 
 | Group | Packages |
 |---|---|
-| `platform/messaging/` | `kafka`, `retry`, `serde`, `outbox`, `inbox`, `outboxkafka` |
+| `platform/messaging/` | `kafka`, `retry`, `consume`, `msgctx`, `serde`, `outbox`, `inbox`, `outboxkafka` |
 | `platform/observability/` | `log`, `telemetry`, `health` |
 | `platform/web/` | `httpserver`, `httpx`, `ratelimit` |
 | `platform/security/` | `auth`, `authz`, `audit` |
 | `platform/storage/` | `pg`, `cache`, `blob` |
-| standalone | `config`, `run`, `cqrs`, `resilience`, `featureflags`, `testkit` |
+| standalone | `config`, `run`, `cqrs`, `resilience`, `featureflags`, `servicekit`, `testkit` |
 
 `platform/` packages never depend on each other circularly; the `messaging/outboxkafka` package exists specifically to bridge `messaging/outbox` and `messaging/kafka` without creating a cycle.
 
@@ -126,7 +128,7 @@ Deleting `examples/`, `proto/`, and `gen/` leaves a clean `platform/`-only start
 
 | Tool | Install | Required? |
 |---|---|---|
-| Go 1.25+ | https://go.dev/dl/ | Required |
+| Go 1.26+ | https://go.dev/dl/ | Required |
 | Docker | https://docs.docker.com/get-docker/ | Required (integration tests + local stack) |
 | `just` | `brew install just` or `cargo install just` | Required |
 | `lefthook` | `brew install lefthook` | Required (git hooks) |

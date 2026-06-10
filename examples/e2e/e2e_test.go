@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -110,13 +109,13 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	// all four would default to :9090, only the first would succeed, and
 	// gatewayApp.AdminAddr() would return the notifications port — causing the
 	// readyz poll to check the wrong service.
-	os.Setenv("PG_DSN", notificationsDSN)
-	os.Setenv("KAFKA_BROKERS", broker)
-	os.Setenv("KAFKA_CLIENT_ID", "e2e-notifications-"+uuid.New().String())
-	os.Setenv("PAYMENTS_EVENTS_TOPIC", "payments.events")
-	os.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
-	os.Setenv("OTEL_ENABLED", "false")
-	os.Setenv("LOG_LEVEL", "error")
+	t.Setenv("PG_DSN", notificationsDSN)
+	t.Setenv("KAFKA_BROKERS", broker)
+	t.Setenv("KAFKA_CLIENT_ID", "e2e-notifications-"+uuid.New().String())
+	t.Setenv("PAYMENTS_EVENTS_TOPIC", "payments.events")
+	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("OTEL_ENABLED", "false")
+	t.Setenv("LOG_LEVEL", "error")
 
 	notifApp, err := notifications.NewApp(
 		ctx,
@@ -131,13 +130,13 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	})
 
 	// --- Wire and start payments service ---
-	os.Setenv("PG_DSN", paymentsDSN)
-	os.Setenv("KAFKA_BROKERS", broker)
-	os.Setenv("KAFKA_CLIENT_ID", "e2e-payments-"+uuid.New().String())
-	os.Setenv("ORDERS_EVENTS_TOPIC", "orders.events")
-	os.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
-	os.Setenv("OTEL_ENABLED", "false")
-	os.Setenv("LOG_LEVEL", "error")
+	t.Setenv("PG_DSN", paymentsDSN)
+	t.Setenv("KAFKA_BROKERS", broker)
+	t.Setenv("KAFKA_CLIENT_ID", "e2e-payments-"+uuid.New().String())
+	t.Setenv("ORDERS_EVENTS_TOPIC", "orders.events")
+	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("OTEL_ENABLED", "false")
+	t.Setenv("LOG_LEVEL", "error")
 
 	paymentsApp, err := payments.NewApp(ctx)
 	require.NoError(t, err, "payments.NewApp failed")
@@ -149,13 +148,13 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	})
 
 	// --- Wire and start orders service ---
-	os.Setenv("PG_DSN", ordersDSN)
-	os.Setenv("KAFKA_BROKERS", broker)
-	os.Setenv("KAFKA_CLIENT_ID", "e2e-orders-"+uuid.New().String())
-	os.Setenv("ORDERS_COMMANDS_TOPIC", "orders.commands")
-	os.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
-	os.Setenv("OTEL_ENABLED", "false")
-	os.Setenv("LOG_LEVEL", "error")
+	t.Setenv("PG_DSN", ordersDSN)
+	t.Setenv("KAFKA_BROKERS", broker)
+	t.Setenv("KAFKA_CLIENT_ID", "e2e-orders-"+uuid.New().String())
+	t.Setenv("ORDERS_COMMANDS_TOPIC", "orders.commands")
+	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("OTEL_ENABLED", "false")
+	t.Setenv("LOG_LEVEL", "error")
 
 	ordersApp, err := orders.NewApp(ctx)
 	require.NoError(t, err, "orders.NewApp failed")
@@ -167,17 +166,17 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	})
 
 	// --- Wire and start gateway service ---
-	os.Setenv("PG_DSN", gatewayDSN)
-	os.Setenv("KAFKA_BROKERS", broker)
-	os.Setenv("KAFKA_CLIENT_ID", "e2e-gateway-"+uuid.New().String())
-	os.Setenv("HTTP_ADDR", "127.0.0.1:0") // random port
-	os.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
-	os.Setenv("GATEWAY_AUTH_DISABLED", "true")
-	os.Setenv("GATEWAY_COMMANDS_TOPIC", "orders.commands")
-	os.Setenv("GATEWAY_ORDERS_EVENTS_TOPIC", "orders.events")
-	os.Setenv("GATEWAY_PAYMENTS_EVENTS_TOPIC", "payments.events")
-	os.Setenv("OTEL_ENABLED", "false")
-	os.Setenv("LOG_LEVEL", "error")
+	t.Setenv("PG_DSN", gatewayDSN)
+	t.Setenv("KAFKA_BROKERS", broker)
+	t.Setenv("KAFKA_CLIENT_ID", "e2e-gateway-"+uuid.New().String())
+	t.Setenv("HTTP_ADDR", "127.0.0.1:0") // random port
+	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("GATEWAY_AUTH_DISABLED", "true")
+	t.Setenv("GATEWAY_COMMANDS_TOPIC", "orders.commands")
+	t.Setenv("GATEWAY_ORDERS_EVENTS_TOPIC", "orders.events")
+	t.Setenv("GATEWAY_PAYMENTS_EVENTS_TOPIC", "payments.events")
+	t.Setenv("OTEL_ENABLED", "false")
+	t.Setenv("LOG_LEVEL", "error")
 
 	gatewayApp, err := gateway.NewApp(ctx)
 	require.NoError(t, err, "gateway.NewApp failed")

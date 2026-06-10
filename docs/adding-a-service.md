@@ -1,6 +1,20 @@
 # Adding a New Service
 
-This guide walks through adding a new service (e.g. `inventory`) to the boilerplate. The `examples/orders` service is the canonical reference — read its source alongside this guide.
+This guide walks through adding a new service (the running example is `shipping`) on the `platform/servicekit` harness. The `examples/payments` service is the canonical reference — it is also the template the scaffolder copies. Read its source alongside this guide.
+
+> Every ` ```go ` code block in this document is extracted and **compiled** by `scripts/doc-test.sh` (`just doc-test`, blocking in CI), so the snippets cannot drift from the real platform API. Blocks marked ` ```go nocompile ` are parse-checked only (they reference files the guide has not created yet).
+
+---
+
+## 0. Fast path: `just new-service`
+
+```bash
+just new-service shipping
+```
+
+This copies `examples/payments` → `examples/shipping`, renames files, packages, topics, consumer groups, and tables (`payments`→`shipping`, `Payments`→`Shipping`), and marks every shared-proto reference with a `TODO(new-service)` comment. The generated service **builds as-is** (it still consumes the demo `orders.events` topic) so you iterate from green. The script prints a manual wiring checklist — the same one reproduced in §9.
+
+The rest of this guide explains what each generated piece is, in the order you would write them by hand.
 
 ---
 
@@ -10,315 +24,466 @@ Create your event and command types under `proto/<domain>/v1/`:
 
 ```
 proto/
-└── inventory/
+└── shipping/
     └── v1/
-        └── inventory.proto
+        └── shipping.proto
 ```
 
-Register the new path in `buf.yaml` if it is not already under the `proto` module path. Then generate:
+Then generate (buf + sqlc + oapi + mocks):
 
 ```bash
-task buf        # buf lint && buf generate
+just gen        # or just `buf generate` for protos alone
 ```
 
-Generated Go types appear in `gen/proto/inventory/v1/`.
+Generated Go types appear in `gen/proto/shipping/v1/` (committed). `buf breaking` runs blocking in CI — an intentional contract break means a new `v2` proto package, not a weakened gate.
+
+Until your own protos exist, the scaffold consumes the demo `orders/v1` events; this guide does the same so its code compiles.
 
 ---
 
-## 2. Create the service directory structure
+## 2. Service directory structure
 
 ```
-examples/inventory/
+examples/shipping/
 ├── cmd/
-│   └── inventory/
-│       └── main.go          # wire + signal handling
+│   └── shipping/
+│       └── main.go          # servicekit.Main one-liner
 ├── internal/
 │   ├── migrations/
-│   │   └── migrations.go    # embed SQL migrations (goose)
+│   │   ├── migrations.go    # go:embed sql
+│   │   └── sql/             # goose SQL files (00001_init.sql, …)
 │   ├── store/
 │   │   ├── sqlc.yaml
-│   │   ├── queries/         # .sql files
+│   │   ├── queries/         # .sql query files
 │   │   └── gen/             # sqlc output (committed)
 │   ├── app/
-│   │   └── reserve_item.go  # command handler + Decorate
+│   │   └── arrange_shipment.go  # cqrs command handler + Decorate
 │   └── transport/
-│       └── consumer.go      # Kafka HandlerFunc wrapping inbox.ProcessOnce
-├── inventory.go             # NewApp / Start / Stop / Closer
-└── inventory_test.go        # integration test (testcontainers)
+│       └── consumer.go      # consume.Typed event handlers
+├── migrations_export.go     # exposes Migrations fs.FS for cmd/migrate
+├── shipping.go              # Config + NewApp / Start / Stop / Closer
+└── shipping_test.go         # integration test (testcontainers)
 ```
 
 ---
 
 ## 3. Write migrations
 
-Create SQL migrations in `examples/inventory/internal/migrations/`. Use goose format:
+Goose SQL files live in `internal/migrations/sql/` — note the `sql/` subdirectory; it is the `migrationsDir` argument passed to `servicekit.New`. Every consumer service needs its domain tables plus the three platform tables (`outbox` **with the `topic` column**, `inbox`, `audit_log`):
 
 ```sql
 -- +goose Up
-CREATE TABLE inventory_items (
-    id          UUID PRIMARY KEY,
-    sku         TEXT NOT NULL,
-    quantity    INT  NOT NULL DEFAULT 0,
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+create table shipments (
+    id         uuid        primary key,
+    order_id   text        not null,
+    status     text        not null,
+    created_at timestamptz not null default now()
 );
 
-CREATE TABLE outbox_messages (
-    id             UUID PRIMARY KEY,
-    aggregate_type TEXT        NOT NULL,
-    aggregate_id   TEXT        NOT NULL,
-    event_type     TEXT        NOT NULL,
-    payload        BYTEA       NOT NULL,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    published_at   TIMESTAMPTZ
+create table outbox (
+    id             uuid primary key,
+    topic          text        not null,
+    aggregate_type text        not null,
+    aggregate_id   text        not null,
+    event_type     text        not null,
+    payload        bytea       not null,
+    headers        jsonb       not null default '{}'::jsonb,
+    created_at     timestamptz not null default now(),
+    published_at   timestamptz
 );
 
-CREATE TABLE inbox (
-    consumer   TEXT NOT NULL,
-    message_id TEXT NOT NULL,
-    PRIMARY KEY (consumer, message_id)
+create index outbox_unpublished_idx on outbox (created_at) where published_at is null;
+create index outbox_published_at_idx on outbox (published_at) where published_at is not null;
+
+create table inbox (
+    consumer     text        not null,
+    message_id   text        not null,
+    processed_at timestamptz not null default now(),
+    primary key (consumer, message_id)
+);
+
+create index inbox_processed_at_idx on inbox (processed_at);
+
+create table audit_log (
+    id         bigserial   primary key,
+    actor      text        not null,
+    action     text        not null,
+    subject    text        not null,
+    metadata   jsonb       not null default '{}'::jsonb,
+    created_at timestamptz not null default now(),
+    primary key (id)
 );
 
 -- +goose Down
-DROP TABLE inbox;
-DROP TABLE outbox_messages;
-DROP TABLE inventory_items;
+drop table audit_log;
+drop table inbox;
+drop table outbox;
+drop table shipments;
 ```
 
-Embed them in `migrations.go`:
+(Compare `examples/payments/internal/migrations/sql/` for the exact reference, including the cleanup indexes.) Embed the directory:
 
 ```go
+// Package migrations embeds the SQL migration files for the shipping service.
 package migrations
 
 import "embed"
 
-//go:embed *.sql
+// FS contains all goose migration files for the shipping service.
+//
+//go:embed sql
 var FS embed.FS
 ```
 
-Services call `goose.Up` at startup (see `orders.NewApp` for the pattern).
+`servicekit.New(ctx, cfg, migrations.FS, "sql")` applies them at startup (advisory-locked, idempotent) while `MIGRATE_ON_START=true` (the default). In production set `MIGRATE_ON_START=false` and run `cmd/migrate` as a pre-deploy job — see `docs/operations.md` § Database migrations.
+
+Migration SQL is linted by squawk (`just lint-sql`, blocking `sql-lint` CI job).
 
 ---
 
 ## 4. Write sqlc queries and generate
 
-Edit `examples/inventory/internal/store/sqlc.yaml` (copy from orders), write `.sql` queries in `store/queries/`, then:
+Copy `examples/payments/internal/store/sqlc.yaml` (it points `schema:` at `../migrations/sql`), write `.sql` queries in `store/queries/`, then:
 
 ```bash
-task sqlc    # runs sqlc generate for all services
+just gen     # runs sqlc for every sqlc.yaml in the repo
 ```
 
-Commit the generated `gen/` output.
+Commit the generated `store/gen/` output.
 
 ---
 
-## 5. Write command/query handlers with CQRS behaviors
+## 5. Config
 
-```go
-// examples/inventory/internal/app/reserve_item.go
+Embed `servicekit.Config` and add your service-specific fields with `caarlos0/env` tags. `config.Load[T]()` parses the environment; if your config implements `Validate() error`, it is called after parsing and a non-nil error fails startup (use it for cross-field invariants).
 
-type ReserveItem struct {
-    ItemID   string `validate:"required"`
-    Quantity int    `validate:"gt=0"`
-}
-type ReserveItemResult struct{ ItemID string }
-
-func ReserveItemHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.HandlerFunc[ReserveItem, ReserveItemResult] {
-    return func(ctx context.Context, cmd ReserveItem) (ReserveItemResult, error) {
-        // pg.FromContext pulls the ambient transaction from ctx (set by inbox.ProcessOnce)
-        q := gen.New(pg.FromContext(ctx, pool))
-        // ... update quantity, enqueue outbox event ...
-        return ReserveItemResult{ItemID: cmd.ItemID}, nil
-    }
-}
-
-func DecorateReserveItemHandler(h cqrs.HandlerFunc[ReserveItem, ReserveItemResult], auditStore audit.Store) cqrs.HandlerFunc[ReserveItem, ReserveItemResult] {
-    return cqrs.Decorate(h,
-        cqrs.Logging[ReserveItem, ReserveItemResult]("ReserveItem"),
-        cqrs.Tracing[ReserveItem, ReserveItemResult]("ReserveItem"),
-        cqrs.Metrics[ReserveItem, ReserveItemResult]("ReserveItem"),
-        cqrs.Validation[ReserveItem, ReserveItemResult](),
-        audit.Audit[ReserveItem, ReserveItemResult](auditStore, "inventory:reserve", func(cmd ReserveItem) string { return cmd.ItemID }),
-        // NOTE: Transaction behavior is omitted — inbox.ProcessOnce already opens a tx.
-    )
-}
-```
-
-For **query handlers** add `cqrs.Caching` instead of `audit.Audit`:
-
-```go
-cqrs.Caching[GetItem, GetItemResult](cache, ttl, keyFn),
-```
+The base config already carries everything the harness needs: `PG_DSN`/`PG_MIGRATE_URL`, `KAFKA_BROKERS`, `ADMIN_HTTP_ADDR`, `MIGRATE_ON_START`, `DRAIN_GRACE`, topic provisioning (`TOPIC_PARTITIONS`/`TOPIC_RF`/`TOPIC_RETENTION`/`ENSURE_TOPICS`), `SERDE_SR_URL`, inbox/audit retention, `PYROSCOPE_ADDR`. See `platform/servicekit/config.go` — every field is documented there.
 
 ---
 
-## 6. Write the Kafka transport consumer
+## 6. The service file: handler, transport, wiring
 
-Wrap the handler in `inbox.ProcessOnce` to get effectively-once semantics:
+The complete pattern in one compiling file. In the real layout the handler lives in `internal/app/`, the consumer in `internal/transport/`, and the embed in `internal/migrations/` (see §2) — they are inlined here so the example is self-contained.
 
 ```go
-// examples/inventory/internal/transport/consumer.go
+// Package shipping demonstrates the full servicekit wiring pattern:
+// consume an event with consume.Typed (inbox-deduped), write a row and
+// enqueue a follow-up event in the same transaction (outbox), publish via
+// the relay.
+package shipping
 
-func NewCommandHandler(pool *pg.Pool, handler func(context.Context, app.ReserveItem) (app.ReserveItemResult, error)) kafka.HandlerFunc {
-    return func(ctx context.Context, r kafka.Record) error {
-        var cmd inventoryv1.ReserveItemCommand
-        if err := proto.Unmarshal(r.Value, &cmd); err != nil {
-            return fmt.Errorf("inventory consumer: unmarshal: %w", err)
-        }
-        msgID := r.Headers["message-id"]
-        if msgID == "" {
-            msgID = cmd.GetItemId()
-        }
-        _, err := inbox.ProcessOnce(ctx, pool, "inventory", msgID, func(ctx context.Context) error {
-            _, err := handler(ctx, app.ReserveItem{
-                ItemID:   cmd.GetItemId(),
-                Quantity: int(cmd.GetQuantity()),
-            })
-            return err
-        })
-        return err
-    }
+import (
+	"context"
+	"embed"
+	"fmt"
+	"time"
+
+	"go-boilerplate/platform/config"
+	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/messaging/consume"
+	"go-boilerplate/platform/messaging/kafka"
+	"go-boilerplate/platform/messaging/outbox"
+	"go-boilerplate/platform/run"
+	"go-boilerplate/platform/security/audit"
+	"go-boilerplate/platform/servicekit"
+	"go-boilerplate/platform/storage/pg"
+
+	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
+
+	// TODO(new-service): replace the demo orders/v1 events with your own
+	// proto/shipping/v1 messages once `just gen` has produced them.
+	ordersv1 "go-boilerplate/gen/proto/orders/v1"
+)
+
+// In the real layout this embed lives in internal/migrations (see §3).
+//
+//go:embed sql
+var migrationsFS embed.FS
+
+// Versioned event types: "<domain>.<Message>.v1" — carried in the
+// "event-type" record header, dispatched on by consume.Typed.
+const (
+	orderCreatedEventType      = "orders.OrderCreated.v1"
+	shipmentArrangedEventType  = "shipping.ShipmentArranged.v1"
+)
+
+// Config aggregates all configuration for the shipping service.
+type Config struct {
+	servicekit.Config
+	EventsTopic string `env:"ORDERS_EVENTS_TOPIC" envDefault:"orders.events"`
 }
-```
 
----
+// ArrangeShipment is the command handled when an OrderCreated event arrives.
+type ArrangeShipment struct {
+	OrderID string `validate:"required"`
+}
 
-## 7. Wire manual DI in `NewApp` / `Start` / `Stop`
+// ArrangeShipmentResult is the command result.
+type ArrangeShipmentResult struct{ ShipmentID string }
 
-Model after `examples/orders/orders.go`:
+// ArrangeShipmentHandler writes the shipment row and enqueues the follow-up
+// event to the outbox. It runs inside the inbox transaction opened by
+// consume.Typed, so pg.FromContext returns the ambient transaction and the
+// row + outbox event + inbox dedup marker commit atomically.
+func ArrangeShipmentHandler(pool *pg.Pool, outboxRepo *outbox.Repository) cqrs.HandlerFunc[ArrangeShipment, ArrangeShipmentResult] {
+	return func(ctx context.Context, cmd ArrangeShipment) (ArrangeShipmentResult, error) {
+		shipmentID := uuid.New()
 
-```go
-// examples/inventory/inventory.go
+		// Real services use their sqlc-generated store here, e.g.
+		// gen.New(pg.FromContext(ctx, pool)).InsertShipment(ctx, …).
+		db := pg.FromContext(ctx, pool)
+		if _, err := db.Exec(ctx,
+			`insert into shipments (id, order_id, status) values ($1, $2, 'arranged')`,
+			shipmentID, cmd.OrderID,
+		); err != nil {
+			return ArrangeShipmentResult{}, fmt.Errorf("shipping: insert shipment: %w", err)
+		}
 
+		// TODO(new-service): marshal your own shipping/v1 event here.
+		payload, err := proto.Marshal(&ordersv1.OrderCreated{OrderId: cmd.OrderID})
+		if err != nil {
+			return ArrangeShipmentResult{}, fmt.Errorf("shipping: marshal event: %w", err)
+		}
+
+		// Topic is the explicit destination; correlation-id/causation-id
+		// headers are stamped automatically from ctx (consume.Typed put the
+		// chain lineage there).
+		if err := outboxRepo.Enqueue(ctx, outbox.Message{
+			ID:            uuid.New(),
+			Topic:         "shipping.events",
+			AggregateType: "shipment",
+			AggregateID:   cmd.OrderID,
+			EventType:     shipmentArrangedEventType,
+			Payload:       payload,
+		}); err != nil {
+			return ArrangeShipmentResult{}, fmt.Errorf("shipping: enqueue event: %w", err)
+		}
+
+		return ArrangeShipmentResult{ShipmentID: shipmentID.String()}, nil
+	}
+}
+
+// DecorateArrangeShipmentHandler applies the standard behavior pipeline.
+// Tracing is OUTERMOST so log records carry trace_id/span_id; Transaction is
+// OMITTED because inbox.ProcessOnce already opened the transaction.
+func DecorateArrangeShipmentHandler(
+	h cqrs.HandlerFunc[ArrangeShipment, ArrangeShipmentResult],
+	auditStore audit.Store,
+) cqrs.HandlerFunc[ArrangeShipment, ArrangeShipmentResult] {
+	return cqrs.Decorate(
+		h,
+		cqrs.Tracing[ArrangeShipment, ArrangeShipmentResult]("ArrangeShipment"),
+		cqrs.Logging[ArrangeShipment, ArrangeShipmentResult]("ArrangeShipment"),
+		cqrs.Metrics[ArrangeShipment, ArrangeShipmentResult]("ArrangeShipment"),
+		cqrs.Validation[ArrangeShipment, ArrangeShipmentResult](),
+		audit.Audit[ArrangeShipment, ArrangeShipmentResult](auditStore, "shipment:arrange",
+			func(cmd ArrangeShipment) string { return cmd.OrderID }),
+	)
+}
+
+// NewEventHandler is the Kafka transport: consume.Typed decodes the record
+// (Schema Registry wire format when a serde is injected, raw protobuf
+// otherwise), dispatches on the event-type header, deduplicates via the
+// inbox, installs principal + correlation/causation ids into ctx, and runs
+// the handler inside the inbox transaction. Unknown event types are skipped,
+// never errored (forward compatibility).
+func NewEventHandler(
+	pool *pg.Pool,
+	handler cqrs.HandlerFunc[ArrangeShipment, ArrangeShipmentResult],
+	opts ...consume.Option,
+) kafka.HandlerFunc {
+	return consume.New(pool, "shipping", opts...).Handler(
+		consume.Typed(orderCreatedEventType, func(ctx context.Context, evt *ordersv1.OrderCreated) error {
+			_, err := handler(ctx, ArrangeShipment{OrderID: evt.GetOrderId()})
+			return err
+		}),
+	)
+}
+
+// App holds all wired components for the shipping service.
 type App struct {
-    closer  *run.Closer
-    consumer *kafka.Consumer
-    relay   *outbox.Relay
-    // ...
+	svc *servicekit.Service
 }
 
+// NewApp wires the service: servicekit harness (logger, telemetry, pg pool +
+// migrations, kafka client/producer, health, admin server), topics, schema
+// registration, outbox relay, consumer, audit cleanup.
 func NewApp(ctx context.Context) (*App, error) {
-    cfg := config.Must[Config]()
-    pool := pg.NewPool(ctx, cfg.PG)
-    // run migrations
-    // build outbox repo, relay, audit store
-    // build handler, decorate it
-    // build kafka consumer
-    closer := run.NewCloser()
-    closer.Add(pool.Close)
-    closer.Add(consumer.Close)
-    // ...
-    return &App{closer: closer, consumer: consumer, relay: relay}, nil
+	cfg, err := config.Load[Config]()
+	if err != nil {
+		return nil, err
+	}
+
+	svc, err := servicekit.New(ctx, cfg.Config, migrationsFS, "sql")
+	if err != nil {
+		return nil, err
+	}
+
+	// Provision topics this service touches (no-op when ENSURE_TOPICS=false;
+	// AddConsumer ensures its own source + DLT topics too).
+	if err := svc.EnsureTopics(ctx, cfg.EventsTopic, "shipping.events"); err != nil {
+		return nil, err
+	}
+
+	// Schema Registry registration — no-op when SERDE_SR_URL is unset,
+	// fail-fast when it is set. Register every consumed AND produced type.
+	if err := svc.RegisterSchema(ctx, cfg.EventsTopic, orderCreatedEventType, &ordersv1.OrderCreated{}); err != nil {
+		return nil, err
+	}
+	// TODO(new-service): register your own produced event type for
+	// "shipping.events" here.
+
+	// Outbox relay + cleaner. Single-active (advisory-lock leader) by
+	// default: per-aggregate event order is preserved across replicas.
+	outboxRepo := outbox.NewRepository(svc.Pool())
+	if err := svc.AddOutboxRelay(svc.DefaultOutboxPublisher(), outbox.RelayConfig{
+		PollInterval: 200 * time.Millisecond,
+	}); err != nil {
+		return nil, err
+	}
+
+	// Domain handler + behavior pipeline.
+	auditStore := audit.NewPgStore(svc.Pool())
+	handler := DecorateArrangeShipmentHandler(ArrangeShipmentHandler(svc.Pool(), outboxRepo), auditStore)
+	var consumeOpts []consume.Option
+	if sd := svc.Serde(); sd != nil {
+		consumeOpts = append(consumeOpts, consume.WithSerde(sd))
+	}
+	evtHandler := NewEventHandler(svc.Pool(), handler, consumeOpts...)
+
+	// Consumer with in-process retry + poison-DLT (3 attempts → <topic>.DLT).
+	// For tiered retry topics instead, see AddConsumerWithRetry (§8).
+	if err := svc.AddConsumer(ctx, "shipping", []string{cfg.EventsTopic}, evtHandler); err != nil {
+		return nil, err
+	}
+
+	// audit_log retention cleanup (defaults: 90 days, every 6 h).
+	svc.AddAuditCleanup(auditStore, cfg.AuditCleanupInterval, cfg.AuditRetention)
+
+	return &App{svc: svc}, nil
 }
 
-func (a *App) Start() {
-    go a.consumer.Run(context.Background())
-    go a.relay.Run(context.Background())
-}
+// Start launches the registered goroutines (consumers, relay, cleaners).
+// Non-blocking. Admin-server bind failure is fatal by default.
+func (a *App) Start() error { return a.svc.Start() }
 
-func (a *App) Stop(ctx context.Context) error { return nil }
-func (a *App) Closer() *run.Closer            { return a.closer }
+// Stop tears down in readiness-first order (readyz→503, DRAIN_GRACE, then
+// consumers, then clients). servicekit.Main calls this via the Closer — do
+// NOT call Stop after run.Run has already closed the Closer.
+func (a *App) Stop(ctx context.Context) error { return a.svc.Stop(ctx) }
+
+// Closer exposes the teardown stack for run.Run / servicekit.Main.
+func (a *App) Closer() *run.Closer { return a.svc.Closer() }
 ```
 
-In `cmd/inventory/main.go`:
+Other `Add*` hooks available before `Start`:
 
-```go
+| Hook | Use |
+|---|---|
+| `AddConsumer(ctx, group, topics, handler)` | standard consumer: in-process retry ×3 → `<topic>.DLT` |
+| `AddConsumerWithRetry(ctx, group, topics, handler, policy)` | tiered retry topics (§7) |
+| `AddOutboxRelay(publisher, cfg)` | outbox relay + retention cleaner |
+| `AddWorker(name, fn)` | any background goroutine (e.g. the orders unpaid-watcher) |
+| `AddHTTPServer(name, srv)` | public HTTP server under the drain-gate lifecycle (the gateway uses this) |
+| `AddAuditCleanup(store, interval, retention)` | audit_log retention |
+
+HTTP-only services skip Kafka/Postgres entirely with `servicekit.New(ctx, cfg, nil, "", servicekit.WithoutKafka(), servicekit.WithoutPG())` — see `cmd/skeleton/main.go` for the minimal runnable example.
+
+---
+
+## 7. main.go
+
+`servicekit.Main` owns the process: automaxprocs, build, start, signal wait, Closer teardown, exit codes.
+
+```go nocompile
+// Command shipping is the shipping service entry point.
+package main
+
+import (
+	"context"
+
+	"go-boilerplate/examples/shipping"
+	"go-boilerplate/platform/servicekit"
+)
+
 func main() {
-    ctx, cancel := context.WithCancel(context.Background())
-    defer cancel()
-    a, err := inventory.NewApp(ctx)
-    if err != nil { log.Fatal(err) }
-    a.Start()
-    if err := run.Run(ctx, run.Options{ShutdownTimeout: 15 * time.Second}, a.Closer()); err != nil {
-        log.Fatal(err)
-    }
+	servicekit.Main(func(ctx context.Context) (servicekit.App, error) {
+		return shipping.NewApp(ctx)
+	})
 }
 ```
 
 ---
 
-## 8. Add to `docker-compose.yml`
+## 8. Retry opt-in (tiered retry topics)
 
-```yaml
-  inventory:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        SERVICE: inventory
-    restart: unless-stopped
-    environment:
-      PG_DSN: postgres://app:app@postgres:5432/inventory?sslmode=disable
-      KAFKA_BROKERS: redpanda:9092
-      KAFKA_CLIENT_ID: inventory
-      OTEL_SERVICE_NAME: inventory
-      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
-      OTEL_ENABLED: "true"
-      LOG_LEVEL: info
-      LOG_FORMAT: json
-      ORDERS_EVENTS_TOPIC: orders.events
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redpanda:
-        condition: service_healthy
+`AddConsumer` retries in-process and dead-letters poison records — failures block the partition for the duration of the attempts. Consumers with strict latency/throughput needs should use tiered retry topics instead:
+
+```go nocompile
+// import "go-boilerplate/platform/messaging/retry"
+policy := retry.DefaultPolicy() // FastAttempts: 1; tiers: 5s, 30s, 5m → DLT
+err := svc.AddConsumerWithRetry(ctx, "shipping", []string{cfg.EventsTopic}, evtHandler, policy)
 ```
 
-Add `inventory` to the Postgres init SQL (`deploy/postgres/init.sql`):
+Flow: `FastAttempts` in-process attempts → escalate to `<topic>.retry.0`, `.retry.1`, … (index-named; the delay travels in the `retry-due-at` header, so tiers can be retuned without renaming topics) → after the last tier, `<topic>.DLT`.
 
-```sql
-CREATE DATABASE inventory;
-GRANT ALL PRIVILEGES ON DATABASE inventory TO app;
-```
+**ORDERING WARNING:** tiered retry breaks per-key ordering — a failed record jumps the queue while later records for the same key flow on. Either make the handler reorder-safe or set `policy.KeyParkingWindow` (best-effort, in-memory key parking; see the `platform/messaging/retry` package documentation for the full trade-off).
 
 ---
 
-## 9. Add to CI matrix
+## 9. Topic provisioning and serde
 
-In `.github/workflows/ci.yml`, add `inventory` to the `build-images` strategy matrix:
+`EnsureTopics` (and every `AddConsumer*` call) creates missing topics from the service config:
 
-```yaml
-    strategy:
-      matrix:
-        service: [gateway, orders, payments, notifications, inventory]
-```
+| Env | Default | Meaning |
+|---|---|---|
+| `TOPIC_PARTITIONS` | `6` | partitions for created topics (bounds consumer-group parallelism) |
+| `TOPIC_RF` | `1` | replication factor — local single-broker only; production ≥ 3 |
+| `TOPIC_RETENTION` | `168h` | `retention.ms` on created topics; keep `INBOX_RETENTION ≥ TOPIC_RETENTION` (startup WARN otherwise) |
+| `ENSURE_TOPICS` | `true` | set `false` in production — manage topics as IaC |
+| `SERDE_SR_URL` | _(unset)_ | opt-in Confluent Schema Registry wire format; set on both producer and consumer sides of a topic, or neither |
 
 ---
 
-## 10. Write an integration test
+## 10. Integration checklist (shared files the scaffold does NOT touch)
 
-Use testcontainers-go to spin up real Postgres and Redpanda. Model after `examples/orders/orders_test.go`:
+- [ ] **Protos:** define `proto/shipping/v1`, run `just gen`, replace the demo `orders/v1` references (`grep 'TODO(new-service)' examples/shipping`).
+- [ ] **CI matrix:** add `shipping` to `jobs.build-images.strategy.matrix.service` in `.github/workflows/ci.yml`.
+- [ ] **Compose:** add a `shipping` block under the `apps` profile in `docker-compose.yml` (copy the payments block: new `PG_DSN` database, `KAFKA_BROKERS`, topic env vars, `GOMEMLIMIT`, resource limits).
+- [ ] **Database:** add `CREATE DATABASE shipping; GRANT ALL PRIVILEGES ON DATABASE shipping TO app;` to `deploy/postgres/init.sql`.
+- [ ] **Env:** document new variables in `.env.example`.
+- [ ] **justfile:** add `shipping` to the hardcoded `build-images` recipe.
+- [ ] **cmd/migrate:** add a `migrations_export.go` (copy from payments) and register `shipping.Migrations` in the `services` map in `cmd/migrate/main.go`.
 
-```go
-func TestReserveItem_Integration(t *testing.T) {
-    if testing.Short() {
-        t.Skip("skipping integration test")
-    }
-    ctx := context.Background()
+---
 
-    pgContainer, err := tcpostgres.Run(ctx, "postgres:16-alpine", ...)
-    // run migrations, seed data
-    // produce a ReserveItemCommand to Redpanda
-    // start the app
-    // assert the item quantity is updated in the DB
-}
-```
+## 11. Tests
 
-Run with:
+Write both lanes — see [`docs/testing.md`](testing.md) for the full guide:
+
+- **Fast lane (`-short`, no Docker):** unit-test the handler with `fakes.Publisher`/`fakes.Cache`, and drive the full decode→dispatch→handler transport pipeline with `fakes.Broker` + `consume.WithoutInbox()` (see `examples/payments/internal/transport/consumer_test.go`).
+- **Full lane:** integration test with `pgtest.NewDSN(t)` + `kafkatest.NewRedpanda(t)`, `t.Setenv` the config, `NewApp` → `Start` → produce → poll-assert (see `examples/payments/payments_test.go`).
 
 ```bash
-just test-integration   # go test ./...  (Docker required)
+just test-unit          # fast lane
+just test-integration   # full lane (Docker)
 ```
 
 ---
 
-## Reference: orders service
+## Reference: payments service
 
-The complete reference implementation lives in `examples/orders/`. Key files:
+The complete template lives in `examples/payments/`. Key files:
 
 | File | What it shows |
 |---|---|
-| `orders.go` | `NewApp` manual DI wiring |
-| `internal/app/create_order.go` | Command handler + `DecorateCreateOrderHandler` |
-| `internal/transport/consumer.go` | Kafka consumer wrapping `inbox.ProcessOnce` |
-| `internal/migrations/` | goose embed pattern |
-| `orders_test.go` | Full integration test with testcontainers |
+| `payments.go` | `Config` + `NewApp` servicekit wiring |
+| `cmd/payments/main.go` | `servicekit.Main` entry point |
+| `internal/app/process_payment.go` | command handler + outbox enqueue + `Decorate*` pipeline |
+| `internal/transport/consumer.go` | `consume.Typed` event handler |
+| `internal/migrations/` | goose `sql/` embed pattern |
+| `migrations_export.go` | migration export for `cmd/migrate` |
+| `payments_test.go` | integration test with testcontainers |
+
+The orders service (`examples/orders/`) additionally shows `AddConsumerWithRetry` (tiered retry), a second consumer, and `AddWorker` (unpaid-order deadline watcher). The gateway (`examples/gateway/`) shows `AddHTTPServer` and the read-model projection.
