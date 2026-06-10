@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"net/http"
 	"net/netip"
 
@@ -10,6 +11,7 @@ import (
 	"go-boilerplate/examples/gateway/internal/sse"
 	"go-boilerplate/platform/apperr"
 	"go-boilerplate/platform/featureflags"
+	"go-boilerplate/platform/i18n"
 	"go-boilerplate/platform/observability/log"
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/storage/blob"
@@ -62,6 +64,29 @@ func responseErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 		)
 	}
 	httpx.WriteError(w, r, err)
+}
+
+// newI18nBundle builds the gateway's localization bundle: the platform
+// defaults (en+ru for INTERNAL, VALIDATION_FAILED, AUTH_*, validation.<rule>)
+// merged with the gateway's own embedded catalogs for the GATEWAY_* codes.
+func newI18nBundle() (*i18n.Bundle, error) {
+	b, err := i18n.Default()
+	if err != nil {
+		return nil, fmt.Errorf("gateway: building platform i18n bundle: %w", err)
+	}
+	if err := b.Load(apperrs.Catalog, apperrs.CatalogPaths...); err != nil {
+		return nil, fmt.Errorf("gateway: loading gateway i18n catalogs: %w", err)
+	}
+	return b, nil
+}
+
+// mountI18n installs the locale-negotiation middleware on the mux. Must run
+// BEFORE any route is mounted (chi middleware rule) so that every problem
+// response — strict API handlers, SSE, attachments — gets localized
+// title/detail via the httpx.ProblemLocalizer seam. Code and params are
+// never localized: they are the machine-readable contract.
+func mountI18n(mux chi.Router, bundle *i18n.Bundle) {
+	mux.Use(i18n.Middleware(bundle))
 }
 
 // applyEdgeSecurity adds CORS and per-IP rate-limit middleware to the mux.

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -1361,4 +1362,71 @@ func TestGateway_ProjectionPaymentTimeout(t *testing.T) {
 	time.Sleep(3 * time.Second)
 	require.Equal(t, "payment_timeout", getStatus(t, baseURL, orderID),
 		"a terminal payment_timeout must not be overwritten by a later paid")
+}
+
+// TestGateway_I18nLocalizedProblemsOverHTTP proves the i18n middleware is
+// actually mounted in NewApp: Accept-Language: ru localizes the
+// human-readable title/detail of problem responses over real HTTP, the en
+// default applies otherwise, and the machine-readable code/params pair is
+// identical in both locales.
+func TestGateway_I18nLocalizedProblemsOverHTTP(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
+	baseURL := startApp(t, broker, dsn)
+
+	getProblem := func(method, url, lang string, body []byte) (int, map[string]any) {
+		t.Helper()
+		var rd io.Reader
+		if body != nil {
+			rd = bytes.NewReader(body)
+		}
+		req, err := http.NewRequest(method, url, rd)
+		require.NoError(t, err)
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if lang != "" {
+			req.Header.Set("Accept-Language", lang)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Contains(t, resp.Header.Get("Content-Type"), "application/problem+json")
+		var p map[string]any
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&p))
+		return resp.StatusCode, p
+	}
+
+	// 404 — ru vs en (default).
+	unknownID := uuid.New().String()
+	st, ru := getProblem(http.MethodGet, baseURL+"/v1/orders/"+unknownID, "ru", nil)
+	require.Equal(t, http.StatusNotFound, st)
+	assert.Equal(t, "Заказ "+unknownID+" не найден.", ru["detail"])
+	assert.Equal(t, "Заказ не найден", ru["title"])
+
+	st, en := getProblem(http.MethodGet, baseURL+"/v1/orders/"+unknownID, "", nil)
+	require.Equal(t, http.StatusNotFound, st)
+	assert.Equal(t, "Order "+unknownID+" was not found.", en["detail"])
+
+	for _, p := range []map[string]any{ru, en} {
+		assert.Equal(t, "GATEWAY_ORDER_NOT_FOUND", p["code"], "code is locale-independent")
+		params, ok := p["params"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, unknownID, params["order_id"], "params are locale-independent")
+	}
+
+	// Validation 400 — ru localizes the platform VALIDATION_FAILED message;
+	// the structured fields params survive untouched.
+	badBody := []byte(`{"customer_id":"c1","amount_cents":-5,"currency":"USD"}`)
+	st, vru := getProblem(http.MethodPost, baseURL+"/v1/orders", "ru, en;q=0.5", badBody)
+	require.Equal(t, http.StatusBadRequest, st)
+	assert.Equal(t, "VALIDATION_FAILED", vru["code"])
+	assert.Equal(t, "Одно или несколько полей заполнены неверно.", vru["detail"])
+	vparams, ok := vru["params"].(map[string]any)
+	require.True(t, ok)
+	assert.NotEmpty(t, vparams["fields"], "structured fields must survive localization")
 }

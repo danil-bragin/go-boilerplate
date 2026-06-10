@@ -6,9 +6,29 @@
 //
 // Cross-cutting codes (INTERNAL, VALIDATION_FAILED, AUTH_*) are owned and
 // registered by platform/apperr and flow through the same path.
+//
+// The package also embeds the gateway's i18n catalogs (en + ru) for these
+// codes — catalogs live WITH the service that owns the codes; the platform
+// i18n bundle ships defaults only for the platform codes.
 package apperrs
 
-import "go-boilerplate/platform/apperr"
+import (
+	"embed"
+
+	"go-boilerplate/platform/apperr"
+)
+
+// Catalog embeds the gateway's localization catalogs for the GATEWAY_* codes
+// (catalog/en.toml is the base; catalog/ru.toml the demo translation),
+// merged into the platform i18n bundle at startup (see gateway routes
+// wiring). Localization touches ONLY title/detail — code and params are the
+// locale-independent contract.
+//
+//go:embed catalog/*.toml
+var Catalog embed.FS
+
+// CatalogPaths are the embedded catalog files, base language (en) first.
+var CatalogPaths = []string{"catalog/en.toml", "catalog/ru.toml"}
 
 // Gateway error codes. All are permanent: they describe the client's request
 // (or a missing resource) — no retry with the same input can succeed.

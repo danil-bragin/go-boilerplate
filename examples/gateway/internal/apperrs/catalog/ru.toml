@@ -1,0 +1,31 @@
+# Russian gateway catalog. Untranslated messages fall back to en.
+
+[GATEWAY_ORDER_NOT_FOUND]
+other = "Заказ {{.order_id}} не найден."
+
+["GATEWAY_ORDER_NOT_FOUND.title"]
+other = "Заказ не найден"
+
+[GATEWAY_INVALID_CURSOR]
+other = "Курсор пагинации недействителен. Передайте значение next_cursor из предыдущей страницы без изменений."
+
+[GATEWAY_IDEMPOTENCY_BODY_MISMATCH]
+other = "Этот Idempotency-Key уже использовался с другим телом запроса. Повторите исходный запрос без изменений или используйте новый ключ."
+
+[GATEWAY_MALFORMED_REQUEST]
+other = "Не удалось разобрать запрос: {{.reason}}"
+
+[GATEWAY_ATTACHMENTS_DISABLED]
+other = "Вложения недоступны."
+
+[GATEWAY_ATTACHMENT_INVALID_ORDER_ID]
+other = "Идентификатор заказа не является корректным UUID."
+
+[GATEWAY_ATTACHMENT_INVALID_FILENAME]
+other = "Недопустимое имя файла вложения."
+
+[GATEWAY_ATTACHMENT_NOT_FOUND]
+other = "Вложение {{.filename}} для заказа {{.order_id}} не найдено."
+
+["VALIDATION_FAILED.title"]
+other = "Некорректный запрос"
