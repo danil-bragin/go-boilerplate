@@ -288,16 +288,22 @@ curl -N -H "Authorization: Bearer $(just token)" \
 | Variable | Default | Description |
 |---|---|---|
 | `GATEWAY_SSE_HEARTBEAT` | `15s` | Keep-alive comment interval (keep below any LB idle timeout) |
-| `GATEWAY_SSE_POLL_INTERVAL` | `2s` | Store-polling cadence when Redis is unavailable |
+| `GATEWAY_SSE_POLL_INTERVAL` | `2s` | Store-polling cadence with no Redis configured; ×30 = the Redis-mode safety-poll cadence |
 
-**Transport:** the projection publishes every committed status change to the
-Redis channel `orders:status:<id>` (it re-reads the row first, so the payload
-is always the authoritative current status); each connected client holds one
-Redis subscription. With `REDIS_ADDRS` unset or Redis down, the stream
-degrades to polling the projection store every `GATEWAY_SSE_POLL_INTERVAL` —
-same events, higher latency. The standalone projection deployment
-(`cmd/projection`) publishes to the same channels, so SSE works in both
-embedded and split topologies.
+**Transport:** the projection publishes every committed status change as
+`{"order_id":…,"status":…}` on the single Redis channel `orders:status` (it
+re-reads the row first, so the payload is always the authoritative current
+status). Each gateway replica holds exactly ONE Redis subscription to that
+channel and fans messages out to its open streams in-process — streams cost
+zero Redis connections, so the open-stream count is bounded by memory and
+file descriptors, not by Redis. If the subscriber connection drops, the
+replica resubscribes (bounded backoff) and every open stream re-reads its
+order from the store, with a slow safety poll (30×`GATEWAY_SSE_POLL_INTERVAL`)
+as the net while Redis stays down — streams never silently stall. With
+`REDIS_ADDRS` unset, streams degrade to polling the projection store every
+`GATEWAY_SSE_POLL_INTERVAL` — same events, higher latency. The standalone
+projection deployment (`cmd/projection`) publishes to the same channel, so
+SSE works in both embedded and split topologies.
 
 **Reconnects:** events carry a monotone id (status ordinal). `EventSource`
 re-sends it as `Last-Event-ID` on reconnect and the gateway replays the
@@ -733,6 +739,7 @@ last (runbook above) — it derives from the others' events.
 | Component | Scale how | Hard limits / caveats |
 |---|---|---|
 | Gateway (HTTP edge) | Horizontal replicas behind the LB; `deploy/k8s/gateway-deployment.yaml` includes an HPA sketch | Stateless. With `RATELIMIT_REDIS=true` the per-IP limit is shared across replicas; in-memory mode multiplies the effective limit by replica count. In embedded-projection mode every replica is also a consumer-group member — see next row |
+| SSE streams (`/v1/orders/{id}/events`) | Horizontal with the gateway — streams are replica-local; clients reconnect and resume via `Last-Event-ID` | One Redis subscriber connection per REPLICA (not per stream): open streams are bounded by memory + file descriptors, not Redis. Keep `GATEWAY_SSE_HEARTBEAT` below the LB idle timeout. At extreme broadcast volume, shard `orders:status` into hash-named channels (see `internal/sse` package doc — documented, not built) |
 | Gateway projection / any consumer group | More members in the consumer group — embedded: more gateway replicas; split: scale `cmd/projection` | **Members beyond the partition count idle** (`TOPIC_PARTITIONS`, default 6, is the parallelism ceiling). Repartitioning later is an ops event — size partitions for target parallelism up front. Split the projection (ADR-0008) before scaling the edge aggressively |
 | Orders / payments / notifications consumers | Replicas up to partition count per topic | Same partition ceiling. Per-key order is per-partition; tiered retry breaks per-key order unless key parking is enabled (`retry.Policy.KeyParkingWindow`) |
 | Outbox relay | Do NOT scale for throughput by default: `OUTBOX_SINGLE_ACTIVE=true` runs one active relay per service (advisory-lock leader); extra replicas are warm standbys (takeover ≤ ~2× poll interval) | The single relay drains the table until empty per tick and batch-publishes; if it still lags, raise `OUTBOX_BATCH_SIZE`, lower `OUTBOX_POLL_INTERVAL`, then consider the LISTEN/NOTIFY tier (ADR-0004 amendment). Setting `OUTBOX_SINGLE_ACTIVE=false` trades per-aggregate ordering for parallel publish — only with reorder-safe consumers |
