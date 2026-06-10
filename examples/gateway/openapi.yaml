@@ -159,6 +159,62 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /v1/orders/{id}/events:
+    get:
+      summary: Stream order status changes (Server-Sent Events)
+      description: >
+        Long-lived `text/event-stream` response pushing the order's status
+        lifecycle (pending → created → paid | payment_failed |
+        payment_timeout) as it changes. The current status is sent
+        immediately on connect; each subsequent event is emitted when the
+        read-model projection applies a change. Event `id` is the monotone
+        status ordinal (pending=0, created=1, terminal=2) and `data` is
+        `{"status":"<status>"}`. A comment line (`: hb`) is written every 15
+        seconds as a keep-alive. On reconnect, send the standard
+        `Last-Event-ID` header: the current status is replayed only when it
+        is NEWER than the id you already saw.
+
+        Ownership matches GET /v1/orders/{id}: non-admin callers may only
+        stream orders whose customer_id equals their token subject; foreign
+        and nonexistent orders return the same 404.
+
+        NOTE: this endpoint is implemented as a hand-mounted streaming
+        handler — it is excluded from code generation (see
+        x-oapi-codegen-exclude) because the generated strict-handler model
+        cannot represent an unbounded event stream.
+      operationId: streamOrderEvents
+      x-oapi-codegen-exclude: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The unique identifier of the order.
+          schema:
+            type: string
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: Status ordinal of the last event received (SSE reconnect).
+          schema:
+            type: string
+      responses:
+        "200":
+          description: >
+            Event stream. Each event's data payload carries the order status.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                example: |
+                  id: 1
+                  data: {"status":"created"}
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
   /healthz:
     get:
       summary: Health check

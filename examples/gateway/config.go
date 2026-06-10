@@ -44,6 +44,13 @@ type Config struct {
 	// RatelimitRedis enables a Redis-backed distributed limiter when true.
 	// Falls back to in-memory if Redis is unavailable (graceful degradation).
 	RatelimitRedis bool `env:"RATELIMIT_REDIS" envDefault:"false"`
+	// SSEHeartbeat is the keep-alive comment interval for SSE streams
+	// (GET /v1/orders/{id}/events). Keep it well below any intermediary's
+	// idle-connection timeout.
+	SSEHeartbeat time.Duration `env:"GATEWAY_SSE_HEARTBEAT" envDefault:"15s"`
+	// SSEPollInterval is the projection-store polling cadence SSE falls back
+	// to when REDIS_ADDRS is not configured (no pub/sub push available).
+	SSEPollInterval time.Duration `env:"GATEWAY_SSE_POLL_INTERVAL" envDefault:"2s"`
 	// EmbeddedProjection controls whether this gateway process runs the
 	// read-model projection consumer (default true — single-binary demo
 	// topology). Set false when the projection runs as its own deployment

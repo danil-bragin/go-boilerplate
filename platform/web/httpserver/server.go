@@ -171,6 +171,13 @@ func New(cfg Config, opts ...ServerOption) *Server {
 // Mux exposes the router for route registration.
 func (s *Server) Mux() *chi.Mux { return s.mux }
 
+// OnShutdown registers fn to run when Shutdown begins (stdlib
+// http.Server.RegisterOnShutdown). Use it to end long-lived connections that
+// graceful drain would otherwise wait on for the whole teardown budget —
+// SSE/streaming handlers should select on a channel that fn closes.
+// Must be called before Start.
+func (s *Server) OnShutdown(fn func()) { s.http.RegisterOnShutdown(fn) }
+
 // Start binds the listener and serves in a background goroutine.
 // It returns an error if called more than once.
 func (s *Server) Start() error {

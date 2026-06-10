@@ -274,6 +274,48 @@ The gateway applies a per-client-IP token-bucket rate limiter at the edge. Confi
 
 ---
 
+## Order-status streaming (SSE)
+
+`GET /v1/orders/{id}/events` streams the order lifecycle
+(`pending → created → paid | payment_failed | payment_timeout`) as
+Server-Sent Events. Browser clients use the native `EventSource`; curl:
+
+```bash
+curl -N -H "Authorization: Bearer $(just token)" \
+  http://localhost:8080/v1/orders/<id>/events
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `GATEWAY_SSE_HEARTBEAT` | `15s` | Keep-alive comment interval (keep below any LB idle timeout) |
+| `GATEWAY_SSE_POLL_INTERVAL` | `2s` | Store-polling cadence when Redis is unavailable |
+
+**Transport:** the projection publishes every committed status change to the
+Redis channel `orders:status:<id>` (it re-reads the row first, so the payload
+is always the authoritative current status); each connected client holds one
+Redis subscription. With `REDIS_ADDRS` unset or Redis down, the stream
+degrades to polling the projection store every `GATEWAY_SSE_POLL_INTERVAL` —
+same events, higher latency. The standalone projection deployment
+(`cmd/projection`) publishes to the same channels, so SSE works in both
+embedded and split topologies.
+
+**Reconnects:** events carry a monotone id (status ordinal). `EventSource`
+re-sends it as `Last-Event-ID` on reconnect and the gateway replays the
+current status only when newer — reconnect storms cost one row read each, no
+duplicate events.
+
+**Edge budgets:** the SSE route group is deliberately exempt from
+`http.TimeoutHandler` (it buffers and kills streaming responses) and the
+request body cap (GET, body never read). The gateway server is therefore
+built `WithoutTimeout`/`WithoutMaxBytes`, and the JSON API and attachments
+groups re-apply both with the same `HTTP_HANDLER_TIMEOUT` /
+`HTTP_MAX_BODY_BYTES` values — the `WithoutMaxBytes` startup WARN is the
+expected audit reminder for the SSE exemption. On graceful shutdown active
+streams are closed immediately (server `OnShutdown` hook); clients reconnect
+to another instance and resume.
+
+---
+
 ## Background workers (periodic & single-active)
 
 Services register ticker-driven background work via

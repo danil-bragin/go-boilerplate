@@ -50,6 +50,25 @@ func (cw *capturingWriter) Status() int {
 	return cw.status
 }
 
+// Flush implements http.Flusher by delegating to the wrapped writer when it
+// supports flushing (streaming responses — e.g. SSE — flush after every
+// event). Like the stdlib, a flush before any explicit WriteHeader commits an
+// implicit 200.
+func (cw *capturingWriter) Flush() {
+	if f, ok := cw.ResponseWriter.(http.Flusher); ok {
+		if !cw.wroteHeader {
+			cw.wroteHeader = true
+			cw.status = http.StatusOK
+		}
+		f.Flush()
+	}
+}
+
+// Unwrap exposes the wrapped writer to http.ResponseController, so handlers
+// can reach per-request controls the wrapper does not re-implement
+// (SetWriteDeadline for long-lived streams, etc.).
+func (cw *capturingWriter) Unwrap() http.ResponseWriter { return cw.ResponseWriter }
+
 // BytesWritten returns the total number of bytes written to the body.
 func (cw *capturingWriter) BytesWritten() int { return cw.bytes }
 
