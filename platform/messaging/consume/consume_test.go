@@ -215,6 +215,92 @@ func TestTyped_SerdeDecodePath(t *testing.T) {
 	assert.True(t, dec.used.Load(), "injected deserializer must be used")
 }
 
+// srFrame wraps a raw protobuf payload in the Confluent Schema Registry wire
+// format: 0x00 magic byte + 4-byte big-endian schema id (+ message index 0).
+func srFrame(payload []byte) []byte {
+	return append([]byte{0x00, 0x00, 0x00, 0x00, 0x01, 0x00}, payload...)
+}
+
+// failingDeserializer simulates an SR deserializer hitting a record it cannot
+// decode (e.g. missing magic byte) — it always errors.
+type failingDeserializer struct{}
+
+func (failingDeserializer) Decode([]byte, proto.Message) error {
+	return errors.New("missing magic byte")
+}
+
+// TestTyped_RawConsumerDetectsSRFramedValue pins the producer/consumer serde
+// mismatch diagnostic: an SR-framed record hitting a raw-protobuf consumer
+// must fail with an error pointing at SERDE_SR_URL, not a generic proto
+// unmarshal error (which would silently DLT-flood until an operator
+// correlates the two configs).
+func TestTyped_RawConsumerDetectsSRFramedValue(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	h := consume.New(nil, "grp", consume.WithoutInbox()).Handler(
+		consume.Typed("orders.OrderCreated.v1", func(context.Context, *ordersv1.OrderCreated) error {
+			t.Fatal("handler must not run on a framed value")
+			return nil
+		}),
+	)
+
+	payload, err := proto.Marshal(&ordersv1.OrderCreated{OrderId: "o1"})
+	require.NoError(t, err)
+	rec := kafka.Record{
+		Topic: "orders.events",
+		Value: srFrame(payload),
+		Headers: map[string]string{
+			"event-type": "orders.OrderCreated.v1",
+			"message-id": "m-framed",
+		},
+	}
+
+	err = h(ctx, rec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Confluent-SR framed",
+		"error must name the framing so the operator recognises the mismatch")
+	assert.Contains(t, err.Error(), "SERDE_SR_URL",
+		"error must point at the config knob that diverged")
+}
+
+// TestTyped_SRConsumerDetectsRawValue pins the inverse mismatch: a raw
+// protobuf record hitting an SR-configured consumer must wrap the decode
+// failure with a SERDE_SR_URL hint.
+func TestTyped_SRConsumerDetectsRawValue(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	h := consume.New(nil, "grp", consume.WithoutInbox(), consume.WithSerde(failingDeserializer{})).Handler(
+		consume.Typed("orders.OrderCreated.v1", func(context.Context, *ordersv1.OrderCreated) error {
+			return nil
+		}),
+	)
+
+	rec := orderCreatedRecord(t, map[string]string{
+		"event-type": "orders.OrderCreated.v1",
+		"message-id": "m-raw",
+	}, 0, 3)
+
+	err := h(ctx, rec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SERDE_SR_URL",
+		"decode failure on an unframed value must point at the config knob")
+
+	// A genuinely framed value that still fails decode keeps the plain decode
+	// error — no misleading mismatch hint.
+	framedRec := rec
+	framedRec.Value = srFrame(rec.Value)
+	framedRec.Headers = map[string]string{
+		"event-type": "orders.OrderCreated.v1",
+		"message-id": "m-framed-bad",
+	}
+	err = h(ctx, framedRec)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "SERDE_SR_URL",
+		"framed values that fail decode are not a framing mismatch")
+}
+
 func TestTyped_OnCommittedRunsAfterTx(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test requires Docker (postgres container)")

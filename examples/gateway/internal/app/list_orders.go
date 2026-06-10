@@ -33,6 +33,10 @@ type ListOrders struct {
 	Cursor string
 	// Limit is the page size; 0 means DefaultPageLimit, capped at MaxPageLimit.
 	Limit int
+	// CustomerID scopes the listing to one customer's rows ("" = all rows).
+	// The API layer sets it to the principal's subject for non-admin
+	// principals (read-path ownership); admins list unscoped.
+	CustomerID string
 }
 
 // OrderPage is one cursor-paginated page of order views, newest first.
@@ -71,6 +75,18 @@ func decodeCursor(cursor string) (time.Time, uuid.UUID, error) {
 	return createdAt, orderID, nil
 }
 
+// listRow is the common shape of ListOrdersRow and ListOrdersByCustomerRow
+// (identical columns, distinct sqlc-generated types).
+type listRow struct {
+	OrderID     uuid.UUID
+	CustomerID  string
+	AmountCents int64
+	Currency    string
+	Status      string
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
 // ListOrdersHandler returns a raw (undecorated) CQRS query handler that pages
 // through the read-model projection with keyset pagination over
 // (created_at, order_id) descending.
@@ -98,19 +114,41 @@ func ListOrdersHandler(pool *pg.Pool) cqrs.HandlerFunc[ListOrders, OrderPage] {
 		}
 
 		queries := storegen.New(pg.FromContextRead(ctx, pool))
-		rows, err := queries.ListOrders(ctx, storegen.ListOrdersParams{
-			CursorCreatedAt: cursorAt,
-			CursorOrderID:   cursorID,
-			PageLimit:       int32(limit), //nolint:gosec // bounded by MaxPageLimit
-		})
-		if err != nil {
-			return OrderPage{}, fmt.Errorf("app: list orders: %w", err)
+		var rows []listRow
+		if q.CustomerID != "" {
+			scoped, err := queries.ListOrdersByCustomer(ctx, storegen.ListOrdersByCustomerParams{
+				CustomerID:      q.CustomerID,
+				CursorCreatedAt: cursorAt,
+				CursorOrderID:   cursorID,
+				PageLimit:       int32(limit), //nolint:gosec // bounded by MaxPageLimit
+			})
+			if err != nil {
+				return OrderPage{}, fmt.Errorf("app: list orders by customer: %w", err)
+			}
+			rows = make([]listRow, len(scoped))
+			for i, r := range scoped {
+				rows[i] = listRow(r)
+			}
+		} else {
+			all, err := queries.ListOrders(ctx, storegen.ListOrdersParams{
+				CursorCreatedAt: cursorAt,
+				CursorOrderID:   cursorID,
+				PageLimit:       int32(limit), //nolint:gosec // bounded by MaxPageLimit
+			})
+			if err != nil {
+				return OrderPage{}, fmt.Errorf("app: list orders: %w", err)
+			}
+			rows = make([]listRow, len(all))
+			for i, r := range all {
+				rows[i] = listRow(r)
+			}
 		}
 
 		page := OrderPage{Items: make([]OrderView, len(rows))}
 		for i, row := range rows {
 			page.Items[i] = OrderView{
 				OrderID:     row.OrderID.String(),
+				CustomerID:  row.CustomerID,
 				Status:      row.Status,
 				AmountCents: row.AmountCents,
 				Currency:    row.Currency,

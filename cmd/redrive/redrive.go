@@ -58,6 +58,13 @@ type Config struct {
 type Stats struct {
 	Read        int // DLT records examined
 	Republished int // records produced to their original topic (and committed)
+
+	// MissingMessageID counts records republished WITHOUT a message-id
+	// header. Consumers will NOT dedup these on redrive: their fallback
+	// inbox identity is topic:partition:offset, which changes on republish,
+	// so the side effect runs again. Each one is also warned about in the
+	// run output.
+	MissingMessageID int
 }
 
 // strippedHeaders are removed from every record before republishing: the
@@ -137,7 +144,7 @@ func Run(ctx context.Context, cfg Config) (Stats, error) {
 				break
 			}
 			stats.Read++
-			if err := redriveRecord(ctx, cl, cfg, out, rec); err != nil {
+			if err := redriveRecord(ctx, cl, cfg, out, rec, &stats); err != nil {
 				return stats, err
 			}
 			if !cfg.DryRun {
@@ -148,12 +155,17 @@ func Run(ctx context.Context, cfg Config) (Stats, error) {
 
 	_, _ = fmt.Fprintf(out, "redrive: done — read %d, republished %d (dry-run=%v, fresh-ids=%v)\n",
 		stats.Read, stats.Republished, cfg.DryRun, cfg.FreshIDs)
+	if stats.MissingMessageID > 0 {
+		_, _ = fmt.Fprintf(out, "redrive: WARNING — %d record(s) without message-id were republished; consumers will NOT dedup these (fallback inbox identity topic:partition:offset changed), so their side effects run again\n",
+			stats.MissingMessageID)
+	}
 	return stats, nil
 }
 
 // redriveRecord republishes one DLT record to its original topic and commits
-// its offset; in dry-run mode it only prints what would happen.
-func redriveRecord(ctx context.Context, cl *kgo.Client, cfg Config, out io.Writer, rec *kgo.Record) error {
+// its offset; in dry-run mode it only prints what would happen. Records
+// lacking a message-id header are warned about and counted on stats.
+func redriveRecord(ctx context.Context, cl *kgo.Client, cfg Config, out io.Writer, rec *kgo.Record, stats *Stats) error {
 	headers := make(map[string]string, len(rec.Headers))
 	for _, h := range rec.Headers {
 		headers[h.Key] = string(h.Value)
@@ -167,6 +179,16 @@ func redriveRecord(ctx context.Context, cl *kgo.Client, cfg Config, out io.Write
 		return fmt.Errorf(
 			"redrive: record %s[%d]@%d has neither x-original-topic nor retry-orig-topic header — cannot determine destination (aborting; nothing committed past the previous record)",
 			rec.Topic, rec.Partition, rec.Offset)
+	}
+
+	// Dedup caveat: without a message-id header the consumer-side inbox falls
+	// back to topic:partition:offset as the identity — which CHANGES on
+	// republish, so "consumers dedup on redrive" does NOT hold for this
+	// record and its side effects will run again.
+	if !cfg.FreshIDs && headers["message-id"] == "" {
+		stats.MissingMessageID++
+		_, _ = fmt.Fprintf(out, "WARN %s[%d]@%d -> %s key=%q has no message-id header — inbox dedup will NOT collapse this replay (fallback identity topic:partition:offset changes on republish)\n",
+			rec.Topic, rec.Partition, rec.Offset, origTopic, string(rec.Key))
 	}
 
 	outHeaders := make([]kgo.RecordHeader, 0, len(rec.Headers))

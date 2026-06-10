@@ -8,6 +8,8 @@
 # Rewrites:
 #   - go.mod module directive
 #   - every Go import of "go-boilerplate/..." (anchored on the opening quote)
+#   - proto/**/*.proto option go_package = "go-boilerplate/..." (otherwise the
+#     next `buf generate` emits code with the old import path → broken build)
 #   - goimports -local prefix in lefthook.yml and justfile
 #   - .golangci.yml gofumpt module-path + goimports local-prefixes
 #   - justfile Docker image prefix (go-boilerplate/<svc> → <basename>/<svc>)
@@ -72,6 +74,18 @@ for f in "${go_files[@]:-}"; do
 done
 plan "${#go_files[@]} Go files" "$import_n" "\"$old/… → \"$new/…"
 
+# ── 2b. proto go_package options (\"go-boilerplate/…\") ────────────────────
+proto_files=()
+while IFS= read -r f; do proto_files+=("$f"); done \
+	< <(grep -rl "go_package = \"$old/" "$root" --include='*.proto' --exclude-dir=.git 2>/dev/null || true)
+proto_n=0
+for f in "${proto_files[@]:-}"; do
+	[[ -n "$f" ]] || continue
+	n="$(grep -c "go_package = \"$old/" "$f" || true)"
+	proto_n=$((proto_n + n))
+done
+plan "${#proto_files[@]} proto files" "$proto_n" "go_package \"$old/… → \"$new/…"
+
 # ── 3. lefthook.yml goimports -local ──────────────────────────────────────
 lefthook_n="$(grep -c -- "-local $old" "$root/lefthook.yml" || true)"
 plan "lefthook.yml" "$lefthook_n" "goimports -local $old → -local $new"
@@ -105,6 +119,10 @@ perl -pi -e "s{^module \Q$old\E\$}{module $new}" "$root/go.mod"
 for f in "${go_files[@]:-}"; do
 	[[ -n "$f" ]] || continue
 	perl -pi -e "s{\"\Q$old\E/}{\"$new/}g" "$f"
+done
+for f in "${proto_files[@]:-}"; do
+	[[ -n "$f" ]] || continue
+	perl -pi -e "s{go_package = \"\Q$old\E/}{go_package = \"$new/}g" "$f"
 done
 perl -pi -e "s{-local \Q$old\E(\s)}{-local $new\$1}g" "$root/lefthook.yml"
 perl -pi -e "s{module-path: \Q$old\E\$}{module-path: $new}" "$root/.golangci.yml"

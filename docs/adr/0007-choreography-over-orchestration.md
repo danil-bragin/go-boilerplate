@@ -15,6 +15,7 @@ Cross-service workflows (order → payment → notification) need a coordination
 
 - No engine to operate, no single point of coordination failure, services stay independently deployable.
 - Failure handling is explicit per-edge: `PaymentFailed` events, the unpaid-order deadline watcher, retry tiers + DLT + `cmd/redrive` — not generic engine compensation.
+- One compensation case is detected but not automated: a payment charged for an order that already timed out (`PaymentProcessed` after `OrderPaymentTimedOut`) keeps the order timed out and is surfaced as a warn log by the orders payments consumer — the refund is a manual/ops action, not an engine step.
 - The flow definition lives in no single file; the projection's status machine and the docs are the closest thing to a flow chart. This is the accepted cost at this scale.
 
 **Revisit triggers** — switch (or add) an orchestrator when any of these become true:

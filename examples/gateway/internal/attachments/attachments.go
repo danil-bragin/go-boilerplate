@@ -44,9 +44,13 @@ const (
 	defaultFlagKey    = "order-attachments-enabled"
 	defaultPresignTTL = 5 * time.Minute
 	defaultRole       = "user"
-	adminRole         = "admin"
 	maxFilenameLen    = 128
 )
+
+// AdminRole is the role that bypasses ownership checks across the gateway:
+// both the attachments handler and the orders read path (api.Server) use
+// this same constant, so "admin" means the same thing everywhere.
+const AdminRole = "admin"
 
 // ErrOwnerNotFound is returned by an OwnerLookup when the order does not
 // exist in the read model. The handler maps it to 404.
@@ -108,7 +112,7 @@ func New(store blob.ObjectStore, flagBool func(context.Context, string, bool) bo
 		flagKey:      defaultFlagKey,
 		presignTTL:   defaultPresignTTL,
 		requiredRole: defaultRole,
-		ownership:    ownerPolicy{bypassRole: adminRole},
+		ownership:    ownerPolicy{bypassRole: AdminRole},
 	}
 	for _, o := range opts {
 		o(h)
@@ -173,7 +177,7 @@ func (h *Handler) roleGate(w http.ResponseWriter, r *http.Request) (auth.Princip
 		httpx.Error(w, http.StatusUnauthorized, "authentication required")
 		return auth.Principal{}, false
 	}
-	if !hasRole(p, h.requiredRole) && !hasRole(p, adminRole) {
+	if !hasRole(p, h.requiredRole) && !hasRole(p, AdminRole) {
 		httpx.Error(w, http.StatusForbidden, "required role: "+h.requiredRole)
 		return auth.Principal{}, false
 	}

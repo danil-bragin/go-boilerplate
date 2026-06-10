@@ -188,11 +188,15 @@ func TestOrders_UnpaidWatcherEmitsTimeoutOnce(t *testing.T) {
 		return collector.count(unpaidID) >= 1
 	}, 30*time.Second, 200*time.Millisecond, "OrderPaymentTimedOut for the unpaid order was not emitted")
 
-	// The emitted flag must be set so re-polls never emit again.
+	// The emitted flag must be set so re-polls never emit again, and the
+	// order's own status must flip to 'payment_timeout' — otherwise the
+	// orders DB and the gateway projection diverge (see the late-payment
+	// assertion below).
 	var emitted bool
 	require.NoError(t, pool.Reader().QueryRow(ctx,
 		`select payment_timeout_emitted from orders where id = $1`, unpaidID).Scan(&emitted))
 	assert.True(t, emitted, "payment_timeout_emitted must be set after the event is enqueued")
+	pollOrderRowStatus(t, pool, unpaidID, "payment_timeout", 10*time.Second)
 
 	// Let several more watcher ticks pass: still exactly one event.
 	time.Sleep(2 * time.Second)
@@ -200,4 +204,19 @@ func TestOrders_UnpaidWatcherEmitsTimeoutOnce(t *testing.T) {
 		"timeout event must be emitted exactly once (idempotent re-poll)")
 	assert.Zero(t, collector.count(paidID),
 		"an order paid before the deadline must never time out")
+
+	// --- Late payment AFTER the timeout: must be a no-op. ---
+	// The gateway projection treats payment_timeout as terminal (first
+	// terminal event wins), so if the orders row flipped to 'paid' here the
+	// two stores would disagree forever. The status='created' guard on
+	// MarkOrderPaymentOutcome makes the late outcome a no-op.
+	producePaymentEvent(t, broker, "orders.PaymentProcessed.v1", &ordersv1.PaymentProcessed{
+		OrderId: unpaidID, PaymentId: uuid.New().String(), Status: "processed",
+	}, unpaidID)
+	time.Sleep(3 * time.Second)
+	var lateStatus string
+	require.NoError(t, pool.Reader().QueryRow(ctx,
+		`select status from orders where id = $1`, unpaidID).Scan(&lateStatus))
+	assert.Equal(t, "payment_timeout", lateStatus,
+		"a payment landing after the timeout must not flip the order to 'paid' (projection already shows payment_timeout)")
 }

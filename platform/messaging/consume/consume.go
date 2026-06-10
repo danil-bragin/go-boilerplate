@@ -40,6 +40,12 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// srMagicByte is the leading byte of the Confluent Schema Registry wire
+// format ([0x00][4-byte schema id][payload]). Used to detect producer/
+// consumer serde mismatches with a pointed error instead of a generic
+// decode failure.
+const srMagicByte = 0x00
+
 // Consumer builds kafka.HandlerFuncs that share a pool, inbox consumer-group
 // name, decoder, and logger.
 type Consumer struct {
@@ -133,10 +139,28 @@ func (h typedHandler[T]) handle(ctx context.Context, dec serde.Deserializer, val
 
 	if dec != nil {
 		if err := dec.Decode(value, msg); err != nil {
+			// Mismatch diagnostic: this consumer expects Confluent-SR framed
+			// values, but the record has no 0x00 magic byte — almost
+			// certainly a producer publishing raw protobuf. Without the hint
+			// every record decode-errors into the DLT until an operator
+			// correlates the two configs.
+			if len(value) == 0 || value[0] != srMagicByte {
+				return nil, fmt.Errorf("consume: decode %s: value is not Confluent-SR framed (no 0x00 magic byte) — producer publishing raw protobuf while this consumer has SERDE_SR_URL set? %w", h.event, err)
+			}
 			return nil, fmt.Errorf("consume: decode %s: %w", h.event, err)
 		}
-	} else if err := proto.Unmarshal(value, msg); err != nil {
-		return nil, fmt.Errorf("consume: unmarshal %s: %w", h.event, err)
+	} else {
+		// Inverse mismatch: a valid protobuf message never starts with 0x00
+		// (field number 0 is illegal), so a leading magic byte on a value
+		// long enough to hold the 5-byte SR header + payload means the
+		// producer frames with Schema Registry while this consumer decodes
+		// raw protobuf.
+		if len(value) >= 6 && value[0] == srMagicByte {
+			return nil, fmt.Errorf("consume: unmarshal %s: value appears Confluent-SR framed (0x00 magic byte) but this consumer decodes raw protobuf — SERDE_SR_URL mismatch between producer and consumer?", h.event)
+		}
+		if err := proto.Unmarshal(value, msg); err != nil {
+			return nil, fmt.Errorf("consume: unmarshal %s: %w", h.event, err)
+		}
 	}
 
 	if err := h.fn(ctx, msg); err != nil {

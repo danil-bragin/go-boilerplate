@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -217,4 +218,46 @@ func TestRedrive_MissingOrigTopicFails(t *testing.T) {
 		Out:     io.Discard,
 	})
 	require.Error(t, err, "record without an orig-topic header must abort the run")
+}
+
+// TestRedrive_WarnsOnMissingMessageID: records WITHOUT a message-id header
+// are NOT deduped by consumers after redrive — their fallback inbox identity
+// is topic:partition:offset, which changes on republish. The run must warn
+// per record and count them in the summary so the operator knows the side
+// effects will run again.
+func TestRedrive_WarnsOnMissingMessageID(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	const orig = "orders.events"
+	const dlt = "orders.events.DLT"
+	ensure(t, broker, orig, dlt)
+
+	// One record with a message-id (dedup-safe), one without (not dedup-safe).
+	seedDLT(t, broker, dlt, "k-with", "v1", map[string]string{
+		"x-original-topic": orig,
+		"message-id":       uuid.New().String(),
+	})
+	seedDLT(t, broker, dlt, "k-without", "v2", map[string]string{
+		"x-original-topic": orig,
+	})
+
+	var out strings.Builder
+	stats, err := Run(context.Background(), Config{
+		Brokers: []string{broker},
+		DLT:     dlt,
+		Group:   "redrive-noid-" + uuid.New().String(),
+		Out:     &out,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 2, stats.Republished)
+	assert.Equal(t, 1, stats.MissingMessageID,
+		"exactly one record lacked a message-id header")
+
+	assert.Contains(t, out.String(), "no message-id header",
+		"each record without a message-id must be flagged (inbox dedup will NOT collapse the replay)")
+	assert.Contains(t, out.String(), "1 record(s) without message-id",
+		"the summary must total the non-dedupable records")
 }

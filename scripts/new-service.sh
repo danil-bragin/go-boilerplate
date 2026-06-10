@@ -38,6 +38,19 @@ fi
 # Capitalised form for exported identifiers (payments → Payments style).
 cap_name="$(tr '[:lower:]' '[:upper:]' <<<"${name:0:1}")${name:1}"
 
+# Cleanup on failure: a mid-run error (interrupted copy, failed rewrite)
+# must not leave a half-scaffolded examples/<name> behind — it would both
+# break the build and make the next run refuse with "already exists".
+# Disarmed once the scaffold completes.
+scaffold_done=0
+cleanup() {
+	if [[ "$scaffold_done" -eq 0 && -e "$dst" ]]; then
+		echo "error: scaffold failed — removing partial $dst" >&2
+		rm -rf "$dst"
+	fi
+}
+trap cleanup EXIT
+
 cp -R "$src" "$dst"
 
 # Rename files and directories whose names contain the template name
@@ -60,6 +73,8 @@ find "$dst" -type f \( -name '*.go' -o -name '*.sql' -o -name '*.yaml' \) -print
 grep -rl 'go-boilerplate/gen/proto/' "$dst" --include='*.go' | while IFS= read -r f; do
 	perl -pi -e 's{^(\s*\w*\s*"go-boilerplate/gen/proto/.*)$}{$1 // TODO(new-service): replace demo orders/v1 events with proto/'"$name"'/v1 + `just gen`}' "$f"
 done
+
+scaffold_done=1
 
 echo "Scaffolded examples/$name from the payments template."
 echo

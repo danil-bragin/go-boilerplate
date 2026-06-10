@@ -236,6 +236,32 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	require.NotEmpty(t, orderID, "expected non-empty order_id in response")
 	t.Logf("Step 1 OK: order_id=%s", orderID)
 
+	// --- Step 1b: POST a declined order (failure leg) ---
+	// Amounts at or above the payments service's DeclineThresholdCents
+	// (1_000_000) are deterministically declined: the payments service emits
+	// PaymentFailed and the projection must surface status=payment_failed.
+	// Posted now so it flows through the choreography concurrently with the
+	// happy-path order (no extra wall-clock cost); asserted in step 3b.
+	t.Log("Step 1b: POST /v1/orders (amount above decline threshold)")
+	failBody, err := json.Marshal(map[string]interface{}{
+		"customer_id":  "c1",
+		"amount_cents": int64(1_000_000),
+		"currency":     "USD",
+	})
+	require.NoError(t, err)
+	failResp, err := http.Post(baseURL+"/v1/orders", "application/json", bytes.NewReader(failBody))
+	require.NoError(t, err)
+	defer failResp.Body.Close()
+	require.Equal(t, http.StatusAccepted, failResp.StatusCode, "expected 202 from POST /v1/orders (declined order)")
+
+	var failCreateResp struct {
+		OrderID string `json:"order_id"`
+	}
+	require.NoError(t, json.NewDecoder(failResp.Body).Decode(&failCreateResp))
+	failedOrderID := failCreateResp.OrderID
+	require.NotEmpty(t, failedOrderID, "expected non-empty order_id for the declined order")
+	t.Logf("Step 1b OK: declined order_id=%s", failedOrderID)
+
 	// --- Step 2: Poll GET /v1/orders/{id} until the projection row appears ---
 	// Proves: orders svc consumed the command, emitted OrderCreated,
 	//         gateway projection applied OrderCreated.
@@ -261,6 +287,16 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	})
 	require.True(t, ok, "order %s did not reach status 'paid' within timeout", orderID)
 	t.Logf("Step 3 OK: order %s is paid", orderID)
+
+	// --- Step 3b: failure leg — declined order reaches payment_failed ---
+	// Proves: payments svc consumed OrderCreated for the over-threshold order,
+	//         emitted PaymentFailed, gateway projection applied it.
+	t.Log("Step 3b: waiting for status=payment_failed (payments→PaymentFailed→gateway projection)")
+	ok = pollUntil(60*time.Second, func() bool {
+		return getOrderStatus(t, baseURL, failedOrderID) == "payment_failed"
+	})
+	require.True(t, ok, "order %s did not reach status 'payment_failed' within timeout", failedOrderID)
+	t.Logf("Step 3b OK: order %s is payment_failed", failedOrderID)
 
 	// --- Step 4: Assert notifications notifier was invoked for this order ---
 	// Proves: notifications svc consumed PaymentProcessed.

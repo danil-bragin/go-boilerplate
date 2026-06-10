@@ -285,8 +285,29 @@ func (stubVerifierNoRole) Verify(_ context.Context, rawToken string) (authpkg.Pr
 	return authpkg.Principal{}, authpkg.ErrInvalidToken
 }
 
+// multiUserVerifier resolves the literal tokens "alice" and "bob" to distinct
+// principals (both holding the "user" role). Used to prove per-principal
+// scoping of Idempotency-Key and read-path ownership.
+type multiUserVerifier struct{}
+
+func (multiUserVerifier) Verify(_ context.Context, rawToken string) (authpkg.Principal, error) {
+	switch rawToken {
+	case "alice", "bob":
+		return authpkg.Principal{Subject: rawToken, Roles: []string{"user"}}, nil
+	case "root":
+		return authpkg.Principal{Subject: "root", Roles: []string{"user", "admin"}}, nil
+	}
+	return authpkg.Principal{}, authpkg.ErrInvalidToken
+}
+
 // startAppAuthEnabled starts the gateway with AuthDisabled=false and a stub verifier.
 func startAppAuthEnabled(t *testing.T, broker, dsn string) string {
+	return startAppWithVerifier(t, broker, dsn, stubVerifier{})
+}
+
+// startAppWithVerifier starts the gateway with AuthDisabled=false and the
+// given verifier.
+func startAppWithVerifier(t *testing.T, broker, dsn string, v authpkg.Verifier) string {
 	t.Helper()
 
 	t.Setenv("PG_DSN", dsn)
@@ -298,7 +319,7 @@ func startAppAuthEnabled(t *testing.T, broker, dsn string) string {
 	t.Setenv("LOG_LEVEL", "error")
 
 	ctx := context.Background()
-	a, err := gateway.NewApp(ctx, gateway.WithVerifier(stubVerifier{}))
+	a, err := gateway.NewApp(ctx, gateway.WithVerifier(v))
 	require.NoError(t, err)
 
 	require.NoError(t, a.Start())
@@ -818,6 +839,104 @@ func TestGateway_IdempotencyKey(t *testing.T) {
 	assert.Equal(t, 2, seen[id1], "both retried POSTs must produce commands with the same message-id (order id)")
 }
 
+// postOrderRaw posts an order with optional Idempotency-Key and bearer token,
+// returning the response status and decoded order_id (empty unless 202).
+func postOrderRaw(t *testing.T, baseURL, key, token string, body []byte) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/orders", bytes.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		req.Header.Set("Idempotency-Key", key)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		return resp.StatusCode, ""
+	}
+	var out struct {
+		OrderID string `json:"order_id"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+	return resp.StatusCode, out.OrderID
+}
+
+// TestGateway_IdempotencyKeyScopedByPrincipal proves Idempotency-Key values
+// live in per-principal namespaces when auth is enabled: client B reusing
+// client A's key must get its OWN order, not A's order id (with A's order
+// silently absorbing B's request).
+func TestGateway_IdempotencyKeyScopedByPrincipal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+	baseURL := startAppWithVerifier(t, broker, dsn, multiUserVerifier{})
+
+	aliceBody := []byte(`{"customer_id":"alice","amount_cents":1500,"currency":"USD"}`)
+	bobBody := []byte(`{"customer_id":"bob","amount_cents":1500,"currency":"USD"}`)
+
+	// Same principal + same key → same order id (retry dedup).
+	st, aliceID := postOrderRaw(t, baseURL, "shared-key", "alice", aliceBody)
+	require.Equal(t, http.StatusAccepted, st)
+	st, aliceRetryID := postOrderRaw(t, baseURL, "shared-key", "alice", aliceBody)
+	require.Equal(t, http.StatusAccepted, st)
+	assert.Equal(t, aliceID, aliceRetryID, "same principal + same key must be a retry (same id)")
+
+	// Different principal + same key → DIFFERENT order.
+	st, bobID := postOrderRaw(t, baseURL, "shared-key", "bob", bobBody)
+	require.Equal(t, http.StatusAccepted, st, "bob's reuse of alice's key must create bob's own order")
+	assert.NotEqual(t, aliceID, bobID, "idempotency keys must be scoped per principal — B reusing A's key must not collide into A's order")
+}
+
+// TestGateway_IdempotencyKeyBodyMismatch409 proves that reusing an
+// Idempotency-Key with a DIFFERENT request body is rejected with 409
+// problem+json instead of silently returning the first request's order id
+// (which would make the second order never exist).
+func TestGateway_IdempotencyKeyBodyMismatch409(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+	baseURL := startApp(t, broker, dsn)
+
+	st, id := postOrderRaw(t, baseURL, "mismatch-key", "",
+		[]byte(`{"customer_id":"c1","amount_cents":1500,"currency":"USD"}`))
+	require.Equal(t, http.StatusAccepted, st)
+	require.NotEmpty(t, id)
+
+	// Same key, different amount → 409.
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/orders",
+		bytes.NewReader([]byte(`{"customer_id":"c1","amount_cents":9999,"currency":"USD"}`)))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "mismatch-key")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusConflict, resp.StatusCode,
+		"key reuse with a different body must be rejected, not absorbed into the first order")
+	assert.Contains(t, resp.Header.Get("Content-Type"), "application/problem+json")
+	var prob struct {
+		Detail string `json:"detail"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&prob))
+	assert.Contains(t, prob.Detail, "idempotency key", "problem detail must name the cause")
+
+	// Same key, identical body → still the original id (true retry).
+	st, retryID := postOrderRaw(t, baseURL, "mismatch-key", "",
+		[]byte(`{"customer_id":"c1","amount_cents":1500,"currency":"USD"}`))
+	require.Equal(t, http.StatusAccepted, st)
+	assert.Equal(t, id, retryID)
+}
+
 // TestGateway_PostReturnsLocationAndPendingRow verifies API honesty: POST
 // /v1/orders responds 202 with a Location header, and an IMMEDIATE GET on
 // that location returns 200 with status "pending" (not 404) because the
@@ -931,6 +1050,72 @@ func TestGateway_IdempotentRetrySinglePendingRow(t *testing.T) {
 	require.NoError(t, pool.Reader().QueryRow(ctx,
 		`select count(*) from orders_read where order_id = $1`, id1).Scan(&count))
 	assert.Equal(t, 1, count, "retried POST with the same Idempotency-Key must yield one read-model row")
+}
+
+// TestGateway_ReadOwnership proves the read path is scoped to the order's
+// owner when auth is enabled:
+//   - GET: owner → 200, another principal → 404 (not 403 — no existence
+//     oracle), admin → 200.
+//   - LIST: each non-admin principal sees only rows whose customer_id equals
+//     its subject; admin sees all.
+func TestGateway_ReadOwnership(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	dsn := pgtest.NewDSN(t)
+	baseURL := startAppWithVerifier(t, broker, dsn, multiUserVerifier{})
+
+	get := func(token, orderID string) int {
+		req, err := http.NewRequest(http.MethodGet, baseURL+"/v1/orders/"+orderID, http.NoBody)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	list := func(token string) []string {
+		req, err := http.NewRequest(http.MethodGet, baseURL+"/v1/orders", http.NoBody)
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		var out struct {
+			Items []struct {
+				OrderID string `json:"order_id"`
+			} `json:"items"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+		ids := make([]string, len(out.Items))
+		for i, it := range out.Items {
+			ids[i] = it.OrderID
+		}
+		return ids
+	}
+
+	st, aliceOrder := postOrderRaw(t, baseURL, "", "alice",
+		[]byte(`{"customer_id":"alice","amount_cents":100,"currency":"USD"}`))
+	require.Equal(t, http.StatusAccepted, st)
+	st, bobOrder := postOrderRaw(t, baseURL, "", "bob",
+		[]byte(`{"customer_id":"bob","amount_cents":200,"currency":"USD"}`))
+	require.Equal(t, http.StatusAccepted, st)
+
+	// GET: owner 200, non-owner 404 (no existence oracle), admin 200.
+	require.Equal(t, http.StatusOK, get("alice", aliceOrder), "owner must read own order")
+	require.Equal(t, http.StatusNotFound, get("bob", aliceOrder),
+		"another principal must get 404 — same response as a nonexistent order")
+	require.Equal(t, http.StatusOK, get("root", aliceOrder), "admin must read any order")
+
+	// LIST: non-admins see only their own rows; admin sees all.
+	assert.ElementsMatch(t, []string{aliceOrder}, list("alice"), "alice must list only her orders")
+	assert.ElementsMatch(t, []string{bobOrder}, list("bob"), "bob must list only his orders")
+	adminSeen := list("root")
+	assert.Contains(t, adminSeen, aliceOrder, "admin list must include alice's order")
+	assert.Contains(t, adminSeen, bobOrder, "admin list must include bob's order")
 }
 
 // TestGateway_ListOrdersKeysetPagination verifies GET /v1/orders cursor
@@ -1139,4 +1324,15 @@ func TestGateway_ProjectionPaymentTimeout(t *testing.T) {
 	time.Sleep(3 * time.Second)
 	require.Equal(t, "paid", getStatus(t, baseURL, paidID),
 		"a terminal paid must not be overwritten by a later payment_timeout")
+
+	// Inverse race: a PaymentProcessed landing AFTER the timeout must not
+	// flip the projection back to paid — first terminal event wins, matching
+	// the orders service (whose status='created' guard ignores the late
+	// outcome too).
+	produceEvent(t, broker, "payments.events", "orders.PaymentProcessed.v1", orderID, func() proto.Message {
+		return &ordersv1.PaymentProcessed{OrderId: orderID, PaymentId: uuid.New().String(), Status: "success"}
+	})
+	time.Sleep(3 * time.Second)
+	require.Equal(t, "payment_timeout", getStatus(t, baseURL, orderID),
+		"a terminal payment_timeout must not be overwritten by a later paid")
 }

@@ -133,13 +133,21 @@ func (q *Queries) MarkOrderPaymentOutcome(ctx context.Context, arg MarkOrderPaym
 
 const markPaymentTimeoutEmitted = `-- name: MarkPaymentTimeoutEmitted :execrows
 update orders
-set payment_timeout_emitted = true
+set payment_timeout_emitted = true,
+    status = 'payment_timeout'
 where id = $1 and payment_timeout_emitted = false and status = 'created'
 `
 
 // Compare-and-set guard for the watcher: 0 rows means another poll (or
 // instance) already claimed this order, or a payment landed meanwhile —
 // the caller must then NOT enqueue the timeout event.
+//
+// The status flips to 'payment_timeout' in the same statement: leaving it
+// 'created' would let a late PaymentProcessed still transition the order to
+// 'paid' (via MarkOrderPaymentOutcome's status='created' guard) while the
+// gateway projection — where payment_timeout is terminal — keeps showing
+// payment_timeout forever. With the flip, the late outcome is a no-op and
+// both stores agree.
 func (q *Queries) MarkPaymentTimeoutEmitted(ctx context.Context, id uuid.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, markPaymentTimeoutEmitted, id)
 	if err != nil {

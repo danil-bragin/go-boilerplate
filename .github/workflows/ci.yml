@@ -48,12 +48,21 @@ jobs:
       - name: buf lint
         run: buf lint
 
-      # Breaking-change detection against the previous commit on the branch.
-      # BLOCKING: a contract break fails CI. If a break is intentional,
-      # coordinate the version bump (new vN proto package) instead of
-      # weakening this gate.
+      # Breaking-change detection. BLOCKING: a contract break fails CI. If a
+      # break is intentional, coordinate the version bump (new vN proto
+      # package) instead of weakening this gate.
+      #
+      # Baseline: PRs compare against origin/main — comparing against HEAD~1
+      # on a multi-commit PR would only catch breaks introduced by the last
+      # commit and miss the rest. Pushes to main keep the HEAD~1 baseline
+      # (each push is validated against the previous main state).
       - name: buf breaking
-        run: buf breaking --against '.git#branch=HEAD~1'
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            buf breaking --against '.git#branch=origin/main'
+          else
+            buf breaking --against '.git#branch=HEAD~1'
+          fi
 
 
   # ── SQL migration lint (squawk) ───────────────────────────────────────────
@@ -65,10 +74,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The pinned sha256 was computed from the v2.57.0 release asset (the
+      # release publishes no checksum file); bump it together with the URL.
       - name: Download squawk
         run: |
           curl -sSfL -o /usr/local/bin/squawk \
             https://github.com/sbdchd/squawk/releases/download/v2.57.0/squawk-linux-x64
+          echo "408d013a1561133ddf30240b4d53be2d29704b50530970ab7fffa5d73e14b040  /usr/local/bin/squawk" | sha256sum -c -
           chmod +x /usr/local/bin/squawk
           squawk --version
 

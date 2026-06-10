@@ -46,7 +46,13 @@ func NewPaymentsEventHandler(pool *pg.Pool, logger *slog.Logger, opts ...consume
 		if rows == 0 {
 			// Row missing (event for an unknown order) or already in a
 			// terminal status — first outcome wins; log and move on.
-			logger.Warn("orders: payment outcome ignored (order not in 'created')",
+			//
+			// Sharpest variant: status='paid' arriving for an order already
+			// in 'payment_timeout' means the customer WAS charged but the
+			// order timed out. The order stays timed out in both stores by
+			// design; the charge needs compensation (refund / manual review,
+			// ADR-0007) — this warn line is the operational signal.
+			logger.Warn("orders: payment outcome ignored (order not in 'created'; a 'paid' outcome on a timed-out order means the charge needs compensation)",
 				"order_id", orderID, "status", status)
 		}
 		return nil
