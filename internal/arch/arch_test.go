@@ -9,10 +9,20 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 )
 
-const module = "go-boilerplate"
+// module is the Go module path, derived from `go list -m` so the guards keep
+// guarding after scripts/rename-module.sh — a hardcoded constant would make
+// every Contains/HasPrefix check below pass vacuously post-rename.
+var module = sync.OnceValue(func() string {
+	out, err := exec.Command("go", "list", "-m").Output()
+	if err != nil {
+		panic("arch: go list -m: " + err.Error())
+	}
+	return strings.TrimSpace(string(out))
+})
 
 // moduleRoot returns the module root directory. go list resolves ./... and
 // ./platform/... relative to the module root, not the test binary's working
@@ -72,7 +82,7 @@ func exampleServices(t *testing.T) []string {
 // examples/ must leave platform/ fully functional.
 func TestPlatformDoesNotImportExamples(t *testing.T) {
 	for _, line := range goList(t, "-deps", "./platform/...") {
-		if strings.Contains(line, module+"/examples/") {
+		if strings.Contains(line, module()+"/examples/") {
 			t.Errorf("platform package imports examples: %s", line)
 		}
 	}
@@ -85,9 +95,9 @@ func TestPlatformDoesNotImportExamples(t *testing.T) {
 // examples/).
 func TestExampleServicesDoNotImportEachOther(t *testing.T) {
 	for _, svc := range exampleServices(t) {
-		ownPrefix := module + "/examples/" + svc
+		ownPrefix := module() + "/examples/" + svc
 		for _, dep := range goList(t, "-deps", "./examples/"+svc+"/...") {
-			if !strings.HasPrefix(dep, module+"/examples/") {
+			if !strings.HasPrefix(dep, module()+"/examples/") {
 				continue
 			}
 			if dep == ownPrefix || strings.HasPrefix(dep, ownPrefix+"/") {
@@ -108,7 +118,7 @@ func TestExampleServicesDoNotImportEachOther(t *testing.T) {
 // a refactor ever moves code out of internal/ (the compiler stops caring;
 // this test does not).
 func TestNoCrossServiceInternalImports(t *testing.T) {
-	internalRe := regexp.MustCompile(`^` + regexp.QuoteMeta(module) + `/examples/([^/]+)/internal(/|$)`)
+	internalRe := regexp.MustCompile(`^` + regexp.QuoteMeta(module()) + `/examples/([^/]+)/internal(/|$)`)
 	for _, line := range goList(t, "-f", `{{.ImportPath}}|{{join .Imports " "}}`, "./...") {
 		importer, deps, ok := strings.Cut(line, "|")
 		if !ok {
@@ -119,7 +129,7 @@ func TestNoCrossServiceInternalImports(t *testing.T) {
 			if m == nil {
 				continue
 			}
-			owner := module + "/examples/" + m[1]
+			owner := module() + "/examples/" + m[1]
 			if importer == owner || strings.HasPrefix(importer, owner+"/") {
 				continue
 			}
@@ -134,7 +144,7 @@ func TestNoCrossServiceInternalImports(t *testing.T) {
 // so any testkit dependency surfacing here would ship test code in a real
 // binary.
 func TestTestkitOnlyImportedFromTests(t *testing.T) {
-	const testkit = module + "/platform/testkit"
+	testkit := module() + "/platform/testkit"
 	for _, line := range goList(t, "-f", `{{.ImportPath}}|{{join .Deps " "}}`, "./...") {
 		importer, deps, ok := strings.Cut(line, "|")
 		if !ok {

@@ -44,6 +44,10 @@ if ! grep -q "go.mod" <<<"$plan"; then
 	echo "FAIL: rename-module --check plan does not cover go.mod" >&2
 	exit 1
 fi
+if ! grep -q "proto files" <<<"$plan"; then
+	echo "FAIL: rename-module --check plan does not cover proto go_package options (next 'buf generate' would emit the old import path)" >&2
+	exit 1
+fi
 if [[ "$before" != "$after" ]]; then
 	echo "FAIL: rename-module --check modified go.mod (dry run must not write)" >&2
 	exit 1
