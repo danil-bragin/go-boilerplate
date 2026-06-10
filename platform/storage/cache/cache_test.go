@@ -225,6 +225,42 @@ func TestCache_GetOrLoad_LoaderSurvivesCallerCancellation(t *testing.T) {
 	assert.Nil(t, loaderCtxErr.Load(), "loader ctx must not be cancelled by the leader's cancellation")
 }
 
+// TestCache_GetOrLoad_CallerDeadlineRespected verifies that a caller whose
+// context deadline expires while the singleflight load is in flight gets
+// DeadlineExceeded promptly (its Deadline budget is honored) while the load
+// itself continues in the background for other waiters.
+func TestCache_GetOrLoad_CallerDeadlineRespected(t *testing.T) {
+	c := newCache(t)
+
+	var calls atomic.Int64
+	loader := func(_ context.Context) ([]byte, error) {
+		calls.Add(1)
+		time.Sleep(1 * time.Second)
+		return []byte("X"), nil
+	}
+
+	// Caller with a 50ms deadline against a 1s loader.
+	shortCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := c.GetOrLoad(shortCtx, "slow", time.Minute, loader)
+	elapsed := time.Since(start)
+
+	require.ErrorIs(t, err, context.DeadlineExceeded,
+		"caller must get its own deadline error, not block for the full load")
+	assert.Less(t, elapsed, 500*time.Millisecond,
+		"caller must return around its 50ms deadline, not after the 1s load (took %v)", elapsed)
+
+	// A second caller without a deadline still gets the value from the SAME
+	// background load (no second loader invocation).
+	v, err := c.GetOrLoad(context.Background(), "slow", time.Minute, loader)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("X"), v)
+	assert.Equal(t, int64(1), calls.Load(),
+		"the load must have continued in the background; no second loader call")
+}
+
 // TestCache_TTLJitterWithinBounds verifies that JitteredTTL always falls
 // within the expected ±jitter% band.
 func TestCache_TTLJitterWithinBounds(t *testing.T) {

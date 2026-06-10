@@ -96,10 +96,20 @@ type RelayOption func(*Relay)
 //     pg_try_advisory_lock(hashtext('outbox_relay:'||current_schema())).
 //   - The instance that wins the lock is the leader and processes batches;
 //     all others stay hot-standby and re-try the lock every PollInterval.
-//   - The leader health-checks its lock connection every tick. If the
+//   - The leader health-checks its lock connection every tick AND between
+//     every two batches of a drain (one SELECT 1 per batch). If the
 //     connection (and therefore the lock session) is lost, leadership is
 //     dropped and every instance — including the former leader — competes
 //     for the lock again. Failover takes a few PollIntervals.
+//
+// FENCING CAVEAT: an advisory lock is leader ELECTION, not fencing. A leader
+// that loses its lock session only notices at the next health-check, so there
+// is an inherent window of up to one health-check interval (one batch during
+// a drain, one PollInterval otherwise) in which the old leader and a freshly
+// elected one may both publish. That window produces duplicates (deduplicated
+// downstream by the inbox) and, in the worst case, a one-batch per-aggregate
+// ordering inversion. True fencing would require a token checked by the
+// downstream system.
 //
 // The lock key is schema-scoped, so multiple services sharing a database
 // (different schemas) elect independent leaders.
@@ -285,6 +295,24 @@ func (r *Relay) dropLeadership(ctx context.Context, unlock bool) {
 	_ = conn.Hijack().Close(ctx)
 }
 
+// drain repeatedly processes batches while full batches come back — there may
+// be more backlog waiting. It stops on a partial batch (backlog empty), an
+// error, context cancellation, or — in single-active mode — as soon as
+// leadership is lost: re-verifying the advisory lock between batches (one
+// cheap SELECT 1 per batch) bounds the dual-publish window after a lost lock
+// to a single batch instead of an unbounded backlog drain.
+func (r *Relay) drain(ctx context.Context) error {
+	for {
+		n, err := r.ProcessBatch(ctx)
+		if err != nil || n < int(r.cfg.BatchSize) || ctx.Err() != nil {
+			return err
+		}
+		if r.leaderPool != nil && !r.ensureLeader(ctx) {
+			return nil
+		}
+	}
+}
+
 // Run polls until ctx is canceled. On every tick it DRAINS the backlog:
 // ProcessBatch is repeated as long as it returns a full batch, so a burst of
 // N rows is published in ceil(N/BatchSize) consecutive batches within one
@@ -342,17 +370,7 @@ func (r *Relay) Run(ctx context.Context) error {
 			if r.leaderPool != nil && !r.ensureLeader(ctx) {
 				continue
 			}
-			// Drain: keep processing while full batches come back — there may
-			// be more backlog waiting. Stop on a partial batch, error, or
-			// context cancellation.
-			var err error
-			for {
-				var n int
-				n, err = r.ProcessBatch(ctx)
-				if err != nil || n < int(r.cfg.BatchSize) || ctx.Err() != nil {
-					break
-				}
-			}
+			err := r.drain(ctx)
 			if err != nil {
 				if r.onError != nil {
 					r.onError(err)

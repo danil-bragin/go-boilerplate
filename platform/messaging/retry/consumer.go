@@ -183,13 +183,17 @@ func NewConsumer(
 
 // onRevoked is called by kgo when partitions are revoked or lost. It removes
 // held batches and stops timers for the affected partitions so stale wakes
-// cannot resume a partition we no longer own after re-assignment.
+// cannot resume a partition we no longer own after re-assignment, and it
+// REMOVES the partitions from the client's paused set: kgo's paused set
+// survives revoke/reassign, so a partition revoked while held (paused) and
+// later reassigned to this same instance would otherwise never be fetched
+// again — the tier would stall silently forever. Resuming a partition we do
+// not own is harmless local bookkeeping.
 //
 // Concurrency: kgo calls this from inside PollFetches (BlockRebalanceOnPoll).
 // The Run loop does NOT hold mu while polling, so there is no deadlock.
-func (c *Consumer) onRevoked(_ context.Context, _ *kgo.Client, m map[string][]int32) {
+func (c *Consumer) onRevoked(_ context.Context, cl *kgo.Client, m map[string][]int32) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	for topic, partitions := range m {
 		for _, p := range partitions {
 			tp := topicPartition{topic: topic, partition: p}
@@ -199,6 +203,11 @@ func (c *Consumer) onRevoked(_ context.Context, _ *kgo.Client, m map[string][]in
 				delete(c.timers, tp)
 			}
 		}
+	}
+	c.mu.Unlock()
+
+	if cl != nil {
+		cl.ResumeFetchPartitions(m)
 	}
 }
 
@@ -287,19 +296,14 @@ func (c *Consumer) drainWakes(ctx context.Context, toCommit []*kgo.Record) []*kg
 			delete(c.timers, ev.tp)
 			c.mu.Unlock()
 
-			// Process all held records in order. On a failed escalation,
-			// re-hold the failed record and everything after it (the
-			// partition stays paused) so nothing is skipped or lost.
-			reheld := false
-			for j, rec := range batch.records {
-				var failed bool
-				toCommit, failed = c.handleRecord(ctx, rec, toCommit)
-				if failed {
-					c.holdRecords(ev.tp, batch.records[j:], time.Now().Add(escalateRetryDelay))
-					reheld = true
-					break
-				}
-			}
+			// Process the held records with the same per-record logic as a
+			// fresh fetch: the wake fires at the FIRST record's due time, so
+			// later records must re-check their OWN due time (and get re-held
+			// until it arrives — premature processing would burn a tier),
+			// malformed records take the DLT path, and a failed escalation
+			// re-holds the failed record plus the tail so nothing is lost.
+			var reheld bool
+			toCommit, reheld = c.processRecords(ctx, ev.tp, batch.records, toCommit)
 			if reheld {
 				continue
 			}
@@ -320,13 +324,43 @@ func (c *Consumer) processPartition(
 	p kgo.FetchTopicPartition,
 	toCommit []*kgo.Record,
 ) []*kgo.Record {
-	now := time.Now()
 	tp := topicPartition{topic: p.Topic, partition: p.Partition}
+	toCommit, _ = c.processRecords(ctx, tp, p.Records, toCommit)
+	return toCommit
+}
 
-	for i, rec := range p.Records {
+// processRecords runs the per-record redrive logic shared by processPartition
+// (fresh fetches) and drainWakes (held batches becoming due):
+//
+//   - Malformed records (no retry headers) are escalated straight to the
+//     base topic's DLT; on produce failure the record and the rest of the
+//     batch are held for a delayed retry.
+//   - A record whose own due time has not arrived holds itself and the rest
+//     of the batch until that due time (each record's due-at is checked
+//     individually — a held batch waking at its first record's due time must
+//     not process later records early).
+//   - A due record is handled; on a failed escalation the record and the
+//     rest of the batch are held for a delayed retry.
+//
+// Returns the updated toCommit slice and held=true when a (re-)hold happened:
+// the partition is then paused and the caller must NOT resume it.
+func (c *Consumer) processRecords(
+	ctx context.Context,
+	tp topicPartition,
+	recs []*kgo.Record,
+	toCommit []*kgo.Record,
+) (_ []*kgo.Record, held bool) {
+	// holdTail copies recs[i:] (the slice may alias a fetch buffer or a
+	// previous heldBatch) and holds it until due.
+	holdTail := func(i int, due time.Time) {
+		remaining := make([]*kgo.Record, len(recs)-i)
+		copy(remaining, recs[i:])
+		c.holdRecords(tp, remaining, due)
+	}
+
+	for i, rec := range recs {
 		r := recordFromKGO(rec)
-		attempt, orig, due, ok := ParseRetryHeaders(r)
-		_ = attempt
+		_, _, due, ok := ParseRetryHeaders(r)
 
 		if !ok {
 			// Malformed record: no retry headers. Derive base topic and escalate to DLT.
@@ -334,16 +368,13 @@ func (c *Consumer) processPartition(
 			if !baseOK {
 				base = rec.Topic // fallback: use topic as-is
 			}
-			origTopic := base
-			// Escalate directly to DLT (attempt >= len(tiers) by passing a
-			// record with attempt == len(tiers)).
 			dltRec := kafka.Record{
-				Topic:   DLTTopic(origTopic),
+				Topic:   DLTTopic(base),
 				Key:     rec.Key,
 				Value:   rec.Value,
 				Headers: headersFromKGO(rec.Headers),
 			}
-			dltRec.Headers["retry-last-error"] = "malformed: missing retry headers"
+			dltRec.Headers[HeaderLastError] = "malformed: missing retry headers"
 			// Fix 3: only commit when DLT produce succeeded. On failure, HOLD
 			// this record and the rest of the batch and retry after a delay —
 			// merely skipping the commit would NOT redeliver it (kgo advances
@@ -351,22 +382,18 @@ func (c *Consumer) processPartition(
 			// later record would lose it permanently.
 			if err := c.esc.producer.Produce(ctx, dltRec); err != nil {
 				c.onError(fmt.Errorf("retry consumer: escalate malformed to DLT: %w", err))
-				remaining := make([]*kgo.Record, len(p.Records)-i)
-				copy(remaining, p.Records[i:])
-				c.holdRecords(tp, remaining, time.Now().Add(escalateRetryDelay))
-				return toCommit
+				holdTail(i, time.Now().Add(escalateRetryDelay))
+				return toCommit, true
 			}
 			toCommit = append(toCommit, rec)
 			continue
 		}
 
-		if now.Before(due) {
+		if time.Now().Before(due) {
 			// This record is not yet due. Hold it and all remaining records in
 			// this partition, pause the partition, and schedule a wake-up timer.
-			remaining := make([]*kgo.Record, len(p.Records)-i)
-			copy(remaining, p.Records[i:])
-			c.holdRecords(tp, remaining, due)
-			return toCommit
+			holdTail(i, due)
+			return toCommit, true
 		}
 
 		// Record is due: process now. On a failed escalation, hold this
@@ -375,15 +402,12 @@ func (c *Consumer) processPartition(
 		var failed bool
 		toCommit, failed = c.handleRecord(ctx, rec, toCommit)
 		if failed {
-			remaining := make([]*kgo.Record, len(p.Records)-i)
-			copy(remaining, p.Records[i:])
-			c.holdRecords(tp, remaining, time.Now().Add(escalateRetryDelay))
-			return toCommit
+			holdTail(i, time.Now().Add(escalateRetryDelay))
+			return toCommit, true
 		}
-		_ = orig
 	}
 
-	return toCommit
+	return toCommit, false
 }
 
 // holdRecords stores records (in order) for tp until due, pauses the

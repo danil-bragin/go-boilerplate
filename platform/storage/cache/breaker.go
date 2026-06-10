@@ -42,8 +42,14 @@ func newL2Breaker() (circuitbreaker.CircuitBreaker[any], metric.Int64Gauge) {
 }
 
 // l2Allowed reports whether L2 may be used right now. False means the breaker
-// is open: callers must degrade to L1-only behaviour without touching Redis.
+// is open (callers must degrade to L1-only behaviour without touching Redis)
+// or the caller's context is already done — a cancelled caller can never
+// complete an L2 op, so it must neither consume a half-open probe permit nor
+// be allowed to feed a caller-driven failure into the breaker.
 func (c *Cache) l2Allowed(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	ok := c.l2cb.TryAcquirePermit()
 	c.recordBreakerState(ctx)
 	return ok
@@ -62,11 +68,27 @@ func (c *Cache) l2ctx(ctx context.Context) (context.Context, context.CancelFunc)
 
 // l2Done feeds an L2 operation outcome back into the breaker. A Redis nil
 // reply is a healthy response, not a failure.
+//
+// Failure ATTRIBUTION matters: an op that failed because the CALLER's context
+// ended (cancellation or the caller's own deadline) says nothing about Redis
+// health — recording it would let a burst of cancelled requests open the
+// breaker against a healthy Redis. Such outcomes are recorded as neither
+// success nor failure. An opCtx timeout (the L2OpTimeout bound from l2ctx)
+// with a LIVE caller ctx is a genuine L2 failure and still counts.
+//
+// Half-open exception: a probe permit acquired by l2Allowed is only released
+// by recording a result, so during half-open a caller-cancelled probe is
+// conservatively recorded as a failure (breaker re-opens, retries after the
+// delay) — skipping the record would leak the probe permit and wedge the
+// breaker half-open forever.
 func (c *Cache) l2Done(ctx context.Context, err error) {
-	if err == nil || rueidis.IsRedisNil(err) {
+	switch {
+	case err == nil || rueidis.IsRedisNil(err):
 		c.l2cb.RecordSuccess()
-	} else {
+	case ctx.Err() == nil || c.l2cb.State() == circuitbreaker.HalfOpenState:
 		c.l2cb.RecordFailure()
+	default:
+		// Caller-driven cancellation outside half-open: record nothing.
 	}
 	c.recordBreakerState(ctx)
 }

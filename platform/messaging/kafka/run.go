@@ -11,8 +11,11 @@ import (
 
 // Backoff bounds for a partition whose handler keeps failing. The first
 // failure pauses the partition for redeliveryBackoffFloor; each consecutive
-// failure doubles the pause up to redeliveryBackoffCap. A successful handler
-// run on the partition resets the backoff.
+// failure doubles the pause up to redeliveryBackoffCap. The backoff resets
+// once a poll completes for the partition with progress and NO new failure;
+// a poll in which some records succeed but a later record fails keeps the
+// accumulated failure count, so the pause keeps escalating until a fully
+// clean poll.
 const (
 	redeliveryBackoffFloor = 100 * time.Millisecond
 	redeliveryBackoffCap   = 5 * time.Second

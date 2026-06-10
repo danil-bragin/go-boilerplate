@@ -182,6 +182,120 @@ func TestTransact_ExactlyOnceHappyPath(t *testing.T) {
 		"tc2 (same group) should process exactly 1 new record; got %d", newCount.Load())
 }
 
+// TestTransact_ClientSideProduceFailureAborts verifies that a transaction
+// whose OUTPUT record fails CLIENT-SIDE (never reaches the broker) is
+// ABORTED and the input offsets are NOT committed, so the input record is
+// redelivered. kgo fails a record larger than ProducerBatchMaxBytes
+// (default 1000012, mirroring Kafka's max.message.bytes) at buffering time
+// with kerr.MessageTooLarge — the producer ID stays healthy, so without an
+// explicit per-record promise gate sess.End(TryCommit) would happily commit
+// the input offsets while the output is silently lost.
+func TestTransact_ClientSideProduceFailureAborts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redpanda container)")
+	}
+	broker, _ := kafkatest.NewRedpanda(t)
+
+	ctx := context.Background()
+
+	inTopic := "txn-toolarge-in-" + uuid.NewString()[:8]
+	outTopic := "txn-toolarge-out-" + uuid.NewString()[:8]
+
+	adminCl, err := kafka.NewClient(kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "txn-toolarge-admin",
+	})
+	require.NoError(t, err)
+	defer adminCl.Close()
+
+	require.NoError(t, kafka.EnsureTopics(ctx, adminCl, kafka.TopicSpec{Partitions: 1, ReplicationFactor: 1}, inTopic, outTopic))
+
+	prod := kafka.NewProducer(adminCl)
+	require.NoError(t, prod.Produce(ctx, kafka.Record{
+		Topic: inTopic,
+		Key:   []byte("k"),
+		Value: []byte("v"),
+	}))
+	require.NoError(t, prod.Close(ctx))
+
+	// First attempt: produce a 2 MB output value — fails client-side
+	// (exceeds the 1000012-byte default batch max) without touching the
+	// producer ID. Later attempts: produce a small, valid output.
+	var attempts atomic.Int32
+	processFn := func(_ context.Context, rec kafka.Record) ([]kafka.Record, error) {
+		n := attempts.Add(1)
+		val := []byte("ok-" + string(rec.Value))
+		if n == 1 {
+			val = make([]byte, 2_000_000)
+		}
+		return []kafka.Record{{Topic: outTopic, Key: rec.Key, Value: val}}, nil
+	}
+
+	tc, err := kafka.NewTransactConsumer(
+		kafka.Config{Brokers: []string{broker}, ClientID: "txn-toolarge-tc"},
+		"txn-toolarge-txn-id",
+		"txn-toolarge-group",
+		[]string{inTopic},
+	)
+	require.NoError(t, err)
+
+	runCtx, cancelRun := context.WithTimeout(ctx, 90*time.Second)
+	defer cancelRun()
+
+	go func() {
+		_ = tc.Run(runCtx, processFn)
+	}()
+
+	// Read-committed reader: must see exactly ONE output — the small value
+	// from the successful redelivery attempt.
+	reader, err := kafka.NewConsumer(kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "txn-toolarge-reader",
+		GroupID:  "txn-toolarge-reader-group",
+	}, []string{outTopic})
+	require.NoError(t, err)
+
+	var (
+		mu      sync.Mutex
+		outputs [][]byte
+		gotOne  = make(chan struct{})
+		gotOnce sync.Once
+	)
+
+	readerCtx, cancelReader := context.WithTimeout(ctx, 90*time.Second)
+	defer cancelReader()
+
+	go func() {
+		_ = reader.Run(readerCtx, func(_ context.Context, r kafka.Record) error {
+			mu.Lock()
+			outputs = append(outputs, r.Value)
+			mu.Unlock()
+			gotOnce.Do(func() { close(gotOne) })
+			return nil
+		})
+	}()
+
+	select {
+	case <-gotOne:
+	case <-readerCtx.Done():
+		t.Fatal("timed out waiting for the redelivered output — the client-side produce failure was committed instead of aborted (input offsets advanced, output lost)")
+	}
+
+	// Allow late arrivals so duplicates would be detected.
+	time.Sleep(500 * time.Millisecond)
+	cancelRun()
+	cancelReader()
+	_ = tc.Close(ctx)
+	_ = reader.Close(ctx)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, outputs, 1, "exactly one committed output expected")
+	assert.Equal(t, []byte("ok-v"), outputs[0], "output must come from the post-abort redelivery attempt")
+	assert.GreaterOrEqual(t, attempts.Load(), int32(2),
+		"input must have been redelivered after the aborted first attempt")
+}
+
 // TestTransact_AbortInvisibleAndRedelivered verifies the abort+redelivery
 // contract:
 //  1. A "poison" record causes fn to fail on first attempt → batch aborts →

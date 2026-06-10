@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -36,41 +37,34 @@ func (c *Cache) startInvalidationSubscriber() {
 	ready := make(chan struct{})
 	var readyOnce sync.Once
 
+	if c.receive == nil {
+		c.receive = func(ctx context.Context, fn func(msg rueidis.PubSubMessage)) error {
+			return c.l2.Receive(ctx, c.l2.B().Subscribe().Channel(c.invChannel()).Build(), fn)
+		}
+	}
+
 	c.subWG.Add(1)
 	go func() {
 		defer c.subWG.Done()
-		for {
-			err := c.l2.Receive(subCtx, c.l2.B().Subscribe().Channel(c.invChannel()).Build(), func(msg rueidis.PubSubMessage) {
-				id, key, ok := strings.Cut(msg.Message, " ")
-				if !ok {
-					return // malformed payload — ignore
-				}
-				if id == c.instanceID {
-					// Our own broadcast looping back. The local L1 already
-					// holds the fresh state (Set) or was already evicted
-					// (Delete) — only signal readiness for the self-probe.
-					if key == readyProbeKey {
-						readyOnce.Do(func() { close(ready) })
-					}
-					return
-				}
+		c.subscribeLoop(subCtx, func(msg rueidis.PubSubMessage) {
+			id, key, ok := strings.Cut(msg.Message, " ")
+			if !ok {
+				return // malformed payload — ignore
+			}
+			if id == c.instanceID {
+				// Our own broadcast looping back. The local L1 already
+				// holds the fresh state (Set) or was already evicted
+				// (Delete) — only signal readiness for the self-probe.
 				if key == readyProbeKey {
-					return // another instance's startup probe
+					readyOnce.Do(func() { close(ready) })
 				}
-				c.l1.Invalidate(key)
-			})
-			if subCtx.Err() != nil || err == nil {
 				return
 			}
-			// Transient Redis error — back off and resubscribe. Broadcasts
-			// published while disconnected are lost; staleness is bounded by
-			// the entry TTL (same eventual-consistency floor as before).
-			select {
-			case <-subCtx.Done():
-				return
-			case <-time.After(500 * time.Millisecond):
+			if key == readyProbeKey {
+				return // another instance's startup probe
 			}
-		}
+			c.l1.Invalidate(key)
+		})
 	}()
 
 	// Confirm the subscription is live before returning: publish a self-probe
@@ -86,6 +80,38 @@ func (c *Cache) startInvalidationSubscriber() {
 			return
 		case <-time.After(50 * time.Millisecond):
 		}
+	}
+}
+
+// subscribeLoop runs the blocking receive/resubscribe loop until subCtx is
+// done or the rueidis client is closed.
+//
+// Receive returning is ALWAYS a subscription gap, never a clean shutdown
+// (those are the subCtx / ErrClosing cases): rueidis Receive returns nil on
+// ANY unsubscribe message for the channel — including a server-initiated one
+// — and an error on transport failures. Both must resubscribe; treating nil
+// as terminal would kill cross-instance invalidation silently for the rest
+// of the process lifetime.
+//
+// Every gap drops the WHOLE L1 before resuming: broadcasts published during
+// the gap are lost, so any entry cached before the gap may already be stale
+// and must not outlive the missed invalidations. (Entries written between
+// the InvalidateAll and the new subscription going live keep the plain
+// TTL-bounded staleness floor — the gap there is milliseconds, not the
+// process lifetime.)
+func (c *Cache) subscribeLoop(subCtx context.Context, handle func(msg rueidis.PubSubMessage)) {
+	for {
+		err := c.receive(subCtx, handle)
+		if subCtx.Err() != nil || errors.Is(err, rueidis.ErrClosing) {
+			return
+		}
+		// Back off briefly so repeated gaps cannot hot-loop SUBSCRIBE.
+		select {
+		case <-subCtx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+		c.l1.InvalidateAll()
 	}
 }
 

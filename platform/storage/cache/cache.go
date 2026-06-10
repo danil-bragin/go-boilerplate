@@ -57,6 +57,11 @@ type Cache struct {
 	instanceID string
 	subCancel  context.CancelFunc
 	subWG      sync.WaitGroup
+
+	// receive is the blocking subscription primitive used by subscribeLoop.
+	// A struct field so tests can substitute a stub; when nil it defaults to
+	// rueidis Receive on the invalidation channel.
+	receive func(ctx context.Context, fn func(msg rueidis.PubSubMessage)) error
 }
 
 // New constructs a Cache from cfg.
@@ -206,23 +211,32 @@ func (c *Cache) Delete(ctx context.Context, key string) error {
 // The loader runs on a context DETACHED from the first caller
 // (context.WithoutCancel) bounded by Config.LoaderTimeout: collapsed waiters
 // share one load, so the leader's cancellation must not fail everyone else.
+//
+// Each WAITER, however, honours its own context: when the caller's ctx ends
+// before the shared load completes, GetOrLoad returns ctx.Err() immediately
+// (the caller's Deadline budget is respected) while the load keeps running in
+// the background for the remaining waiters and to warm the cache.
 func (c *Cache) GetOrLoad(ctx context.Context, key string, ttl time.Duration, loader func(ctx context.Context) ([]byte, error)) ([]byte, error) {
 	if v, ok := c.Get(ctx, key); ok {
 		return v, nil
 	}
 
-	v, err, _ := c.sf.Do(key, func() (any, error) {
+	ch := c.sf.DoChan(key, func() (any, error) {
+		// Detach from the leader's cancellation up front: this closure may
+		// outlive the leader and serve other waiters.
+		base := context.WithoutCancel(ctx)
+
 		// Double-check after acquiring the singleflight token.
-		if v, ok := c.Get(ctx, key); ok {
+		if v, ok := c.Get(base, key); ok {
 			return v, nil
 		}
-		// Detach from the leader's cancellation; bound with our own timeout
-		// so a hung loader cannot wedge the singleflight slot forever.
+		// Bound with our own timeout so a hung loader cannot wedge the
+		// singleflight slot forever.
 		timeout := c.cfg.LoaderTimeout
 		if timeout <= 0 {
 			timeout = defaultLoaderTimeout
 		}
-		lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+		lctx, cancel := context.WithTimeout(base, timeout)
 		defer cancel()
 
 		val, err := loader(lctx)
@@ -232,10 +246,16 @@ func (c *Cache) GetOrLoad(ctx context.Context, key string, ttl time.Duration, lo
 		c.Set(lctx, key, val, ttl)
 		return val, nil
 	})
-	if err != nil {
-		return nil, err
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		return res.Val.([]byte), nil //nolint:forcetypeassert
 	}
-	return v.([]byte), nil //nolint:forcetypeassert
 }
 
 // HealthCheck pings Redis and returns any error.

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/plugin/kotel"
@@ -126,12 +125,17 @@ type ProcessFn func(ctx context.Context, rec Record) ([]Record, error)
 //  1. Calls sess.Begin() to open a Kafka transaction.
 //  2. Calls fn for every record; on error aborts the transaction so all
 //     produced outputs of this batch are invisible to read-committed consumers.
-//  3. Calls sess.End(ctx, TryCommit/TryAbort) to atomically commit both the
+//  3. Waits for every produced output record's promise; any produce error —
+//     including CLIENT-SIDE failures that never reach the broker (record too
+//     large, unknown topic past the retry limit, delivery timeout) — also
+//     forces an abort. kgo does not abort these on its own: only fatal
+//     producer-ID errors poison a transaction.
+//  4. Calls sess.End(ctx, TryCommit/TryAbort) to atomically commit both the
 //     output records and the input offsets.
 //
-// If a batch is aborted (fn error or rebalance) the input offsets are NOT
-// committed, so the broker redelivers the batch — preserving exactly-once
-// semantics over the whole pipeline.
+// If a batch is aborted (fn error, produce error, or rebalance) the input
+// offsets are NOT committed, so the broker redelivers the batch — preserving
+// exactly-once semantics over the whole pipeline.
 //
 // Run returns when ctx is cancelled or the underlying client is closed.
 func (t *TransactConsumer) Run(ctx context.Context, fn ProcessFn) error {
@@ -172,8 +176,17 @@ func (t *TransactConsumer) Run(ctx context.Context, fn ProcessFn) error {
 
 		// ── Process all records in this batch ────────────────────────────────
 		ok := true
-		var produceErrs []error
-		var produceMu sync.Mutex
+
+		// Per-record produce-error gate (mirrors franz-go's own EOS example).
+		// kgo does NOT auto-abort a transaction whose records failed
+		// CLIENT-SIDE (e.g. kerr.MessageTooLarge at buffering time, unknown
+		// topic past the retry limit, delivery timeout): only fatal
+		// producer-ID errors poison the transaction. End(TryCommit) would
+		// flush nothing for already-failed records and happily commit the
+		// input offsets — silently losing the output. The promise records the
+		// first produce error and immediately aborts all other buffered
+		// records; the end decision below is gated on it.
+		fep := kgo.AbortingFirstErrPromise(t.sess.Client())
 
 		fetches.EachRecord(func(rec *kgo.Record) {
 			if !ok {
@@ -188,53 +201,31 @@ func (t *TransactConsumer) Run(ctx context.Context, fn ProcessFn) error {
 			}
 
 			for _, out := range outs {
-				kRec := recordToKGO(out)
-
-				// Collect per-record produce errors via promise callbacks —
-				// for ERROR REPORTING ONLY (read after End, under the mutex).
-				// The commit decision does NOT inspect this slice: promises
-				// run asynchronously and may still be in flight here, so any
-				// pre-End read would race with the callbacks. Correctness is
-				// owned by sess.End below — kgo tracks produce errors
-				// internally and converts a TryCommit into an abort when any
-				// produce in the transaction failed.
-				t.sess.Produce(ctx, kRec, func(_ *kgo.Record, err error) {
-					if err != nil {
-						produceMu.Lock()
-						produceErrs = append(produceErrs, err)
-						produceMu.Unlock()
-					}
-				})
+				t.sess.Produce(ctx, recordToKGO(out), fep.Promise())
 			}
 		})
 
-		// ── End transaction ──────────────────────────────────────────────────
-		var endTry kgo.TransactionEndTry
-		if ok {
-			endTry = kgo.TryCommit
-		} else {
-			endTry = kgo.TryAbort
+		// Err waits for every outstanding produce promise to complete, so the
+		// commit decision sees the final state of all output records. On the
+		// first error the promise has already aborted the remaining buffered
+		// records, so this wait is short in the failure case.
+		produceErr := fep.Err()
+		if produceErr != nil {
+			ok = false
+			t.onError(fmt.Errorf("kafka: TransactConsumer: produce: %w", produceErr))
 		}
 
-		committed, err := t.sess.End(ctx, endTry)
+		// ── End transaction ──────────────────────────────────────────────────
+		// Commit only when BOTH ProcessFn and every produce succeeded.
+		committed, err := t.sess.End(ctx, kgo.TransactionEndTry(ok))
 		if err != nil {
 			// End errors are non-retryable per franz-go docs; surface and stop.
 			return fmt.Errorf("kafka: TransactConsumer: End: %w", err)
 		}
 
-		// End has flushed the producer, so every promise has completed — the
-		// slice is stable now and safe to read under the mutex. Surface any
-		// produce errors for observability (the abort already happened inside
-		// End when needed).
-		produceMu.Lock()
-		if len(produceErrs) > 0 {
-			t.onError(fmt.Errorf("kafka: TransactConsumer: produce errors: %w", errors.Join(produceErrs...)))
-		}
-		produceMu.Unlock()
-
 		if !committed {
-			// Aborted (fn error, produce error detected by End, or a
-			// rebalance). The broker will redeliver the batch.
+			// Aborted (fn error, produce error, or a rebalance). The broker
+			// will redeliver the batch.
 			t.log.InfoContext(
 				ctx, "kafka: TransactConsumer: transaction aborted; batch will be redelivered",
 				"try_commit", ok,
