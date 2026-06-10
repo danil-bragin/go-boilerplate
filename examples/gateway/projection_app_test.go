@@ -40,7 +40,7 @@ func TestProjectionApp_StandaloneSmoke(t *testing.T) {
 	ctx := context.Background()
 	app, err := gateway.NewProjectionApp(ctx)
 	require.NoError(t, err, "standalone projection wiring must construct")
-	app.Start()
+	require.NoError(t, app.Start())
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

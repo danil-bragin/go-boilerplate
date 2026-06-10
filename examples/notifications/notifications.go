@@ -17,14 +17,13 @@ package notifications
 
 import (
 	"context"
-	"io"
 
 	"go-boilerplate/examples/notifications/internal/migrations"
 	"go-boilerplate/examples/notifications/internal/transport"
-	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/run"
+	"go-boilerplate/platform/servicekit"
 
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
@@ -50,12 +49,6 @@ func WithNotifier(n transport.Notifier) Option {
 	return func(o *notifOptions) {
 		o.notifier = n
 	}
-}
-
-// WithLogWriter overrides the log output writer (default: os.Stdout).
-// Kept for API compatibility; harness writes to os.Stdout.
-func WithLogWriter(_ io.Writer) Option {
-	return func(_ *notifOptions) {}
 }
 
 // App holds all wired components for the notifications service.
@@ -123,10 +116,8 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 }
 
 // Start launches the Kafka consumer goroutine. Non-blocking.
-func (a *App) Start() {
-	if err := a.svc.Start(); err != nil {
-		a.svc.Logger().Error("failed to start service", "error", err)
-	}
+func (a *App) Start() error {
+	return a.svc.Start()
 }
 
 // Stop cancels consumer goroutines and closes all resources.

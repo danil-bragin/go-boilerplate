@@ -33,6 +33,35 @@ func (s *Service) Start() error {
 	s.runCtx = runCtx
 	s.cancelRun = cancelRun
 
+	// Public HTTP servers (AddHTTPServer): bind failure is fatal — same
+	// contract as the admin server above (no half-alive pods). Their shutdown
+	// closers are registered AFTER consumers-cancel and BEFORE the drain-gate
+	// (see below), so in LIFO teardown they shut right after the drain-gate
+	// flipped readiness and before consumers/kafka/pg go away.
+	for _, ns := range s.httpServers {
+		if err := ns.srv.Start(); err != nil {
+			cancelRun()
+			return fmt.Errorf("servicekit: http server %q failed to start on %s: %w",
+				ns.name, ns.srv.Addr(), err)
+		}
+		// Watch for a fatal serve error after startup: log it and flip
+		// readiness to 503 so the orchestrator stops routing and restarts.
+		srv, name := ns.srv, ns.name
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			select {
+			case err := <-srv.Notify():
+				if err != nil {
+					s.logger.Error("http server failed", "server", name, "error", err)
+					s.h.SetNotReady()
+				}
+			case <-runCtx.Done():
+			}
+		}()
+		s.logger.Info("http server started", "server", name, "addr", srv.Addr())
+	}
+
 	// Launch inbox cleanup if configured (interval > 0). All services that use
 	// the harness migrate the inbox table, so this is safe to launch
 	// unconditionally. Future services with no inbox table will simply log a
@@ -67,6 +96,18 @@ func (s *Service) Start() error {
 			return fmt.Errorf("servicekit: consumers did not stop before teardown budget: %w", ctx.Err())
 		}
 	})
+
+	// Public HTTP server shutdowns: registered between consumers-cancel and
+	// the drain-gate, so in LIFO teardown each public server drains its
+	// in-flight requests AFTER /readyz flipped to 503 (no new traffic routed)
+	// and BEFORE consumers are cancelled and kafka/pg close (handlers may
+	// still use the producer/pool while draining).
+	for _, ns := range s.httpServers {
+		srv := ns.srv
+		s.closer.Add("http-server-"+ns.name, func(ctx context.Context) error {
+			return srv.Shutdown(ctx)
+		})
+	}
 
 	// Drain-gate is registered LAST → fires FIRST in LIFO teardown, BEFORE
 	// consumers are cancelled and before any server shuts down: flip /readyz

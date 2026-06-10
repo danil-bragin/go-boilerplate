@@ -13,7 +13,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"sync"
@@ -71,10 +70,6 @@ func pollUntil(timeout time.Duration, fn func() bool) bool {
 	return false
 }
 
-// discardWriter wraps io.Discard to satisfy the io.Writer interface.
-// Each service gets its own instance to avoid any shared state.
-func discardWriter() io.Writer { return io.Discard }
-
 // TestE2E_OrderChoreography is the full end-to-end integration test.
 //
 // It starts four services in-process (gateway, orders, payments, notifications),
@@ -126,10 +121,9 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	notifApp, err := notifications.NewApp(
 		ctx,
 		notifications.WithNotifier(notifCapture.add),
-		notifications.WithLogWriter(discardWriter()),
 	)
 	require.NoError(t, err, "notifications.NewApp failed")
-	notifApp.Start()
+	require.NoError(t, notifApp.Start())
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -145,12 +139,9 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	os.Setenv("OTEL_ENABLED", "false")
 	os.Setenv("LOG_LEVEL", "error")
 
-	paymentsApp, err := payments.NewApp(
-		ctx,
-		payments.WithLogWriter(discardWriter()),
-	)
+	paymentsApp, err := payments.NewApp(ctx)
 	require.NoError(t, err, "payments.NewApp failed")
-	paymentsApp.Start()
+	require.NoError(t, paymentsApp.Start())
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -166,12 +157,9 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	os.Setenv("OTEL_ENABLED", "false")
 	os.Setenv("LOG_LEVEL", "error")
 
-	ordersApp, err := orders.NewApp(
-		ctx,
-		orders.WithLogWriter(discardWriter()),
-	)
+	ordersApp, err := orders.NewApp(ctx)
 	require.NoError(t, err, "orders.NewApp failed")
-	ordersApp.Start()
+	require.NoError(t, ordersApp.Start())
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -191,12 +179,9 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	os.Setenv("OTEL_ENABLED", "false")
 	os.Setenv("LOG_LEVEL", "error")
 
-	gatewayApp, err := gateway.NewApp(
-		ctx,
-		gateway.WithLogWriter(discardWriter()),
-	)
+	gatewayApp, err := gateway.NewApp(ctx)
 	require.NoError(t, err, "gateway.NewApp failed")
-	gatewayApp.Start()
+	require.NoError(t, gatewayApp.Start())
 	t.Cleanup(func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

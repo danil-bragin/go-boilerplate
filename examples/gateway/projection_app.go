@@ -6,10 +6,10 @@ import (
 
 	"go-boilerplate/examples/gateway/internal/migrations"
 	"go-boilerplate/examples/gateway/internal/projection"
-	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/run"
+	"go-boilerplate/platform/servicekit"
 
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
@@ -82,11 +82,12 @@ func NewProjectionApp(ctx context.Context) (*ProjectionApp, error) {
 }
 
 // Start launches the projection consumer and admin server. Non-blocking.
-func (a *ProjectionApp) Start() {
+func (a *ProjectionApp) Start() error {
 	if err := a.svc.Start(); err != nil {
-		a.svc.Logger().Error("failed to start projection service", "error", err)
+		return err
 	}
 	a.svc.Logger().Info("projection service started", "admin_addr", a.svc.AdminAddr())
+	return nil
 }
 
 // Stop cancels the consumer and closes all resources.

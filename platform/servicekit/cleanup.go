@@ -38,7 +38,7 @@ func (s *Service) AddAuditCleanup(store *audit.PgStore, interval, retention time
 // startInboxCleanup launches the inbox-row cleanup goroutine if configured.
 // Called from Start; runCtx is the goroutine lifetime context.
 func (s *Service) startInboxCleanup(runCtx context.Context) {
-	if s.cfg.InboxCleanupInterval <= 0 {
+	if s.cfg.InboxCleanupInterval <= 0 || s.pool == nil {
 		return
 	}
 	retention := s.cfg.InboxRetention

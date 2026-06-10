@@ -21,11 +21,13 @@ import (
 func startTestApp(t *testing.T) (*app, string) {
 	t.Helper()
 	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0") // harness admin server: ephemeral port
+	t.Setenv("DRAIN_GRACE", "0")               // no LB drain window needed in tests
 	t.Setenv("OTEL_ENABLED", "false")
 	a, err := newApp(context.Background())
 	require.NoError(t, err)
-	require.NoError(t, a.start())
-	t.Cleanup(func() { _ = a.stop(context.Background()) })
+	require.NoError(t, a.Start())
+	t.Cleanup(func() { _ = a.Stop(context.Background()) })
 	return a, "http://" + a.server.Addr()
 }
 
@@ -240,7 +242,7 @@ func TestE2E_GracefulDrainCompletesInflightRequest(t *testing.T) {
 	// Graceful shutdown: allow up to 5s for existing requests to drain.
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stopCancel()
-	require.NoError(t, a.stop(stopCtx))
+	require.NoError(t, a.Stop(stopCtx))
 
 	// (a) The in-flight /slow request must complete successfully.
 	select {

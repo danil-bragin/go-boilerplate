@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"net/netip"
 
-	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/featureflags"
 	"go-boilerplate/platform/observability/health"
 	"go-boilerplate/platform/security/auth"
+	"go-boilerplate/platform/servicekit"
 	"go-boilerplate/platform/storage/blob"
 	"go-boilerplate/platform/storage/cache"
 	"go-boilerplate/platform/web/ratelimit"

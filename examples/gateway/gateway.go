@@ -4,7 +4,7 @@
 //
 // # Harness
 //
-// Gateway is built on the shared servicekit.Service harness (examples/servicekit)
+// Gateway is built on the shared servicekit.Service harness (platform/servicekit)
 // which handles the common wiring: logger, telemetry+metrics, pg pool+migrations,
 // kafka client+producer, health checks, admin HTTP server (/livez /readyz /metrics).
 // The gateway adds its own public REST server on cfg.HTTP.Addr.
@@ -49,16 +49,15 @@ package gateway
 
 import (
 	"context"
-	"io"
 
 	"go-boilerplate/examples/gateway/internal/api"
 	"go-boilerplate/examples/gateway/internal/migrations"
 	"go-boilerplate/examples/gateway/internal/projection"
-	"go-boilerplate/examples/servicekit"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/run"
 	"go-boilerplate/platform/security/auth"
+	"go-boilerplate/platform/servicekit"
 	"go-boilerplate/platform/web/httpserver"
 
 	gatewayapp "go-boilerplate/examples/gateway/internal/app"
@@ -74,13 +73,6 @@ func WithVerifier(v auth.Verifier) Option {
 	return func(a *App) {
 		a.verifier = v
 	}
-}
-
-// WithLogWriter overrides the log output writer (default: os.Stdout).
-// NOTE: The harness always writes to os.Stdout; this option is kept for
-// API compatibility with tests and e2e. Pass io.Discard to suppress logs.
-func WithLogWriter(_ io.Writer) Option {
-	return func(_ *App) {}
 }
 
 // App holds all wired components for the gateway service.
@@ -194,10 +186,11 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	}
 
 	// Public HTTP server (separate from the admin server on AdminAddr).
+	// AddHTTPServer owns its lifecycle: Start binds it (bind failure fatal,
+	// like the admin server) and teardown shuts it down right after the
+	// drain-gate — before consumers are cancelled and kafka/pg close.
 	httpSrv := httpserver.New(cfg.HTTP)
-	svc.Closer().Add("http-server", func(ctx context.Context) error {
-		return httpSrv.Shutdown(ctx)
-	})
+	svc.AddHTTPServer("public", httpSrv)
 	a.server = httpSrv
 
 	// Wire the API server (strict handler) with RBAC and resilience.
@@ -222,16 +215,11 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	return a, nil
 }
 
-// Start launches background goroutines (projection consumer + public HTTP server).
-// Non-blocking.
-func (a *App) Start() {
+// Start launches background goroutines (projection consumer + public HTTP
+// server, both managed by the servicekit harness). Non-blocking.
+func (a *App) Start() error {
 	if err := a.svc.Start(); err != nil {
-		a.svc.Logger().Error("failed to start service", "error", err)
-	}
-
-	if err := a.server.Start(); err != nil {
-		a.svc.Logger().Error("http server failed to start", "error", err)
-		return
+		return err
 	}
 
 	a.svc.Logger().Info(
@@ -239,6 +227,7 @@ func (a *App) Start() {
 		"addr", a.server.Addr(),
 		"admin_addr", a.svc.AdminAddr(),
 	)
+	return nil
 }
 
 // Stop cancels consumer goroutines and closes all resources.
