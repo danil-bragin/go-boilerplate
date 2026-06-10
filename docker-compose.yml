@@ -47,6 +47,46 @@ services:
       retries: 10
       start_period: 10s
 
+  # PgBouncer in front of postgres — OPT-IN via the "pgbouncer" profile:
+  #   docker compose --profile pgbouncer up -d postgres pgbouncer
+  # Transaction pooling: N app replicas × PG_MAX_CONNS client conns collapse
+  # into DEFAULT_POOL_SIZE server conns per (db,user) — the remedy for the
+  # max_connections=100 wall at ~4 replicas of 25-conn pools.
+  # No DB_NAME → the entrypoint writes a wildcard [databases] entry, so all
+  # four service DBs (gateway/orders/payments/notifications) route through.
+  # Point services at port 6432 and set:
+  #   PG_STATEMENT_CACHE_MODE=1  (pgx describe-exec — prepared-statement plans
+  #                               don't survive transaction pooling)
+  #   PG_MIGRATE_URL=<direct postgres:5432 DSN>  (REQUIRED: migrations hold a
+  #     session advisory lock — see docs/operations.md § Migration strategies)
+  # See the commented example block in .env.example.
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.24.1-p0
+    restart: unless-stopped
+    profiles: ["pgbouncer"]
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      # Dev creds matching deploy/postgres/init.sql; AUTH_TYPE=plain keeps the
+      # demo simple while PgBouncer still speaks SCRAM upstream to postgres.
+      DB_USER: app
+      DB_PASSWORD: app
+      AUTH_TYPE: plain
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "500"
+      DEFAULT_POOL_SIZE: "20"
+    ports:
+      - "6432:5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "app"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
   redpanda:
     image: redpandadata/redpanda:v24.2.7
     restart: unless-stopped

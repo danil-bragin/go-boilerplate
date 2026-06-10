@@ -22,3 +22,21 @@ The gateway serves REST reads from a Kafka-fed read model (`orders_read`). That 
 2. Projection lag needs dedicated CPU/replica budget independent of edge traffic.
 3. Read-model rebuild/replay (see `docs/operations.md`) should not run inside latency-sensitive edge pods.
 4. Different release cadence: projection logic changes more often than the edge contract (or vice versa).
+
+## Amendment (2026-06-10) — split mode is NOT a pure edge
+
+Even with `GATEWAY_EMBEDDED_PROJECTION=false`, `POST /v1/orders` still touches
+the read-model database by design: it inserts the `pending` row
+(read-your-writes — an immediate GET must not 404) and performs the
+idempotency body-mismatch lookup. Together with the projection's ~3
+transactions per order (inbox + OrderCreated upsert, then each payment-outcome
+event), the shared read-model **writer** is the aggregate throughput ceiling —
+roughly 2–3.5k orders/s on a mid-size single instance — **independent of
+gateway replica count**. Splitting the projection moves CPU and consumer-group
+membership out of the edge pods; it does not remove this ceiling.
+
+Levers, in escalation order: `PG_READER_DSN` (idempotency lookups move to the
+reader pool — bounded staleness documented in `openapi.yaml`),
+`GATEWAY_PENDING_ASYNC=true` (pending inserts become one batched multi-row
+INSERT per ≤50 ms/≤100 rows), table partitioning of `orders_read`, then a
+bigger writer (e.g. Aurora). See `docs/operations.md` § Scaling guide.

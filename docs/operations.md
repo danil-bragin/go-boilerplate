@@ -744,8 +744,30 @@ last (runbook above) — it derives from the others' events.
 | Orders / payments / notifications consumers | Replicas up to partition count per topic | Same partition ceiling. Per-key order is per-partition; tiered retry breaks per-key order unless key parking is enabled (`retry.Policy.KeyParkingWindow`) |
 | Outbox relay | Do NOT scale for throughput by default: `OUTBOX_SINGLE_ACTIVE=true` runs one active relay per service (advisory-lock leader); extra replicas are warm standbys (takeover ≤ ~2× poll interval) | The single relay drains the table until empty per tick and batch-publishes; if it still lags, raise `OUTBOX_BATCH_SIZE`, lower `OUTBOX_POLL_INTERVAL`, then consider the LISTEN/NOTIFY tier (ADR-0004 amendment). Setting `OUTBOX_SINGLE_ACTIVE=false` trades per-aggregate ordering for parallel publish — only with reorder-safe consumers |
 | Postgres | Per-service instances first (ADR-0009), then read replicas (`PG_READER_DSN` reader pool), PgBouncer in front (set `PG_MIGRATE_URL` for migrations) | Writer is per-service vertical + partitioning territory; the platform's reader/writer split is already plumbed |
+| Postgres **connections** | Budget per replica: `N_replicas × (PG_MAX_CONNS + reader pool if PG_READER_DSN) + standalone projection replicas × pool + migrate job ≤ max_connections − superuser_reserved_connections (3)` | **Default pools hit the wall at N≈4**: `PG_MAX_CONNS=25 × 4 = 100` = Postgres' default `max_connections`; the 5th replica fails readiness with "too many clients". Remedies: size per-replica pools down (`PG_MAX_CONNS=10`/`PG_MIN_CONNS=2`, as in `deploy/k8s/gateway-deployment.yaml`) and/or front with PgBouncer in transaction mode (compose profile `pgbouncer`; requires `PG_STATEMENT_CACHE_MODE=1` and a direct `PG_MIGRATE_URL` — see `.env.example`) |
 | Redis (cache L2 + rate limit) | Standard Redis scaling; rueidis supports clustering | Every cache `Set`/`Delete` publishes an invalidation message; **every app instance subscribes** — pub/sub fan-out grows O(instances × writes). At high replica counts consider shorter L1 TTLs instead of chatty invalidation. L2 outage is absorbed by the circuit breaker (L1-only mode), so Redis HA is a latency/coherence concern, not availability |
 | Kafka/Redpanda | Cluster sizing per vendor guidance | Topics here are created with `TOPIC_RF` (default 1 — dev only); production needs RF ≥ 3 and `ENSURE_TOPICS=false` with topics as IaC |
+
+### Write-path ceiling (gateway orders flow)
+
+Adding gateway replicas scales HTTP, **not order throughput** — every
+accepted order costs the shared read-model database, per order:
+
+1. **Pending INSERT** (POST, synchronous by default) — writer pool.
+2. **Idempotency lookup** (POST with `Idempotency-Key`) — reader pool
+   (`PG_READER_DSN`; the writer when no replica is configured).
+3. **~3 projection transactions** — one inbox-deduped tx per consumed event
+   (OrderCreated, the payment outcome, plus a timeout event when payment
+   stalls) — writer pool, regardless of embedded vs split projection.
+
+That aggregate writer cost caps the system at roughly **2–3.5k orders/s on a
+mid-size single Postgres instance, independent of replica count** (ADR-0008
+amendment: split mode is not a pure edge). Levers, in escalation order:
+`PG_READER_DSN` (moves the idempotency read off the writer),
+`GATEWAY_PENDING_ASYNC=true` (pending inserts collapse into one batched
+multi-row INSERT per ≤50 ms/≤100 rows — trades GET-after-POST
+read-your-writes for writer relief), partitioning `orders_read`, then a
+bigger writer (e.g. Aurora).
 
 ---
 
@@ -758,6 +780,10 @@ matching `DRAIN_GRACE`, `GOMEMLIMIT` from the memory limit) and a migrate Job
 repo's code actually implements; secrets management, network policies, TLS,
 and registry plumbing are deliberately out of scope. Validate with
 `kubectl apply --dry-run=client -k deploy/k8s/`.
+
+Hosting on AWS? See [`docs/aws-notes.md`](aws-notes.md) for the condensed
+service mapping (MSK Provisioned, no RDS Proxy, node-based ElastiCache
+Valkey, ALB SSE settings, KEDA lag scaling, AMP/AMG/ADOT).
 
 ---
 

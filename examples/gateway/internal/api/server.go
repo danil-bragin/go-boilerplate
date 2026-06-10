@@ -63,7 +63,14 @@ type Server struct {
 	listOrdersHandler cqrs.HandlerFunc[app.ListOrders, app.OrderPage]
 	authDisabled      bool
 	encoder           Encoder
+	pendingBatcher    *PendingBatcher
 }
+
+// SetPendingBatcher switches the POST-time pending-row insert from the
+// synchronous per-request INSERT to the async batched writer
+// (GATEWAY_PENDING_ASYNC=true). Must be called before the server starts
+// handling requests. nil (the default) keeps the sync path.
+func (s *Server) SetPendingBatcher(b *PendingBatcher) { s.pendingBatcher = b }
 
 // SetEncoder enables Schema Registry wire-format framing of produced command
 // payloads (SERDE_SR_URL). Must be called before the server starts handling
@@ -210,16 +217,24 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 	// POST retry is never downgraded. A failed insert does not fail the
 	// request — the command is already accepted; the projection will create
 	// the row when OrderCreated arrives.
+	//
+	// GATEWAY_PENDING_ASYNC=true swaps the synchronous insert for the
+	// batched async writer (see PendingBatcher): one multi-row INSERT per
+	// ≤50ms/≤100 rows instead of one writer round-trip per POST. Trade-off:
+	// GET immediately after POST may 404 until the batch flushes.
 	id, err := uuid.Parse(orderID)
 	if err != nil {
 		return nil, fmt.Errorf("gateway: parse generated order id: %w", err)
 	}
-	if err := storegen.New(s.pool.Writer()).InsertPendingOrder(ctx, storegen.InsertPendingOrderParams{
+	pendingRow := storegen.InsertPendingOrderParams{
 		OrderID:     id,
 		CustomerID:  body.CustomerId,
 		AmountCents: body.AmountCents,
 		Currency:    body.Currency,
-	}); err != nil {
+	}
+	if s.pendingBatcher != nil {
+		s.pendingBatcher.Enqueue(ctx, pendingRow)
+	} else if err := storegen.New(s.pool.Writer()).InsertPendingOrder(ctx, pendingRow); err != nil {
 		s.logger.WarnContext(ctx, "gateway: pending projection row insert failed",
 			"order_id", orderID, "error", err)
 	}
@@ -237,15 +252,31 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 // missing row, or a placeholder row written by a payment event before
 // OrderCreated (empty customer/currency) yields (nil, nil) — proceed.
 //
-// The check reads the WRITER so an immediately preceding POST's pending row
-// is visible (no replica lag window). A read failure degrades gracefully:
-// the request proceeds exactly as before this guard existed (logged).
+// The check reads the READER pool (pg.FromContextRead) so idempotency
+// lookups never queue on the writer — POST's only mandatory writer work
+// stays the pending insert (or zero with GATEWAY_PENDING_ASYNC). With a
+// replica configured (PG_READER_DSN) this is BOUNDED STALENESS by design:
+//
+//   - A true retry inside the replication-lag window misses the row,
+//     proceeds, and returns the SAME deterministic order id and the same
+//     202 — the duplicate command is deduplicated downstream by
+//     message-id (= order id). Harmless.
+//   - A body MISMATCH inside the lag window misses the 409 and returns
+//     202 instead. The conflicting command carries the same order id, so
+//     downstream inbox dedup drops it, and the pending insert's ON
+//     CONFLICT DO NOTHING never overwrites the original row — the
+//     mismatched request is still discarded; only the 409 signal is lost
+//     within the lag window. Accepted and documented in openapi.yaml.
+//
+// Without a replica (default) Reader() == Writer() and behavior is exactly
+// as before. A read failure degrades gracefully: the request proceeds
+// exactly as before this guard existed (logged).
 func (s *Server) rejectIdempotentBodyMismatch(ctx context.Context, orderID string, body *CreateOrderRequest) (CreateOrderResponseObject, error) {
 	id, err := uuid.Parse(orderID)
 	if err != nil {
 		return nil, fmt.Errorf("gateway: parse derived order id: %w", err)
 	}
-	row, err := storegen.New(s.pool.Writer()).GetOrderView(ctx, id)
+	row, err := storegen.New(pg.FromContextRead(ctx, s.pool)).GetOrderView(ctx, id)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			s.logger.WarnContext(ctx, "gateway: idempotency body-mismatch check skipped (read failed)",

@@ -215,6 +215,21 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		apiServer.SetEncoder(sd)
 	}
 
+	// GATEWAY_PENDING_ASYNC=true: the POST-time pending-row insert goes
+	// through a single batched async writer instead of one synchronous
+	// INSERT per request. Wired as a servicekit worker: Start launches it,
+	// teardown cancels it AFTER the public HTTP server has drained and
+	// BEFORE the pg pool closes, and Run flushes its buffer before
+	// returning — accepted rows are not lost to a graceful shutdown.
+	if cfg.PendingAsync {
+		batcher := api.NewPendingBatcher(svc.Pool(), svc.Logger())
+		apiServer.SetPendingBatcher(batcher)
+		if err := svc.AddWorker("pending-batcher", batcher.Run); err != nil {
+			return nil, err
+		}
+		svc.Logger().Info("gateway: async pending-row writes enabled (GATEWAY_PENDING_ASYNC=true) — GET immediately after POST may briefly 404")
+	}
+
 	// Apply edge security and mount all routes.
 	applyEdgeSecurity(cfg, httpSrv.Mux(), limiter, trustedPrefixes)
 	mountAPIRoutes(cfg, httpSrv.Mux(), apiServer, a.verifier)

@@ -59,4 +59,14 @@ type Config struct {
 	// same consumer group ("gateway-projection") and inbox table, so a
 	// rolling migration between modes is safe.
 	EmbeddedProjection bool `env:"GATEWAY_EMBEDDED_PROJECTION" envDefault:"true"`
+	// PendingAsync moves the POST-time pending-row insert off the request
+	// path into a single batched async writer (api.PendingBatcher: one
+	// multi-row INSERT ... ON CONFLICT DO NOTHING per ≤50ms/≤100 rows).
+	// Default false keeps the insert synchronous — read-your-writes UX: an
+	// immediate GET after POST sees the pending row. true trades that for
+	// writer relief under burst: GET right after POST may 404 until the
+	// batch flushes; rows are best-effort (dropped + WARN +
+	// gateway.pending_async.dropped counter when the buffer is full — the
+	// projection creates the row when OrderCreated arrives regardless).
+	PendingAsync bool `env:"GATEWAY_PENDING_ASYNC" envDefault:"false"`
 }
