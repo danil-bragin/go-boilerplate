@@ -1,4 +1,8 @@
-// Package transport contains the Kafka consumer transport for the payments service.
+// Package transport contains the Kafka consumer transport for the payments
+// service. Transport is DECODE + DISPATCH only: handlers here decode records
+// (via consume.Typed) and dispatch to the app/domain layer; no business
+// branching lives at this level — shared logic belongs to
+// internal/domain/payment.Service ("cmd never calls cmd").
 package transport
 
 import (
