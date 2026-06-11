@@ -384,6 +384,7 @@ func TestGateway_AuthEnabledNoVerifierFailsClosed(t *testing.T) {
 	t.Setenv("KAFKA_BROKERS", "localhost:9999")         // not dialled in this path
 	t.Setenv("GATEWAY_AUTH_DISABLED", "false")
 	t.Setenv("GATEWAY_JWKS_URL", "http://127.0.0.1:1/nonexistent") // unreachable
+	t.Setenv("AUTH_ALLOW_INSECURE_JWKS", "true")                   // http URL: opt in so we test the unreachable-fetch path, not the https guard
 	t.Setenv("GATEWAY_JWKS_ISSUER", "test")
 	t.Setenv("GATEWAY_JWKS_AUDIENCE", "test")
 	t.Setenv("HTTP_ADDR", "127.0.0.1:0")

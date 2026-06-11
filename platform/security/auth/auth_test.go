@@ -112,9 +112,14 @@ func signToken(
 }
 
 // newVerifier creates a JWKSVerifier pointing at the given JWKS server URL.
+//
+// The test JWKS servers are local httptest (http://) endpoints, so the helper
+// opts into WithAllowInsecureJWKS — the https-enforcement rule itself is
+// covered directly by TestJWKSVerifier_HTTPSEnforcement.
 func newVerifier(t *testing.T, jwksURL, issuer, audience string, opts ...auth.Option) *auth.JWKSVerifier {
 	t.Helper()
 	ctx := context.Background()
+	opts = append([]auth.Option{auth.WithAllowInsecureJWKS(true)}, opts...)
 	v, err := auth.NewJWKSVerifier(ctx, jwksURL, issuer, audience, opts...)
 	require.NoError(t, err)
 	return v

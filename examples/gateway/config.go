@@ -27,6 +27,11 @@ type Config struct {
 	JWKSUrl             string `env:"GATEWAY_JWKS_URL"              envDefault:""`
 	JWKSIssuer          string `env:"GATEWAY_JWKS_ISSUER"           envDefault:""`
 	JWKSAudience        string `env:"GATEWAY_JWKS_AUDIENCE"         envDefault:""`
+	// AuthAllowInsecureJWKS permits a non-https (http://) JWKS URL. Default
+	// false: the verifier refuses a plaintext JWKS URL at startup (fail
+	// closed — http keys can be MITM-swapped to forge tokens). Compose dev
+	// sets it true for the http Keycloak; NEVER enable it in production.
+	AuthAllowInsecureJWKS bool `env:"AUTH_ALLOW_INSECURE_JWKS" envDefault:"false"`
 	// AuthClockSkew is the acceptable clock skew for exp/iat/nbf validation —
 	// tolerates issuer/verifier clock drift (jwt.WithAcceptableSkew).
 	AuthClockSkew time.Duration `env:"AUTH_CLOCK_SKEW" envDefault:"30s"`

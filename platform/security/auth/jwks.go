@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -33,6 +34,17 @@ func WithClockSkew(d time.Duration) Option {
 	}
 }
 
+// WithAllowInsecureJWKS permits a non-https (http://) JWKS URL. By default the
+// verifier REFUSES a plaintext JWKS URL at construction (fail closed): keys
+// fetched over http can be swapped by a network man-in-the-middle, who could
+// then mint tokens this verifier would trust. Set this (AUTH_ALLOW_INSECURE_JWKS=true)
+// ONLY for local/dev against an http Keycloak. Never enable it in production.
+func WithAllowInsecureJWKS(allow bool) Option {
+	return func(v *JWKSVerifier) {
+		v.allowInsecureJWKS = allow
+	}
+}
+
 // WithRequiredAZP requires the token's "azp" (authorized party) claim to equal
 // azp (AUTH_REQUIRED_AZP). Use this when several clients share one realm and
 // audience: it pins tokens to the specific OAuth client they were issued to,
@@ -47,13 +59,14 @@ func WithRequiredAZP(azp string) Option {
 // JWKSVerifier verifies RS256 JWTs by fetching and caching the public JWKS
 // from a remote URL. The JWKS is refreshed automatically in the background.
 type JWKSVerifier struct {
-	cache          *jwk.Cache
-	jwksURL        string
-	issuer         string
-	audience       string
-	rolesClaimPath string
-	clockSkew      time.Duration
-	requiredAZP    string
+	cache             *jwk.Cache
+	jwksURL           string
+	issuer            string
+	audience          string
+	rolesClaimPath    string
+	clockSkew         time.Duration
+	requiredAZP       string
+	allowInsecureJWKS bool
 }
 
 // jwksInitTimeout bounds the initial JWKS fetch in NewJWKSVerifier. jwx v3's
@@ -87,6 +100,23 @@ func NewJWKSVerifier(ctx context.Context, jwksURL, issuer, audience string, opts
 
 	if jwksURL == "" {
 		return nil, fmt.Errorf("%w: JWKS URL must not be empty", ErrInvalidToken)
+	}
+
+	// Transport enforcement (fail closed): a JWKS fetched over plaintext http
+	// can be swapped by a man-in-the-middle, who could then forge tokens this
+	// verifier trusts. Require https unless AUTH_ALLOW_INSECURE_JWKS=true
+	// explicitly opts into the dev escape hatch.
+	if !v.allowInsecureJWKS {
+		u, err := url.Parse(jwksURL)
+		if err != nil {
+			return nil, fmt.Errorf("%w: JWKS URL is not a valid URL: %w", ErrInvalidToken, err)
+		}
+		if u.Scheme != "https" {
+			return nil, fmt.Errorf(
+				"%w: JWKS URL %q must use https (set AUTH_ALLOW_INSECURE_JWKS=true for local/dev http only)",
+				ErrInvalidToken, jwksURL,
+			)
+		}
 	}
 
 	cache, err := jwk.NewCache(ctx, httprc.NewClient())
