@@ -1,5 +1,15 @@
 # Round 8 — Security Remediation
 
+> **STATUS: COMPLETE (2026-06-12).** W1 + lanes A/B/C/D + 2 review rounds merged (~50 commits).
+> 5-agent audit → all findings fixed; app layer was already strong, exposure was unenforced trust
+> model + EOL infra. Security review of the diff found the headline audit hash-chain was BROKEN
+> (ns-hash vs µs-storage → false-positive on every clean row) + a CRITICAL preflight gap
+> (AUTH_ALLOW_INSECURE_JWKS unguarded in prod) — both fixed in a second review round along with
+> HMAC-keying, table-ownership-transfer (so REVOKE actually bites), genesis/head truncation
+> detection, and denial-storm coalescing. Final: gateway+e2e green, 49 other pkgs ok, lint 0,
+> errgen sync, compose+secure-overlay valid. Bench: HMAC chain ~722µs vs sha256 ~684µs (~5%, DB-bound,
+> no regression). S1 (remote + first CI) NEXT.
+
 > Source: 5-agent security audit (2026-06-11). App layer is strong (IDOR/alg-confusion/idempotency/injection
 > all clean); exposure is the documented-but-unenforced trust model + EOL infra images + secret-redaction
 > JSON gap. User decisions (all max-depth): (1) full transport knobs + enforce; (2) audit INSERT-role +
