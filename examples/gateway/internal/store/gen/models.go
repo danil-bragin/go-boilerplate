@@ -9,6 +9,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AuditLog struct {
+	ID        int64
+	Actor     string
+	Action    string
+	Subject   string
+	Metadata  []byte
+	CreatedAt pgtype.Timestamptz
+}
+
 type Inbox struct {
 	Consumer    string
 	MessageID   string

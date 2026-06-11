@@ -157,8 +157,10 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	flags := buildFeatureFlags(cfg, svc)
 	streamer := buildSSE(cfg, svc)
 
-	// Build the per-IP rate limiter (memory or Redis).
+	// Build the per-IP rate limiter (memory or Redis) and the optional
+	// authed-tier per-principal limiter (RATELIMIT_AUTHED_RPS=0 disables).
 	limiter := buildLimiter(cfg, svc)
+	authedLimit := newAuthedRateLimit(buildAuthedLimiter(cfg, svc), trustedPrefixes)
 
 	// Build the CQRS query handlers (raw → decorated).
 	rawGetOrder := gatewayapp.GetOrderHandler(svc.Pool())
@@ -240,9 +242,9 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	// Apply edge security + i18n middleware and mount all routes.
 	applyEdgeSecurity(cfg, httpSrv.Mux(), limiter, trustedPrefixes)
 	mountI18n(httpSrv.Mux(), bundle)
-	mountAPIRoutes(cfg, httpSrv.Mux(), apiServer, a.verifier)
-	mountAttachmentRoutes(cfg, httpSrv, a.verifier, objStore, flags, svc.Pool())
-	mountSSERoutes(cfg, httpSrv, a.verifier, streamer)
+	mountAPIRoutes(cfg, httpSrv.Mux(), apiServer, a.verifier, authedLimit)
+	mountAttachmentRoutes(cfg, httpSrv, a.verifier, objStore, flags, svc.Pool(), authedLimit)
+	mountSSERoutes(cfg, httpSrv, a.verifier, streamer, authedLimit)
 
 	return a, nil
 }

@@ -97,6 +97,9 @@ func mountI18n(mux chi.Router, bundle *i18n.Bundle) {
 //
 // The rate limiter is keyed by real client IP: RemoteAddr unless the request
 // arrives via a trusted proxy, in which case X-Forwarded-For is consulted.
+// (The authed-tier per-principal limiter is NOT applied here — it needs the
+// principal, so each route group chains it after its auth middleware; see
+// newAuthedRateLimit.)
 func applyEdgeSecurity(cfg Config, mux chi.Router, lim ratelimit.Limiter, trusted []netip.Prefix) {
 	mux.Use(httpserver.CORS(httpserver.CORSOptions{
 		AllowedOrigins: cfg.CORSOrigins,
@@ -104,6 +107,23 @@ func applyEdgeSecurity(cfg Config, mux chi.Router, lim ratelimit.Limiter, truste
 		AllowedHeaders: []string{"Content-Type", "Authorization", "X-Request-Id"},
 	}))
 	mux.Use(httpserver.RateLimitPer(lim, httpserver.ClientIPKey(trusted)))
+}
+
+// newAuthedRateLimit builds the authed-tier rate-limit middleware: a SECOND
+// limiter, chained after the per-IP one (both must pass), keyed per principal
+// (token subject) so one identity fanning out over many source IPs is still
+// capped, while two principals behind one NAT IP get independent buckets.
+// Anonymous requests fall back to the client-IP key.
+//
+// Returns nil when lim is nil (RATELIMIT_AUTHED_RPS=0 disables the tier).
+// The middleware must run AFTER the auth middleware of its route group —
+// before it, no principal is in the context and every request would take the
+// IP fallback.
+func newAuthedRateLimit(lim ratelimit.Limiter, trusted []netip.Prefix) func(http.Handler) http.Handler {
+	if lim == nil {
+		return nil
+	}
+	return httpserver.RateLimitPer(lim, httpserver.PrincipalKey(httpserver.ClientIPKey(trusted)))
 }
 
 // mountAPIRoutes wires the strict handler with optional auth middleware.
@@ -117,6 +137,7 @@ func mountAPIRoutes(
 	mux chi.Router,
 	apiServer api.StrictServerInterface,
 	verifier auth.Verifier,
+	authedLimit func(http.Handler) http.Handler,
 ) {
 	// Wrap handler errors: coded apperr errors keep their registered
 	// status/code, others → generic 500 INTERNAL (real error logged, never
@@ -135,10 +156,21 @@ func mountAPIRoutes(
 			httpserver.MaxBytes(cfg.HTTP.MaxBodyBytes),
 			httpserver.Timeout(cfg.HTTP.HandlerTimeout),
 		),
+		// Param-binding errors (missing required query param, bad date-time,
+		// non-integer limit) are raised by the generated wrapper BEFORE the
+		// strict handler — without this they'd be plain-text http.Error 400s
+		// instead of the coded GATEWAY_MALFORMED_REQUEST problem shape.
+		ErrorHandlerFunc: requestErrorHandler,
+	}
+	// Middleware slice semantics (generated code): handlers are wrapped in
+	// slice order, so the LAST element is the OUTERMOST — list the authed-tier
+	// limiter FIRST so it runs INSIDE (after) auth and sees the principal.
+	if authedLimit != nil {
+		chiOpts.Middlewares = append(chiOpts.Middlewares, api.MiddlewareFunc(authedLimit))
 	}
 	if !cfg.AuthDisabled {
 		authMiddleware := auth.Middleware(verifier)
-		chiOpts.Middlewares = []api.MiddlewareFunc{
+		chiOpts.Middlewares = append(chiOpts.Middlewares, api.MiddlewareFunc(
 			func(next http.Handler) http.Handler {
 				authed := authMiddleware(next)
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +181,7 @@ func mountAPIRoutes(
 					authed.ServeHTTP(w, r)
 				})
 			},
-		}
+		))
 	}
 	api.HandlerWithOptions(strictHandler, chiOpts)
 }
@@ -168,6 +200,7 @@ func mountAttachmentRoutes(
 	objStore blob.ObjectStore,
 	flags *featureflags.Flags,
 	pool *pg.Pool,
+	authedLimit func(http.Handler) http.Handler,
 ) {
 	if objStore == nil || flags == nil {
 		return
@@ -181,6 +214,11 @@ func mountAttachmentRoutes(
 		attachRouter = attachRouter.With(func(next http.Handler) http.Handler {
 			return attachMiddleware(next)
 		})
+	}
+	// Authed-tier limiter AFTER auth (chi runs With-middlewares in the order
+	// added) so the principal key is available.
+	if authedLimit != nil {
+		attachRouter = attachRouter.With(authedLimit)
 	}
 	// Ownership: only the order's customer (or an admin) may touch its
 	// attachments. Backed by the gateway read model (orders_read.customer_id).
@@ -200,13 +238,25 @@ func mountAttachmentRoutes(
 // fatal for an endless stream — and the body cap is moot on a GET whose body
 // is never read. The streamer's own heartbeat + client-close detection bound
 // the connection instead.
-func mountSSERoutes(cfg Config, httpSrv *httpserver.Server, verifier auth.Verifier, streamer *sse.Streamer) {
+func mountSSERoutes(
+	cfg Config,
+	httpSrv *httpserver.Server,
+	verifier auth.Verifier,
+	streamer *sse.Streamer,
+	authedLimit func(http.Handler) http.Handler,
+) {
 	var r chi.Router = httpSrv.Mux()
 	if !cfg.AuthDisabled {
 		sseMiddleware := auth.Middleware(verifier)
 		r = r.With(func(next http.Handler) http.Handler {
 			return sseMiddleware(next)
 		})
+	}
+	// Authed-tier limiter AFTER auth: one token per stream OPEN (reconnect
+	// storms are bounded per principal); the stream itself is long-lived and
+	// consumes nothing further.
+	if authedLimit != nil {
+		r = r.With(authedLimit)
 	}
 	r.Get("/v1/orders/{id}/events", streamer.Stream)
 

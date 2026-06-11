@@ -29,9 +29,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 
+	"go-boilerplate/platform/security/audit/gen"
 	"go-boilerplate/platform/storage/pg"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // Entry is a single audit-log record.
@@ -82,6 +86,48 @@ func (s *PgStore) Record(ctx context.Context, e Entry) error {
 		return fmt.Errorf("audit: record: %w", err)
 	}
 	return nil
+}
+
+// Query returns actor's audit entries whose created_at >= since (INCLUSIVE;
+// pass the zero time for "everything"), newest first, capped at limit rows.
+// limit <= 0 falls back to a defensive default of 100.
+//
+// This is the DSAR/audit read path (data subject access requests, incident
+// forensics): reads go through pg.FromContextRead, so they hit the reader
+// pool (or join an ambient transaction) and never queue on the writer.
+func (s *PgStore) Query(ctx context.Context, actor string, since time.Time, limit int) ([]Entry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rowLimit := int32(math.MaxInt32)
+	if limit < math.MaxInt32 {
+		rowLimit = int32(limit)
+	}
+	rows, err := gen.New(pg.FromContextRead(ctx, s.pool)).QueryByActor(ctx, gen.QueryByActorParams{
+		Actor:    actor,
+		Since:    pgtype.Timestamptz{Time: since, Valid: true},
+		RowLimit: rowLimit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("audit: query by actor: %w", err)
+	}
+	out := make([]Entry, len(rows))
+	for i, r := range rows {
+		var meta map[string]string
+		if len(r.Metadata) > 0 {
+			if err := json.Unmarshal(r.Metadata, &meta); err != nil {
+				return nil, fmt.Errorf("audit: unmarshal metadata (audit_log id %d): %w", r.ID, err)
+			}
+		}
+		out[i] = Entry{
+			Actor:    r.Actor,
+			Action:   r.Action,
+			Subject:  r.Subject,
+			Metadata: meta,
+			At:       r.CreatedAt.Time,
+		}
+	}
+	return out, nil
 }
 
 // marshalMetadata converts a string map (possibly nil) to a JSON byte slice.

@@ -104,6 +104,7 @@ func buildSSE(cfg Config, svc *servicekit.Service) *sse.Streamer {
 		client, svc.Pool(), svc.Logger(), cfg.AuthDisabled,
 		sse.WithHeartbeat(cfg.SSEHeartbeat),
 		sse.WithPollInterval(cfg.SSEPollInterval),
+		sse.WithMaxStreams(cfg.SSEMaxStreams),
 	)
 }
 
@@ -174,6 +175,25 @@ func ParseTrustedProxies(cidrs []string) ([]netip.Prefix, error) {
 // goroutine is stopped on shutdown. Redis limiters are stateless (no close
 // needed beyond the shared Redis connection managed separately).
 func buildLimiter(cfg Config, svc *servicekit.Service) ratelimit.Limiter {
+	return newLimiter(cfg, svc, "per-ip", cfg.RatelimitRPS, cfg.RatelimitBurst)
+}
+
+// buildAuthedLimiter constructs the SECOND, authed-tier limiter (keyed per
+// principal — see httpserver.PrincipalKey). Returns nil when
+// RATELIMIT_AUTHED_RPS=0 (the tier is disabled). Memory-vs-Redis selection
+// follows the same RATELIMIT_REDIS switch as the per-IP limiter.
+func buildAuthedLimiter(cfg Config, svc *servicekit.Service) ratelimit.Limiter {
+	if cfg.RatelimitAuthedRPS <= 0 {
+		return nil
+	}
+	return newLimiter(cfg, svc, "authed", cfg.RatelimitAuthedRPS, cfg.RatelimitAuthedBurst)
+}
+
+// newLimiter builds one named rate limiter with the given budget: Redis-backed
+// when RATELIMIT_REDIS=true and REDIS_ADDRS is reachable, in-memory otherwise
+// (graceful degradation, WARN logged). The in-memory janitor is registered
+// with svc.Closer under "ratelimit-<name>".
+func newLimiter(cfg Config, svc *servicekit.Service, name string, rps float64, burst int) ratelimit.Limiter {
 	if cfg.RatelimitRedis && len(cfg.Cache.RedisAddrs) > 0 && cfg.Cache.RedisAddrs[0] != "" {
 		// Build a dedicated rueidis client for rate limiting.
 		// The cache's rueidis client is encapsulated inside cache.Cache and not
@@ -186,19 +206,25 @@ func buildLimiter(cfg Config, svc *servicekit.Service) ratelimit.Limiter {
 		if err != nil {
 			svc.Logger().Warn(
 				"gateway: rate-limit Redis unavailable, falling back to in-memory limiter",
+				"limiter", name,
 				"error", err,
 				"redis_addrs", cfg.Cache.RedisAddrs,
 			)
 		} else {
-			svc.Logger().Info("gateway: distributed rate limit (Redis)", "addrs", cfg.Cache.RedisAddrs)
-			return ratelimit.NewRedis(client, cfg.RatelimitRPS, cfg.RatelimitBurst)
+			svc.Logger().Info("gateway: distributed rate limit (Redis)", "limiter", name, "addrs", cfg.Cache.RedisAddrs)
+			svc.Closer().Add("ratelimit-redis-"+name, func(context.Context) error {
+				client.Close()
+				return nil
+			})
+			return ratelimit.NewRedis(client, rps, burst)
 		}
 	} else if cfg.RatelimitRedis {
-		svc.Logger().Warn("gateway: RATELIMIT_REDIS=true but REDIS_ADDRS not set, falling back to in-memory limiter")
+		svc.Logger().Warn("gateway: RATELIMIT_REDIS=true but REDIS_ADDRS not set, falling back to in-memory limiter",
+			"limiter", name)
 	}
 
-	mem := ratelimit.NewMemory(cfg.RatelimitRPS, cfg.RatelimitBurst)
-	svc.Closer().Add("ratelimit-memory", func(_ context.Context) error {
+	mem := ratelimit.NewMemory(rps, burst)
+	svc.Closer().Add("ratelimit-memory-"+name, func(_ context.Context) error {
 		mem.Close()
 		return nil
 	})

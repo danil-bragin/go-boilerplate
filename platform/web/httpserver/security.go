@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go-boilerplate/platform/apperr"
+	"go-boilerplate/platform/security/auth"
 
 	"go-boilerplate/platform/web/httpx"
 	"go-boilerplate/platform/web/ratelimit"
@@ -179,6 +180,33 @@ func RateLimit(rps float64, burst int) func(http.Handler) http.Handler {
 	}
 }
 
+// KeyFunc derives the rate-limit bucket key for a request. An empty return
+// value makes RateLimitPer fall back to r.RemoteAddr.
+type KeyFunc = func(*http.Request) string
+
+// PrincipalKey returns a key function for per-principal rate limiting: an
+// authenticated request (auth.Principal in the request context, non-empty
+// Subject) is keyed "sub:"+Subject — every client of that principal shares
+// ONE bucket regardless of source IP, and two principals behind one NAT/proxy
+// IP get independent buckets. Anonymous requests (no principal, or an empty
+// Subject) delegate to fallback — typically ClientIPKey.
+//
+// The "sub:" prefix keeps the principal keyspace disjoint from the IP
+// keyspace: a subject that happens to look like an IP can never collide with
+// (and drain) that IP's anonymous bucket.
+//
+// Chain it as a SECOND limiter after the per-IP one (both must pass): the
+// per-IP limiter caps unauthenticated abuse per source, the per-principal
+// limiter caps a single identity fanning out over many sources.
+func PrincipalKey(fallback KeyFunc) KeyFunc {
+	return func(r *http.Request) string {
+		if p, ok := auth.From(r.Context()); ok && p.Subject != "" {
+			return "sub:" + p.Subject
+		}
+		return fallback(r)
+	}
+}
+
 // ClientIPKey returns a key function that extracts the caller's real IP address
 // from a request. RemoteAddr is authoritative unless it belongs to a trusted
 // proxy prefix, in which case X-Forwarded-For is walked right-to-left and the
@@ -192,7 +220,7 @@ func RateLimit(rps float64, burst int) func(http.Handler) http.Handler {
 //
 // If RemoteAddr cannot be parsed as a valid IP, it is returned as-is so that
 // callers always receive a stable, non-empty key.
-func ClientIPKey(trusted []netip.Prefix) func(*http.Request) string {
+func ClientIPKey(trusted []netip.Prefix) KeyFunc {
 	return func(r *http.Request) string {
 		raw := r.RemoteAddr
 
@@ -283,7 +311,7 @@ func inAny(addr netip.Addr, prefixes []netip.Prefix) bool {
 // as allowed results so they never trigger this path.
 //
 // If key(r) returns an empty string, r.RemoteAddr is used instead.
-func RateLimitPer(l ratelimit.Limiter, key func(*http.Request) string) func(http.Handler) http.Handler {
+func RateLimitPer(l ratelimit.Limiter, key KeyFunc) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			k := key(r)

@@ -43,7 +43,15 @@ type Config struct {
 	TrustedProxies []string `env:"TRUSTED_PROXIES" envSeparator:","`
 	// RatelimitRedis enables a Redis-backed distributed limiter when true.
 	// Falls back to in-memory if Redis is unavailable (graceful degradation).
+	// Applies to BOTH the per-IP and the authed-tier limiter.
 	RatelimitRedis bool `env:"RATELIMIT_REDIS" envDefault:"false"`
+	// RatelimitAuthedRPS is the sustained refill rate of the SECOND, authed-tier
+	// limiter, keyed per principal (token subject; anonymous requests fall back
+	// to the client IP). Chained AFTER the per-IP limiter — both must pass.
+	// 0 disables the authed tier entirely.
+	RatelimitAuthedRPS float64 `env:"RATELIMIT_AUTHED_RPS" envDefault:"200"`
+	// RatelimitAuthedBurst is the burst depth of the authed-tier limiter.
+	RatelimitAuthedBurst int `env:"RATELIMIT_AUTHED_BURST" envDefault:"400"`
 	// SSEHeartbeat is the keep-alive comment interval for SSE streams
 	// (GET /v1/orders/{id}/events). Keep it well below any intermediary's
 	// idle-connection timeout.
@@ -51,6 +59,11 @@ type Config struct {
 	// SSEPollInterval is the projection-store polling cadence SSE falls back
 	// to when REDIS_ADDRS is not configured (no pub/sub push available).
 	SSEPollInterval time.Duration `env:"GATEWAY_SSE_POLL_INTERVAL" envDefault:"2s"`
+	// SSEMaxStreams caps concurrently open SSE streams per replica (bulkhead
+	// guarding the per-stream memory/FD surface). When the cap is reached a
+	// NEW stream gets 503 GATEWAY_SSE_SATURATED (+ small Retry-After); the
+	// permit frees as soon as any stream ends. 0 (default) = no cap.
+	SSEMaxStreams int `env:"GATEWAY_SSE_MAX_STREAMS" envDefault:"0"`
 	// EmbeddedProjection controls whether this gateway process runs the
 	// read-model projection consumer (default true — single-binary demo
 	// topology). Set false when the projection runs as its own deployment

@@ -37,3 +37,9 @@ other = "Attachment {{.filename}} for order {{.order_id}} was not found."
 # (the detail text itself ships with the platform catalog).
 ["VALIDATION_FAILED.title"]
 other = "Invalid request"
+
+[GATEWAY_SSE_SATURATED]
+other = "The order event stream is at capacity. Please retry shortly."
+
+["GATEWAY_SSE_SATURATED.title"]
+other = "Stream capacity reached"

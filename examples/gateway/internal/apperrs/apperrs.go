@@ -30,8 +30,9 @@ var Catalog embed.FS
 // CatalogPaths are the embedded catalog files, base language (en) first.
 var CatalogPaths = []string{"catalog/en.toml", "catalog/ru.toml"}
 
-// Gateway error codes. All are permanent: they describe the client's request
-// (or a missing resource) — no retry with the same input can succeed.
+// Gateway error codes. All are permanent — they describe the client's request
+// (or a missing resource), so no retry with the same input can succeed —
+// EXCEPT GATEWAY_SSE_SATURATED, which is a transient capacity signal.
 const (
 	// CodeOrderNotFound: the requested order does not exist in the read
 	// model, or the caller is not allowed to see it (non-owners get the SAME
@@ -70,6 +71,12 @@ const (
 
 	// CodeAttachmentNotFound: no such attachment object for the order. 404.
 	CodeAttachmentNotFound = "GATEWAY_ATTACHMENT_NOT_FOUND"
+
+	// CodeSSESaturated: this replica's concurrent SSE stream cap
+	// (GATEWAY_SSE_MAX_STREAMS) is reached — a protective bulkhead, not a
+	// client error. Transient: retry (another replica, or after Retry-After)
+	// can succeed. 503.
+	CodeSSESaturated = "GATEWAY_SSE_SATURATED"
 )
 
 func init() {
@@ -84,4 +91,5 @@ func init() {
 	apperr.Register(CodeAttachmentInvalidOrderID, 400, true, "invalid order id")
 	apperr.Register(CodeAttachmentInvalidFilename, 400, true, "invalid filename")
 	apperr.Register(CodeAttachmentNotFound, 404, true, "attachment not found")
+	apperr.Register(CodeSSESaturated, 503, false, "order event stream capacity reached; retry shortly")
 }

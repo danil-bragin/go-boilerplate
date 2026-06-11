@@ -258,16 +258,29 @@ the collector only duplicates stdout into the collector's own stdout.
 
 ---
 
-## Per-IP rate limiting (gateway)
+## Rate limiting (gateway)
 
-The gateway applies a per-client-IP token-bucket rate limiter at the edge. Configure via:
+The gateway applies a per-client-IP token-bucket rate limiter at the edge,
+plus an optional SECOND, authed-tier limiter keyed per principal. Configure via:
 
 | Variable | Default | Description |
 |---|---|---|
 | `RATELIMIT_RPS` | `50` | Sustained token refill rate (requests per second per IP) |
 | `RATELIMIT_BURST` | `100` | Maximum burst depth per IP |
-| `RATELIMIT_REDIS` | `false` | Use Redis-backed distributed limiter (requires `REDIS_ADDRS`) |
+| `RATELIMIT_AUTHED_RPS` | `200` | Authed-tier refill rate per principal (token subject). `0` disables the tier |
+| `RATELIMIT_AUTHED_BURST` | `400` | Authed-tier burst depth per principal |
+| `RATELIMIT_REDIS` | `false` | Use Redis-backed distributed limiters (requires `REDIS_ADDRS`; applies to both tiers) |
 | `TRUSTED_PROXIES` | _(empty)_ | Comma-separated CIDRs for trusted reverse proxies (e.g. `10.0.0.0/8`). When set, `X-Forwarded-For` is consulted for client-IP extraction. |
+
+**Per-principal tier:** the per-IP limiter alone cannot cap one identity
+fanning out over many source IPs (botnets, serverless callers), and it
+over-punishes many users behind one NAT/corporate egress IP. The authed tier
+(`httpserver.PrincipalKey`) keys by the verified token subject (`sub:<subject>`),
+falling back to the client IP for anonymous requests, and is chained AFTER
+both the per-IP limiter and the auth middleware — every request must pass
+both tiers. Size it ABOVE the per-IP budget for the common case (defaults:
+200/400 vs 50/100) so a single well-behaved client never feels it; it exists
+to bound the aggregate of one principal across sources.
 
 **Memory vs Redis:** The default in-memory limiter is process-local. For multi-replica deployments set `RATELIMIT_REDIS=true` so all instances share a single Redis-backed counter. If Redis is unavailable the gateway falls back to in-memory (graceful degradation, WARN logged). The distributed limiter uses Redis server time (via `TIME` inside the Lua script) so all replicas share a single clock — immune to wall-clock skew between application instances.
 
@@ -290,6 +303,7 @@ curl -N -H "Authorization: Bearer $(just token)" \
 |---|---|---|
 | `GATEWAY_SSE_HEARTBEAT` | `15s` | Keep-alive comment interval (keep below any LB idle timeout) |
 | `GATEWAY_SSE_POLL_INTERVAL` | `2s` | Store-polling cadence with no Redis configured; ×30 = the Redis-mode safety-poll cadence |
+| `GATEWAY_SSE_MAX_STREAMS` | `0` | Per-replica cap on concurrently open streams (bulkhead). New streams beyond it get `503 GATEWAY_SSE_SATURATED` with a small `Retry-After`; the permit frees when any stream ends. `0` = no cap |
 
 **Transport:** the projection publishes every committed status change as
 `{"order_id":…,"status":…}` on the single Redis channel `orders:status` (it
@@ -794,6 +808,55 @@ want the side effects to run again. For projection rebuilds use consumer-group
 seek (above), not redrive.
 
 ---
+
+## API evolution (deprecation & versioning)
+
+Additive changes (new optional fields, new endpoints, new error codes) never
+need a version bump — clients must ignore what they don't know. A version
+bump is for **breaking** changes only: removed/renamed fields, changed
+semantics, a different resource shape. Then the playbook is *parallel-run,
+deprecate, sunset* — never in-place mutation:
+
+1. **Mount the successor in parallel.** REST resources are versioned by path
+   prefix (`/v1`, `/v2`); chi makes the parallel mount trivial and both
+   versions share the edge middleware (auth, rate limit, i18n):
+
+   ```text
+   mux.Route("/v1", func(r chi.Router) {
+       r.Use(httpserver.Deprecate(sunset, "/v2/orders"))
+       r.Get("/orders", v1Handler)   // old shape, unchanged behavior
+   })
+   mux.Route("/v2", func(r chi.Router) {
+       r.Get("/orders", v2Handler)   // new shape
+   })
+   ```
+
+   Both handlers typically call the same application layer and differ only in
+   the response mapping — version the *representation*, not the domain.
+
+2. **Announce the removal date on the wire.** `httpserver.Deprecate(sunset,
+   successor)` stamps every old-version response with `Deprecation:
+   @<unix-seconds>` (RFC 9745), `Sunset: <IMF-fixdate>` (RFC 8594) and
+   `Link: <successor>; rel="successor-version"`, so clients and API
+   monitors discover the migration mechanically — no release-notes archaeology.
+   Sunset is a promise: it may move further away, never closer. Alert on
+   old-version traffic (the `http.server.request.duration` metrics are tagged
+   per route) as the sunset approaches; remove the mount only when it's ~zero
+   or the date arrives, whichever is later.
+
+3. **Proto/Kafka analog.** Event contracts version through the proto package:
+   a breaking message change is a NEW package (`orders.v2`) and a new
+   versioned event-type (`consume.EventTypeFor[*ordersv2.OrderCreated](2)` —
+   the `.v2` suffix in the header), produced ALONGSIDE `.v1` while consumers
+   migrate; `buf breaking` (CI-blocking) is the guard that forces this route
+   instead of an in-place edit. Consumers advertise which versions they
+   handle by their `consume` registrations, so "who still reads v1" is
+   answered by the consumer-group lag on the old event type, the same way
+   old-route traffic answers it for REST.
+
+OpenAPI note: the gateway spec documents `/v1/*` paths; a `/v2` adds new
+path entries in the SAME `openapi.yaml` (one spec, many versions) so codegen
+and the strict handler cover both during the parallel-run window.
 
 ## Database migrations
 

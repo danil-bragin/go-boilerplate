@@ -18,6 +18,7 @@ import (
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/msgctx"
 	"go-boilerplate/platform/resilience"
+	"go-boilerplate/platform/security/audit"
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/security/authz"
 	"go-boilerplate/platform/storage/pg"
@@ -64,6 +65,7 @@ type Server struct {
 	authDisabled      bool
 	encoder           Encoder
 	pendingBatcher    *PendingBatcher
+	auditStore        *audit.PgStore
 }
 
 // SetPendingBatcher switches the POST-time pending-row insert from the
@@ -100,6 +102,7 @@ func NewServer(
 		getOrderHandler:   getOrderHandler,
 		listOrdersHandler: listOrdersHandler,
 		authDisabled:      authDisabled,
+		auditStore:        audit.NewPgStore(pool),
 	}
 }
 
@@ -314,6 +317,64 @@ func (s *Server) rejectIdempotentBodyMismatch(ctx context.Context, orderID strin
 		return apperr.New(apperrs.CodeIdempotencyBodyMismatch)
 	}
 	return nil // proceed
+}
+
+// Audit listing bounds: requests without ?limit get auditDefaultLimit
+// entries; anything above auditMaxLimit is clamped (matching the documented
+// openapi maximum — values past it are not an error, just capped).
+const (
+	auditDefaultLimit = 50
+	auditMaxLimit     = 500
+)
+
+// QueryAudit implements StrictServerInterface: the admin-only audit read
+// path — GET /v1/audit?actor=&since=&limit= returns one actor's audit trail,
+// newest first (DSAR / incident forensics; see docs/data-privacy.md).
+//
+// Authorization: ADMIN ONLY. Unlike order reads there is no 404 masking —
+// the endpoint's existence is not a secret and it is not keyed by a
+// guessable resource id — so a non-admin principal gets a plain 403
+// AUTH_FORBIDDEN. With auth disabled (dev/demo) the endpoint is open, same
+// as every other route.
+func (s *Server) QueryAudit(ctx context.Context, request QueryAuditRequestObject) (QueryAuditResponseObject, error) {
+	if !s.authDisabled {
+		p, ok := auth.From(ctx)
+		if !ok {
+			return nil, authz.ErrUnauthenticated
+		}
+		if !slices.Contains(p.Roles, attachments.AdminRole) {
+			return nil, authz.ErrForbidden
+		}
+	}
+
+	var since time.Time // zero = full retained trail
+	if request.Params.Since != nil {
+		since = *request.Params.Since
+	}
+	limit := auditDefaultLimit
+	if request.Params.Limit != nil {
+		limit = min(max(*request.Params.Limit, 1), auditMaxLimit)
+	}
+
+	entries, err := s.auditStore.Query(ctx, request.Params.Actor, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: query audit: %w", err)
+	}
+
+	items := make([]AuditEntry, len(entries))
+	for i, e := range entries {
+		items[i] = AuditEntry{
+			Actor:   e.Actor,
+			Action:  e.Action,
+			Subject: e.Subject,
+			At:      formatCreatedAt(e.At),
+		}
+		if len(e.Metadata) > 0 {
+			meta := e.Metadata
+			items[i].Metadata = &meta
+		}
+	}
+	return QueryAudit200JSONResponse{Items: items}, nil
 }
 
 // ListOrders implements StrictServerInterface: cursor-paginated listing of

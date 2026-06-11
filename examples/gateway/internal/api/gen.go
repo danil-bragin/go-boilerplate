@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/oapi-codegen/runtime"
@@ -17,6 +18,29 @@ import (
 const (
 	BearerAuthScopes = "bearerAuth.Scopes"
 )
+
+// AuditEntry One audit-log record of a successfully executed command.
+type AuditEntry struct {
+	// Action Audited action name (e.g. "order:create").
+	Action string `json:"action"`
+
+	// Actor Authenticated subject that performed the action.
+	Actor string `json:"actor"`
+
+	// At When the audited command committed, RFC 3339 in UTC with the "Z" suffix.
+	At string `json:"at"`
+
+	// Metadata Structured context captured with the entry.
+	Metadata *map[string]string `json:"metadata,omitempty"`
+
+	// Subject Identifier of the resource acted upon (e.g. an order id).
+	Subject string `json:"subject"`
+}
+
+// AuditEntryList Audit entries for one actor, newest first.
+type AuditEntryList struct {
+	Items []AuditEntry `json:"items"`
+}
 
 // CreateOrderRequest Request body for creating a new order. Constraints are enforced at the gateway edge BEFORE the command is produced (violations yield a 400 problem+json with code VALIDATION_FAILED and per-field params.fields entries); the orders consumer revalidates as defense in depth.
 type CreateOrderRequest struct {
@@ -113,6 +137,18 @@ type TooManyRequests = Problem
 // Unauthorized RFC 9457 problem details. The machine-readable API contract is the extension pair (code, params): clients switch on code and read params; title and detail are human-readable, may be localized via Accept-Language, and must not be parsed.
 type Unauthorized = Problem
 
+// QueryAuditParams defines parameters for QueryAudit.
+type QueryAuditParams struct {
+	// Actor Actor whose entries to return — the authenticated subject recorded at write time.
+	Actor string `form:"actor" json:"actor"`
+
+	// Since Inclusive lower bound on entry time, RFC 3339 (e.g. "2026-06-01T00:00:00Z"). Omit to return the full retained trail.
+	Since *time.Time `form:"since,omitempty" json:"since,omitempty"`
+
+	// Limit Maximum number of entries returned (the NEWEST ones are kept). Values above the maximum are clamped server-side.
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // ListOrdersParams defines parameters for ListOrders.
 type ListOrdersParams struct {
 	// Cursor Opaque pagination cursor returned by a previous page.
@@ -147,6 +183,9 @@ type ServerInterface interface {
 	// Health check
 	// (GET /healthz)
 	HealthCheck(w http.ResponseWriter, r *http.Request)
+	// Query the audit trail by actor (admin only)
+	// (GET /v1/audit)
+	QueryAudit(w http.ResponseWriter, r *http.Request, params QueryAuditParams)
 	// List orders
 	// (GET /v1/orders)
 	ListOrders(w http.ResponseWriter, r *http.Request, params ListOrdersParams)
@@ -165,6 +204,12 @@ type Unimplemented struct{}
 // Health check
 // (GET /healthz)
 func (_ Unimplemented) HealthCheck(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Query the audit trail by actor (admin only)
+// (GET /v1/audit)
+func (_ Unimplemented) QueryAudit(w http.ResponseWriter, r *http.Request, params QueryAuditParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -200,6 +245,62 @@ func (siw *ServerInterfaceWrapper) HealthCheck(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.HealthCheck(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// QueryAudit operation middleware
+func (siw *ServerInterfaceWrapper) QueryAudit(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params QueryAuditParams
+
+	// ------------- Required query parameter "actor" -------------
+
+	if paramValue := r.URL.Query().Get("actor"); paramValue != "" {
+
+	} else {
+		siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "actor"})
+		return
+	}
+
+	err = runtime.BindQueryParameter("form", true, true, "actor", r.URL.Query(), &params.Actor)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "actor", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "since" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "since", r.URL.Query(), &params.Since)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "since", Err: err})
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", r.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.QueryAudit(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -489,6 +590,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/healthz", wrapper.HealthCheck)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/audit", wrapper.QueryAudit)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/orders", wrapper.ListOrders)
 	})
 	r.Group(func(r chi.Router) {
@@ -528,6 +632,78 @@ type HealthCheck200Response struct {
 func (response HealthCheck200Response) VisitHealthCheckResponse(w http.ResponseWriter) error {
 	w.WriteHeader(200)
 	return nil
+}
+
+type QueryAuditRequestObject struct {
+	Params QueryAuditParams
+}
+
+type QueryAuditResponseObject interface {
+	VisitQueryAuditResponse(w http.ResponseWriter) error
+}
+
+type QueryAudit200JSONResponse AuditEntryList
+
+func (response QueryAudit200JSONResponse) VisitQueryAuditResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type QueryAudit400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response QueryAudit400ApplicationProblemPlusJSONResponse) VisitQueryAuditResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type QueryAudit401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response QueryAudit401ApplicationProblemPlusJSONResponse) VisitQueryAuditResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type QueryAudit403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response QueryAudit403ApplicationProblemPlusJSONResponse) VisitQueryAuditResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type QueryAudit429ApplicationProblemPlusJSONResponse struct {
+	TooManyRequestsApplicationProblemPlusJSONResponse
+}
+
+func (response QueryAudit429ApplicationProblemPlusJSONResponse) VisitQueryAuditResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(429)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type QueryAudit503ApplicationProblemPlusJSONResponse struct {
+	ServiceUnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response QueryAudit503ApplicationProblemPlusJSONResponse) VisitQueryAuditResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ListOrdersRequestObject struct {
@@ -761,6 +937,9 @@ type StrictServerInterface interface {
 	// Health check
 	// (GET /healthz)
 	HealthCheck(ctx context.Context, request HealthCheckRequestObject) (HealthCheckResponseObject, error)
+	// Query the audit trail by actor (admin only)
+	// (GET /v1/audit)
+	QueryAudit(ctx context.Context, request QueryAuditRequestObject) (QueryAuditResponseObject, error)
 	// List orders
 	// (GET /v1/orders)
 	ListOrders(ctx context.Context, request ListOrdersRequestObject) (ListOrdersResponseObject, error)
@@ -818,6 +997,32 @@ func (sh *strictHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(HealthCheckResponseObject); ok {
 		if err := validResponse.VisitHealthCheckResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// QueryAudit operation middleware
+func (sh *strictHandler) QueryAudit(w http.ResponseWriter, r *http.Request, params QueryAuditParams) {
+	var request QueryAuditRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.QueryAudit(ctx, request.(QueryAuditRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "QueryAudit")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(QueryAuditResponseObject); ok {
+		if err := validResponse.VisitQueryAuditResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
