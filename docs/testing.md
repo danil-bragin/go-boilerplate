@@ -33,7 +33,9 @@ func TestMyIntegration(t *testing.T) {
 This creates two CI lanes:
 
 - **Fast lane** — `go test -short ./...`: runs unit + functional tests only.
-  No Docker daemon required. Should complete in seconds. The example services
+  No Docker daemon required. Wall time ~40s for the whole lane (the arch
+  guards' `go list -deps` sweeps are the long pole; individual packages run
+  in ≤1s isolated). The example services
   model this lane too: each has `-short` tests driving the real transport
   pipeline through `fakes.Broker` (no containers).
 - **Full lane** — `go test ./...`: also runs integration tests (and the e2e
