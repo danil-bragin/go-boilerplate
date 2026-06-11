@@ -374,6 +374,84 @@ the generic worker offers — so it intentionally does not use `RunAsLeader`.
 
 ---
 
+## Transport security (SASL / TLS / Redis auth / JWKS https)
+
+Dev runs every transport plaintext (all knobs default off). Production turns
+them on. See ADR-0014 for the rationale. All passwords are `config.Secret` —
+they never appear in a config dump, log line, or JSON/YAML serialization.
+
+### Kafka SASL + TLS
+
+| env | values | meaning |
+|---|---|---|
+| `KAFKA_SASL_MECHANISM` | `` (none) / `PLAIN` / `SCRAM-SHA-256` / `SCRAM-SHA-512` | empty = no SASL (dev default); unknown value = startup error |
+| `KAFKA_SASL_USER` | string | SASL username |
+| `KAFKA_SASL_PASSWORD` | string | SASL password (redacted secret) |
+| `KAFKA_TLS_ENABLED` | `true`/`false` | wrap the broker connection in TLS (min TLS 1.2) |
+| `KAFKA_TLS_INSECURE_SKIP_VERIFY` | `true`/`false` | **DEV ONLY** — disables broker cert verification (MITM-able; never in prod) |
+
+Prefer SCRAM over PLAIN, and always pair SASL with TLS over an untrusted
+network — PLAIN sends the password and even SCRAM leaks material on a plaintext
+wire. Example production env block:
+
+```sh
+KAFKA_SASL_MECHANISM=SCRAM-SHA-512
+KAFKA_SASL_USER=orders-svc
+KAFKA_SASL_PASSWORD=...          # from a secret store / _FILE, not inline
+KAFKA_TLS_ENABLED=true
+# KAFKA_TLS_INSECURE_SKIP_VERIFY stays false — provision a CA bundle instead
+```
+
+### Redis password + TLS
+
+The same `REDIS_PASSWORD` / `REDIS_TLS_ENABLED` apply to **all three** rueidis
+clients (cache L2, rate-limit, SSE pub/sub) via `cache.BuildRueidisOption`.
+rueidis dials eagerly, so a wrong/missing password against a `requirepass`
+Redis fails closed at startup.
+
+```sh
+REDIS_PASSWORD=...               # matches the server's requirepass
+REDIS_TLS_ENABLED=true
+```
+
+### JWKS must be https
+
+`NewJWKSVerifier` refuses a non-`https` JWKS URL at startup. Point
+`GATEWAY_JWKS_URL` at an `https` endpoint in production. The dev escape hatch
+`AUTH_ALLOW_INSECURE_JWKS=true` (set in docker-compose for the internal
+`http://keycloak` realm) is **dev only** — an http JWKS can be MITM-swapped to
+forge tokens.
+
+### Secure compose overlay
+
+Dev `docker-compose.yml` keeps Kafka/Redis plaintext for zero-friction startup.
+For a SASL+TLS demo, layer a `docker-compose.secure.yml` (or set the env block
+above in your orchestrator). Minimal overlay shape — enable Redpanda SASL and
+point the app services at it:
+
+```yaml
+# docker-compose.secure.yml  →  docker compose -f docker-compose.yml -f docker-compose.secure.yml up
+services:
+  redis:
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
+  gateway:
+    environment:
+      KAFKA_SASL_MECHANISM: SCRAM-SHA-256
+      KAFKA_SASL_USER: ${KAFKA_SASL_USER}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD}
+      KAFKA_TLS_ENABLED: "true"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_TLS_ENABLED: "true"
+  # repeat the environment block for orders / payments / projection
+```
+
+Redpanda SASL setup (superuser bootstrap, ACLs) and broker TLS certs are
+deployment-specific; the franz-go side is fully wired — only the broker config
+and a CA bundle remain. (W2-D ships the concrete secure overlay + image
+hardening.)
+
+---
+
 ## JWKS outage semantics (gateway auth)
 
 When `GATEWAY_AUTH_DISABLED=false`, the gateway verifies bearer JWTs against the IdP's JWKS. The key set is fetched once at startup (startup FAILS fast if the initial fetch cannot complete) and then cached and refreshed in the background (`jwk.Cache`). During an IdP/JWKS outage:
