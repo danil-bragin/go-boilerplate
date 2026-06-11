@@ -3,11 +3,12 @@
 // aggregate id (preserving per-aggregate ordering within a partition).
 //
 // Message.Headers must be a JSON object (map[string]string). If the value is
-// not a valid JSON object the custom headers are silently dropped and only the
-// standard headers (event-type, message-id, aggregate-type) are sent. This is
-// intentional: a malformed-header row must not wedge the relay — the message
-// is still delivered with degraded metadata rather than blocking the entire
-// outbox batch forever (head-of-line block on a poison row).
+// not a valid JSON object the custom headers are dropped (with a WARN carrying
+// the outbox row id) and only the standard headers (event-type, message-id,
+// aggregate-type) are sent. This is intentional: a malformed-header row must
+// not wedge the relay — the message is still delivered with degraded metadata
+// rather than blocking the entire outbox batch forever (head-of-line block on
+// a poison row).
 //
 // # Schema Registry framing
 //
@@ -23,6 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/outbox"
@@ -42,6 +44,7 @@ type KafkaPublisher struct {
 	producer *kafka.Producer
 	topicFor func(outbox.Message) string
 	encoder  ValueEncoder
+	log      *slog.Logger
 }
 
 // Option configures a KafkaPublisher.
@@ -60,6 +63,16 @@ func WithEncoder(enc ValueEncoder) Option {
 	return func(p *KafkaPublisher) { p.encoder = enc }
 }
 
+// WithLogger sets the structured logger used for operational warnings (e.g.
+// the malformed-headers drop). Defaults to slog.Default().
+func WithLogger(l *slog.Logger) Option {
+	return func(p *KafkaPublisher) {
+		if l != nil {
+			p.log = l
+		}
+	}
+}
+
 // New builds a KafkaPublisher. By default the topic is the message's Topic
 // field (AggregateType as legacy fallback); override with WithTopicFunc.
 func New(producer *kafka.Producer, opts ...Option) *KafkaPublisher {
@@ -71,6 +84,7 @@ func New(producer *kafka.Producer, opts ...Option) *KafkaPublisher {
 			}
 			return m.AggregateType
 		},
+		log: slog.Default(),
 	}
 	for _, o := range opts {
 		o(p)
@@ -94,6 +108,14 @@ func (p *KafkaPublisher) messageToRecord(msg outbox.Message) (kafka.Record, erro
 			for k, v := range custom {
 				headers[k] = v
 			}
+		} else {
+			// Deliver with standard headers only (no head-of-line block on a
+			// poison row), but make the degraded metadata visible.
+			p.log.Warn("outboxkafka: malformed Message.Headers JSON — custom headers dropped",
+				"outbox_id", msg.ID.String(),
+				"event_type", msg.EventType,
+				"aggregate_id", msg.AggregateID,
+				"error", err)
 		}
 	}
 	value := msg.Payload
@@ -129,11 +151,9 @@ func (p *KafkaPublisher) PublishBatch(ctx context.Context, msgs []outbox.Message
 
 // Publish produces the message to Kafka. Standard headers (event-type,
 // message-id, aggregate-type) are added alongside any Message.Headers.
-// Malformed Message.Headers JSON is silently dropped so a poison row cannot
-// block the relay (head-of-line block prevention).
-//
-// TODO(SP5): replace the silent drop with a structured log warning once the
-// platform logger is wired into this package.
+// Malformed Message.Headers JSON is dropped — with a WARN carrying the outbox
+// row id — so a poison row cannot block the relay (head-of-line block
+// prevention).
 func (p *KafkaPublisher) Publish(ctx context.Context, msg outbox.Message) error {
 	rec, err := p.messageToRecord(msg)
 	if err != nil {
