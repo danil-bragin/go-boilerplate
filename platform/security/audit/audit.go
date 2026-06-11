@@ -145,6 +145,10 @@ func (s *PgStore) Record(ctx context.Context, e Entry) error {
 // audit write survives a request whose own context is being cancelled by the
 // denial/response path.
 func (s *PgStore) RecordOutOfBand(ctx context.Context, e Entry) error {
+	if s.pool == nil {
+		// No audit backend wired (demo/unit context). Best-effort: drop.
+		return nil
+	}
 	auditCtx := context.WithoutCancel(ctx)
 	return pg.RunInTx(auditCtx, s.pool, func(ctx context.Context) error {
 		return s.Record(ctx, e)
