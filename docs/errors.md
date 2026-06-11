@@ -35,6 +35,8 @@ localized texts live in the owning service's i18n catalog, keyed by code.
 | `GATEWAY_ATTACHMENT_INVALID_FILENAME` | 400 | yes | — | invalid filename |
 | `GATEWAY_ATTACHMENT_INVALID_ORDER_ID` | 400 | yes | — | invalid order id |
 | `GATEWAY_ATTACHMENT_NOT_FOUND` | 404 | yes | — | attachment not found |
+| `GATEWAY_ATTACHMENT_TOO_LARGE` | 413 | yes | — | attachment exceeds the maximum allowed size |
+| `GATEWAY_ATTACHMENT_TYPE_REJECTED` | 415 | yes | `content_type` | attachment content type {content_type} is not allowed |
 | `GATEWAY_IDEMPOTENCY_BODY_MISMATCH` | 409 | yes | — | idempotency key reused with different request body; replay the original request unchanged or use a new key |
 | `GATEWAY_INVALID_CURSOR` | 400 | yes | — | invalid cursor parameter |
 | `GATEWAY_INVALID_TIMEZONE` | 400 | yes | `timezone` | invalid X-Timezone value {timezone}: must be an IANA tz database name such as Europe/Kyiv |

@@ -223,7 +223,9 @@ func mountAttachmentRoutes(
 	}
 	// Ownership: only the order's customer (or an admin) may touch its
 	// attachments. Backed by the gateway read model (orders_read.customer_id).
-	opts := []attachments.Option{}
+	opts := []attachments.Option{
+		attachments.WithAllowedContentTypes(cfg.AttachmentContentTypes),
+	}
 	if pool != nil {
 		opts = append(
 			opts,

@@ -79,8 +79,9 @@ type Config struct {
 	// SSEMaxStreams caps concurrently open SSE streams per replica (bulkhead
 	// guarding the per-stream memory/FD surface). When the cap is reached a
 	// NEW stream gets 503 GATEWAY_SSE_SATURATED (+ small Retry-After); the
-	// permit frees as soon as any stream ends. 0 (default) = no cap.
-	SSEMaxStreams int `env:"GATEWAY_SSE_MAX_STREAMS" envDefault:"0"`
+	// permit frees as soon as any stream ends. Default 4096 is a safe bulkhead
+	// for a typical replica; set 0 to explicitly opt OUT of the cap (unlimited).
+	SSEMaxStreams int `env:"GATEWAY_SSE_MAX_STREAMS" envDefault:"4096"`
 	// EmbeddedProjection controls whether this gateway process runs the
 	// read-model projection consumer (default true — single-binary demo
 	// topology). Set false when the projection runs as its own deployment
@@ -103,6 +104,20 @@ type Config struct {
 	// batch INSERTs — the projection creates the row when OrderCreated
 	// arrives regardless).
 	PendingAsync bool `env:"GATEWAY_PENDING_ASYNC" envDefault:"false"`
+	// AttachmentContentTypes is the upload Content-Type allowlist for order
+	// attachments. An upload whose media type is not listed is rejected with
+	// 415 GATEWAY_ATTACHMENT_TYPE_REJECTED — defence-in-depth against stored
+	// XSS (renderable types such as text/html and image/svg+xml are absent by
+	// default; Download additionally forces an attachment disposition).
+	// Empty falls back to attachments.DefaultAllowedContentTypes.
+	AttachmentContentTypes []string `env:"GATEWAY_ATTACHMENT_CONTENT_TYPES" envSeparator:"," envDefault:"application/pdf,image/png,image/jpeg,image/gif,text/plain,application/octet-stream"`
+	// RatelimitFailClosed makes the Redis-backed rate limiters DENY requests
+	// when Redis is unavailable instead of failing open (the default). Trade-off:
+	// fail-open preserves edge availability during a Redis outage but can admit
+	// bursts beyond the configured rate; fail-closed enforces strictly at the
+	// cost of denying traffic while Redis is down. The production preflight
+	// REQUIRES this true when RATELIMIT_REDIS=true (see Validate).
+	RatelimitFailClosed bool `env:"RATELIMIT_FAIL_CLOSED" envDefault:"false"`
 }
 
 // defaultDevPGDSN is the shipped development PG_DSN (see pg.Config). Booting
@@ -126,10 +141,7 @@ func (c Config) Validate() error {
 		c.checkPGSecure,
 		c.checkS3Secure,
 		c.checkCORSNotWildcard,
-		// TODO(W1.2/lane-C): once C2 wires RATELIMIT_FAIL_CLOSED, add a check
-		// here requiring fail-closed in production. Left as a hook so lane C
-		// completes it without a merge collision — do NOT hard-fail on the
-		// ratelimit fail-open default from this lane.
+		c.checkRatelimitFailClosed,
 	)
 }
 
@@ -166,6 +178,20 @@ func (c Config) checkS3Secure() error {
 func (c Config) checkCORSNotWildcard() error {
 	if slices.Contains(c.CORSOrigins, "*") {
 		return errors.New(`GATEWAY_CORS_ORIGINS must not be "*" in production: set explicit allowed origins`)
+	}
+	return nil
+}
+
+// checkRatelimitFailClosed forbids a fail-open distributed rate limiter in
+// production. With RATELIMIT_REDIS=true the limiter is the edge's defence
+// against floods; if it fails OPEN, a Redis outage silently lifts the limit and
+// lets unbounded traffic through. Production must fail CLOSED so an outage
+// sheds load instead of removing the guard. The check is scoped to
+// RATELIMIT_REDIS=true: the in-memory limiter has no external dependency to
+// fail open against.
+func (c Config) checkRatelimitFailClosed() error {
+	if c.RatelimitRedis && !c.RatelimitFailClosed {
+		return errors.New("RATELIMIT_FAIL_CLOSED must be true in production when RATELIMIT_REDIS=true: a fail-open limiter lets a Redis outage silently remove the rate limit")
 	}
 	return nil
 }

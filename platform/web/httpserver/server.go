@@ -25,6 +25,11 @@ type Config struct {
 	MaxBodyBytes int64 `env:"HTTP_MAX_BODY_BYTES" envDefault:"1048576"`
 	// HandlerTimeout is the per-request timeout (default 30s).
 	HandlerTimeout time.Duration `env:"HTTP_HANDLER_TIMEOUT" envDefault:"30s"`
+	// HSTSMaxAge is the Strict-Transport-Security max-age in seconds emitted by
+	// the SecurityHeaders middleware (default 31536000 = 1 year). Set 0 to
+	// disable HSTS entirely — choose that when a TLS-terminating ingress owns
+	// the header. Only meaningful when TLS terminates at or before this server.
+	HSTSMaxAge int `env:"HTTP_HSTS_MAX_AGE" envDefault:"31536000"`
 }
 
 // Server wraps a chi router and an http.Server with the standard stack.
@@ -137,7 +142,7 @@ func New(cfg Config, opts ...ServerOption) *Server {
 	}
 
 	mux := chi.NewRouter()
-	mux.Use(SecurityHeaders)
+	mux.Use(SecurityHeadersWithHSTS(cfg.HSTSMaxAge))
 	mux.Use(RequestID)
 	mux.Use(OTel)
 	mux.Use(AccessLog)

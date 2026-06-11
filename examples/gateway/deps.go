@@ -18,6 +18,9 @@ import (
 
 	"github.com/redis/rueidis"
 	inmemory "go.openfeature.dev/openfeature/v2/providers/inmemory"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // buildVerifier resolves the auth.Verifier for NewApp.
@@ -210,7 +213,8 @@ func newLimiter(cfg Config, svc *servicekit.Service, name string, rps float64, b
 				"redis_addrs", cfg.Cache.RedisAddrs,
 			)
 		} else {
-			svc.Logger().Info("gateway: distributed rate limit (Redis)", "limiter", name, "addrs", cfg.Cache.RedisAddrs)
+			svc.Logger().Info("gateway: distributed rate limit (Redis)",
+				"limiter", name, "addrs", cfg.Cache.RedisAddrs, "fail_closed", cfg.RatelimitFailClosed)
 			svc.Closer().Add("ratelimit-redis-"+name, func(context.Context) error {
 				client.Close()
 				return nil
@@ -219,7 +223,19 @@ func newLimiter(cfg Config, svc *servicekit.Service, name string, rps float64, b
 			// "rl:" namespace, and an anonymous request (PrincipalKey falls
 			// back to the IP key) would double-debit ONE bucket with two
 			// different rps/burst clamps — wrong admitted rate and headers.
-			return ratelimit.NewRedis(client, rps, burst, ratelimit.WithKeyPrefix("rl:"+name+":"))
+			//
+			// Fail-open vs fail-closed is operator-selected (RATELIMIT_FAIL_CLOSED;
+			// the production preflight requires fail-closed here). WithOnError is
+			// ALWAYS wired so a Redis failure is observable — it bumps the
+			// ratelimit.errors counter {limiter} and logs a throttled WARN —
+			// whether the limiter then admits (fail-open) or denies (fail-closed).
+			onErr := limiterOnError(svc, name)
+			return ratelimit.NewRedis(
+				client, rps, burst,
+				ratelimit.WithKeyPrefix("rl:"+name+":"),
+				ratelimit.WithFailClosed(cfg.RatelimitFailClosed),
+				ratelimit.WithOnError(onErr),
+			)
 		}
 	} else if cfg.RatelimitRedis {
 		svc.Logger().Warn("gateway: RATELIMIT_REDIS=true but REDIS_ADDRS not set, falling back to in-memory limiter",
@@ -232,4 +248,29 @@ func newLimiter(cfg Config, svc *servicekit.Service, name string, rps float64, b
 		return nil
 	})
 	return mem
+}
+
+// limiterOnError builds the ALWAYS-wired ratelimit.WithOnError callback for the
+// named limiter: it increments the ratelimit.errors counter (labelled by
+// limiter) and logs a WARN so a Redis-backed limiter's failures are observable
+// regardless of whether it then fails open (admit) or closed (deny). The
+// counter is created once from the global otel meter; a failed instrument
+// creation degrades to a nil counter (logging still fires) — metrics must never
+// break the edge.
+func limiterOnError(svc *servicekit.Service, name string) func(error) {
+	var counter metric.Int64Counter
+	if c, err := otel.Meter("gateway.ratelimit").Int64Counter(
+		"ratelimit.errors",
+		metric.WithDescription("Rate-limiter backend (Redis) errors, by limiter; the limiter then fails open or closed per RATELIMIT_FAIL_CLOSED"),
+	); err == nil {
+		counter = c
+	}
+	attrs := metric.WithAttributes(attribute.String("limiter", name))
+	logger := svc.Logger()
+	return func(err error) {
+		if counter != nil {
+			counter.Add(context.Background(), 1, attrs)
+		}
+		logger.Warn("gateway: rate-limiter backend error", "limiter", name, "error", err)
+	}
 }

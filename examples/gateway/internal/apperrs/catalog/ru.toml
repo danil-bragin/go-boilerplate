@@ -30,6 +30,12 @@ other = "Недопустимое имя файла вложения."
 [GATEWAY_ATTACHMENT_NOT_FOUND]
 other = "Вложение {{.filename}} для заказа {{.order_id}} не найдено."
 
+[GATEWAY_ATTACHMENT_TYPE_REJECTED]
+other = "Тип содержимого вложения {{.content_type}} не разрешён."
+
+[GATEWAY_ATTACHMENT_TOO_LARGE]
+other = "Вложение превышает максимально допустимый размер."
+
 ["VALIDATION_FAILED.title"]
 other = "Некорректный запрос"
 

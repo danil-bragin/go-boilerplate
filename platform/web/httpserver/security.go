@@ -19,6 +19,9 @@ import (
 )
 
 // SecurityHeaders sets defensive HTTP response headers on every response.
+// It does NOT emit Strict-Transport-Security — use SecurityHeadersWithHSTS to
+// opt in (HSTS over plain HTTP would be wrong; the server may be fronted by a
+// TLS-terminating ingress that owns the header instead).
 //
 // Headers applied:
 //   - X-Content-Type-Options: nosniff   — prevents MIME-sniffing attacks.
@@ -29,15 +32,42 @@ import (
 //   - X-XSS-Protection: 0               — disabled per OWASP guidance; modern
 //     browsers use CSP instead, and the legacy XSS filter can itself be abused.
 func SecurityHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := w.Header()
-		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("X-Frame-Options", "DENY")
-		h.Set("Referrer-Policy", "no-referrer")
-		h.Set("Content-Security-Policy", "default-src 'none'")
-		h.Set("X-XSS-Protection", "0")
-		next.ServeHTTP(w, r)
-	})
+	return SecurityHeadersWithHSTS(0)(next)
+}
+
+// SecurityHeadersWithHSTS is SecurityHeaders plus a Strict-Transport-Security
+// header when hstsMaxAge > 0. The emitted value is
+// "max-age=<hstsMaxAge>; includeSubDomains" (e.g. one year = 31536000), which
+// instructs browsers to use https for this host (and subdomains) for that
+// long.
+//
+// hstsMaxAge <= 0 disables HSTS entirely — choose this when a TLS-terminating
+// ingress/load balancer already sets Strict-Transport-Security, so the app
+// does not emit a conflicting one. The app's header would be overridden by an
+// ingress that sets its own regardless; emitting it here is a safe default for
+// deployments WITHOUT such an ingress.
+//
+// Set hstsMaxAge only when TLS actually terminates at or before this server —
+// pinning HSTS while serving plain HTTP would lock clients out.
+func SecurityHeadersWithHSTS(hstsMaxAge int) func(http.Handler) http.Handler {
+	hsts := ""
+	if hstsMaxAge > 0 {
+		hsts = "max-age=" + strconv.Itoa(hstsMaxAge) + "; includeSubDomains"
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			h := w.Header()
+			h.Set("X-Content-Type-Options", "nosniff")
+			h.Set("X-Frame-Options", "DENY")
+			h.Set("Referrer-Policy", "no-referrer")
+			h.Set("Content-Security-Policy", "default-src 'none'")
+			h.Set("X-XSS-Protection", "0")
+			if hsts != "" {
+				h.Set("Strict-Transport-Security", hsts)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // CORSOptions configures the CORS middleware.

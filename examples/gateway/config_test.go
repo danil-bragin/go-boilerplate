@@ -3,12 +3,32 @@ package gateway
 import (
 	"testing"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/storage/blob"
 	"go-boilerplate/platform/storage/pg"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestConfigDefaults pins the env defaults that the round-8 hardening changed:
+// the SSE bulkhead now defaults to a positive cap (4096) — a safe per-replica
+// guard — while 0 stays the explicit opt-out for unlimited. The attachment
+// content-type allowlist defaults to a conservative doc/image set.
+func TestConfigDefaults(t *testing.T) {
+	// config.Load runs Validate(); outside production it is a no-op, so the
+	// shipped insecure-but-convenient defaults load cleanly.
+	t.Setenv("APP_ENV", "development")
+
+	cfg, err := config.Load[Config]()
+	require.NoError(t, err)
+
+	assert.Equal(t, 4096, cfg.SSEMaxStreams, "SSE bulkhead must default to a positive cap")
+	assert.False(t, cfg.RatelimitFailClosed, "fail-open is the documented default")
+	assert.Contains(t, cfg.AttachmentContentTypes, "application/pdf")
+	assert.Contains(t, cfg.AttachmentContentTypes, "image/png")
+	assert.NotContains(t, cfg.AttachmentContentTypes, "text/html", "renderable types must not be in the default allowlist")
+}
 
 // safeProdConfig returns a Config that passes every production preflight check,
 // so each table case can mutate exactly one field to the insecure value and
@@ -58,6 +78,14 @@ func TestConfigValidate_ProductionRejectsInsecure(t *testing.T) {
 			mutate:  func(c *Config) { c.CORSOrigins = []string{"*"} },
 			wantSub: "GATEWAY_CORS_ORIGINS",
 		},
+		{
+			name: "ratelimit fail-open with redis",
+			mutate: func(c *Config) {
+				c.RatelimitRedis = true
+				c.RatelimitFailClosed = false
+			},
+			wantSub: "RATELIMIT_FAIL_CLOSED",
+		},
 	}
 
 	for _, tc := range cases {
@@ -100,4 +128,26 @@ func TestConfigValidate_DevelopmentAllowsInsecure(t *testing.T) {
 func TestConfigValidate_ProductionAllSafe(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	assert.NoError(t, safeProdConfig().Validate())
+}
+
+// TestConfigValidate_RatelimitFailClosed: the fail-open production guard is
+// scoped to RATELIMIT_REDIS=true. A fail-open in-memory limiter (no Redis) is
+// fine — there is no external dependency to fail open against — and a
+// Redis-backed limiter that fails CLOSED passes.
+func TestConfigValidate_RatelimitFailClosed(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+
+	t.Run("redis fail-closed passes", func(t *testing.T) {
+		c := safeProdConfig()
+		c.RatelimitRedis = true
+		c.RatelimitFailClosed = true
+		assert.NoError(t, c.Validate())
+	})
+
+	t.Run("in-memory fail-open allowed", func(t *testing.T) {
+		c := safeProdConfig()
+		c.RatelimitRedis = false
+		c.RatelimitFailClosed = false
+		assert.NoError(t, c.Validate(), "in-memory limiter has no backend to fail open against")
+	})
 }

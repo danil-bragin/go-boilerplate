@@ -254,7 +254,7 @@ func TestRedis_FailClosed(t *testing.T) {
 	var errCount atomic.Int64
 	limiter2 := ratelimit.NewRedis(
 		client, 1, 1,
-		ratelimit.WithFailClosed(),
+		ratelimit.WithFailClosed(true),
 		ratelimit.WithOnError(func(error) { errCount.Add(1) }),
 	)
 

@@ -35,6 +35,43 @@ func TestSecurityHeaders_SetsHeaders(t *testing.T) {
 	require.Equal(t, "no-referrer", rec.Header().Get("Referrer-Policy"), "Referrer-Policy must be no-referrer")
 	require.Equal(t, "default-src 'none'", rec.Header().Get("Content-Security-Policy"), "CSP must be restrictive for API")
 	require.Equal(t, "0", rec.Header().Get("X-XSS-Protection"), "X-XSS-Protection must be 0 (disabled)")
+	// SecurityHeaders (no HSTS arg) must NOT emit Strict-Transport-Security —
+	// HSTS is opt-in via SecurityHeadersWithHSTS so a plain-HTTP local server
+	// does not pin clients to https.
+	require.Empty(t, rec.Header().Get("Strict-Transport-Security"))
+}
+
+// TestSecurityHeadersWithHSTS_EmitsHSTS: a positive max-age emits a
+// Strict-Transport-Security header with the configured age and includeSubDomains.
+func TestSecurityHeadersWithHSTS_EmitsHSTS(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	h := httpserver.SecurityHeadersWithHSTS(31536000)(inner)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", http.NoBody))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "max-age=31536000; includeSubDomains", rec.Header().Get("Strict-Transport-Security"))
+	// The baseline defensive headers are still present.
+	require.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
+}
+
+// TestSecurityHeadersWithHSTS_DisabledByZero: max-age 0 disables HSTS (some
+// deployments let the ingress own the header) — no Strict-Transport-Security
+// is emitted, but the other defensive headers remain.
+func TestSecurityHeadersWithHSTS_DisabledByZero(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	h := httpserver.SecurityHeadersWithHSTS(0)(inner)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", http.NoBody))
+
+	require.Empty(t, rec.Header().Get("Strict-Transport-Security"), "max-age 0 disables HSTS")
+	require.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
 }
 
 // ---------------------------------------------------------------------------

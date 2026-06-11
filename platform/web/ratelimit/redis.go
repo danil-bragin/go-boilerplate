@@ -72,14 +72,17 @@ type Redis struct {
 // RedisOption configures a Redis rate limiter.
 type RedisOption func(*Redis)
 
-// WithFailClosed makes Allow return (false, err) on Redis errors instead of
-// the default fail-open behaviour ((true, nil)).
+// WithFailClosed selects the behaviour on Redis errors: failClosed=true makes
+// Allow return (false, err) (deny); failClosed=false keeps the default
+// fail-open behaviour ((true, nil)). Taking the bit as a parameter lets a
+// caller wire it straight from config (WithFailClosed(cfg.RatelimitFailClosed))
+// without branching.
 //
 // Tradeoff: fail-open preserves edge availability when Redis is degraded but
-// may allow bursts beyond the configured rate. WithFailClosed gives strict
+// may allow bursts beyond the configured rate. Fail-closed gives strict
 // enforcement at the cost of denying all requests when Redis is unavailable.
-func WithFailClosed() RedisOption {
-	return func(r *Redis) { r.failOpen = false }
+func WithFailClosed(failClosed bool) RedisOption {
+	return func(r *Redis) { r.failOpen = !failClosed }
 }
 
 // WithOnError registers a callback that is invoked whenever a Redis error

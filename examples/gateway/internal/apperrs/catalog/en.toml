@@ -33,6 +33,12 @@ other = "The attachment filename is not valid."
 [GATEWAY_ATTACHMENT_NOT_FOUND]
 other = "Attachment {{.filename}} for order {{.order_id}} was not found."
 
+[GATEWAY_ATTACHMENT_TYPE_REJECTED]
+other = "The attachment content type {{.content_type}} is not allowed."
+
+[GATEWAY_ATTACHMENT_TOO_LARGE]
+other = "The attachment exceeds the maximum allowed size."
+
 # Title override for the platform validation code on gateway responses
 # (the detail text itself ships with the platform catalog).
 ["VALIDATION_FAILED.title"]
