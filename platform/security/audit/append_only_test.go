@@ -86,6 +86,80 @@ func TestAuditAppendOnly_RestrictedRoleCannotMutate(t *testing.T) {
 	require.Contains(t, err.Error(), "permission denied")
 }
 
+// TestAuditAppendOnly_OwnershipTransferModel proves the DEPLOYED ownership
+// model (security review #2a): when audit_log is OWNED BY audit_admin and the
+// app role holds only INSERT+SELECT, the append-only REVOKE genuinely bites for
+// the app. This is the boundary the boilerplate ships once the append-only
+// migration transfers ownership to audit_admin — verified here against a
+// non-owner, non-superuser role that stands in for the production app role
+// (the pgtest default app role is a SUPERUSER and would bypass the check, which
+// is exactly why ownership/role separation is load-bearing).
+func TestAuditAppendOnly_OwnershipTransferModel(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (postgres container)")
+	}
+	baseDSN := pgtest.NewDSN(t)
+	ctx := context.Background()
+	require.NoError(t, pg.Migrate(ctx, baseDSN, migrations, "migrations"))
+
+	ownerPool, err := pg.New(ctx, pg.Config{DSN: config.Secret(baseDSN)})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ownerPool.Close(ctx) })
+
+	const (
+		adminRole = "audit_admin"
+		adminPw   = "audit_admin"
+		appRole   = "deployed_app"
+		appPw     = "deployed_app"
+	)
+	// Provision the deployed split: audit_admin OWNS audit_log; the (non-owner,
+	// non-superuser) app role gets INSERT+SELECT only and UPDATE/DELETE revoked.
+	stmts := []string{
+		`drop role if exists ` + appRole,
+		`drop role if exists ` + adminRole,
+		`create role ` + adminRole + ` login password '` + adminPw + `'`,
+		`create role ` + appRole + ` login password '` + appPw + `'`,
+		`grant usage on schema public to ` + adminRole,
+		`grant usage on schema public to ` + appRole,
+		`alter table audit_log owner to ` + adminRole,
+		`grant select, insert on audit_log to ` + appRole,
+		`grant usage, select on sequence audit_log_id_seq to ` + appRole,
+		`revoke update, delete on audit_log from ` + appRole,
+		`grant select, delete on audit_log to ` + adminRole,
+	}
+	for _, s := range stmts {
+		_, err := ownerPool.Writer().Exec(ctx, s)
+		require.NoError(t, err, "setup: %s", s)
+	}
+
+	// App role (non-owner): INSERT + SELECT allowed, UPDATE + DELETE denied.
+	appConn, err := pgxpool.New(ctx, rewriteUser(t, baseDSN, appRole, appPw))
+	require.NoError(t, err)
+	t.Cleanup(appConn.Close)
+
+	_, err = appConn.Exec(ctx,
+		`insert into audit_log (actor, action, subject) values ('u1','order:create','order-1')`)
+	require.NoError(t, err, "app role must INSERT")
+	var n int
+	require.NoError(t, appConn.QueryRow(ctx, `select count(*) from audit_log`).Scan(&n))
+	require.Equal(t, 1, n, "app role must SELECT")
+
+	_, err = appConn.Exec(ctx, `update audit_log set actor='evil' where subject='order-1'`)
+	require.Error(t, err, "app role (non-owner) must NOT UPDATE")
+	require.Contains(t, err.Error(), "permission denied")
+	_, err = appConn.Exec(ctx, `delete from audit_log where subject='order-1'`)
+	require.Error(t, err, "app role (non-owner) must NOT DELETE")
+	require.Contains(t, err.Error(), "permission denied")
+
+	// audit_admin (the owner / retention role) CAN delete — the cleanup path.
+	adminConn, err := pgxpool.New(ctx, rewriteUser(t, baseDSN, adminRole, adminPw))
+	require.NoError(t, err)
+	t.Cleanup(adminConn.Close)
+	tag, err := adminConn.Exec(ctx, `delete from audit_log where subject='order-1'`)
+	require.NoError(t, err, "audit_admin (owner) must retain DELETE for retention")
+	require.EqualValues(t, 1, tag.RowsAffected())
+}
+
 // TestAuditCleanup_DisabledWithoutAdminPool: with no admin pool wired, Cleanup
 // is a deliberate no-op (ErrCleanupDisabled) — the append-only REVOKE means a
 // DELETE through the app pool would be denied, so cleanup refuses rather than

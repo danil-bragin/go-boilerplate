@@ -8,13 +8,21 @@
 -- default as identity), so there is no separate sequence to grant — the
 -- identity sequence is owned by the column and INSERT alone covers it.
 --
+-- OWNERSHIP IS LOAD-BEARING: an OWNER keeps UPDATE/DELETE implicitly, so unless
+-- the table is owned by a NON-app role the REVOKE is a no-op. When audit_admin
+-- exists (deploy/postgres/init.sql), transfer ownership to it and re-grant the
+-- app role only INSERT + SELECT so the REVOKE actually denies the app's
+-- UPDATE/DELETE. Skipped (best-effort) where audit_admin is absent — see the
+-- platform audit migration 00003 for the full rationale and trade-off.
 -- +goose StatementBegin
 do $$
 begin
-    execute format('revoke update, delete on audit_log from %I', current_user);
     if exists (select 1 from pg_roles where rolname = 'audit_admin') then
+        execute 'alter table audit_log owner to audit_admin';
+        execute 'grant select, insert on audit_log to ' || quote_ident(current_user);
         execute 'grant select, delete on audit_log to audit_admin';
     end if;
+    execute format('revoke update, delete on audit_log from %I', current_user);
 end
 $$;
 -- +goose StatementEnd
@@ -23,6 +31,9 @@ $$;
 -- +goose StatementBegin
 do $$
 begin
+    if exists (select 1 from pg_roles where rolname = 'audit_admin') then
+        execute 'alter table audit_log owner to ' || quote_ident(current_user);
+    end if;
     execute format('grant update, delete on audit_log to %I', current_user);
 end
 $$;
