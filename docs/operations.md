@@ -809,6 +809,55 @@ seek (above), not redrive.
 
 ---
 
+## API evolution (deprecation & versioning)
+
+Additive changes (new optional fields, new endpoints, new error codes) never
+need a version bump — clients must ignore what they don't know. A version
+bump is for **breaking** changes only: removed/renamed fields, changed
+semantics, a different resource shape. Then the playbook is *parallel-run,
+deprecate, sunset* — never in-place mutation:
+
+1. **Mount the successor in parallel.** REST resources are versioned by path
+   prefix (`/v1`, `/v2`); chi makes the parallel mount trivial and both
+   versions share the edge middleware (auth, rate limit, i18n):
+
+   ```text
+   mux.Route("/v1", func(r chi.Router) {
+       r.Use(httpserver.Deprecate(sunset, "/v2/orders"))
+       r.Get("/orders", v1Handler)   // old shape, unchanged behavior
+   })
+   mux.Route("/v2", func(r chi.Router) {
+       r.Get("/orders", v2Handler)   // new shape
+   })
+   ```
+
+   Both handlers typically call the same application layer and differ only in
+   the response mapping — version the *representation*, not the domain.
+
+2. **Announce the removal date on the wire.** `httpserver.Deprecate(sunset,
+   successor)` stamps every old-version response with `Deprecation:
+   @<unix-seconds>` (RFC 9745), `Sunset: <IMF-fixdate>` (RFC 8594) and
+   `Link: <successor>; rel="successor-version"`, so clients and API
+   monitors discover the migration mechanically — no release-notes archaeology.
+   Sunset is a promise: it may move further away, never closer. Alert on
+   old-version traffic (the `http.server.request.duration` metrics are tagged
+   per route) as the sunset approaches; remove the mount only when it's ~zero
+   or the date arrives, whichever is later.
+
+3. **Proto/Kafka analog.** Event contracts version through the proto package:
+   a breaking message change is a NEW package (`orders.v2`) and a new
+   versioned event-type (`consume.EventTypeFor[*ordersv2.OrderCreated](2)` —
+   the `.v2` suffix in the header), produced ALONGSIDE `.v1` while consumers
+   migrate; `buf breaking` (CI-blocking) is the guard that forces this route
+   instead of an in-place edit. Consumers advertise which versions they
+   handle by their `consume` registrations, so "who still reads v1" is
+   answered by the consumer-group lag on the old event type, the same way
+   old-route traffic answers it for REST.
+
+OpenAPI note: the gateway spec documents `/v1/*` paths; a `/v2` adds new
+path entries in the SAME `openapi.yaml` (one spec, many versions) so codegen
+and the strict handler cover both during the parallel-run window.
+
 ## Database migrations
 
 Migrations are embedded goose SQL files (`examples/<svc>/internal/migrations/sql`)
