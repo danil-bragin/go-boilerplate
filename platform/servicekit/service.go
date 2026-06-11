@@ -27,6 +27,7 @@ import (
 	"os"
 	"sync"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/messaging/serde"
 	"go-boilerplate/platform/observability/health"
@@ -95,6 +96,23 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 	for _, opt := range opts {
 		opt(&o)
 	}
+
+	// 0. Retention invariant — checked FIRST so a production misconfiguration
+	// fails fast before any telemetry/pg/kafka setup. The inbox dedup window
+	// must cover the broker's topic-retention horizon: a record redelivered
+	// after its inbox row was cleaned up but before topic retention expired
+	// would no longer be recognized as a duplicate (replay-after-cleanup). In
+	// production this is a HARD failure; the non-production WARN is emitted
+	// below once the logger exists.
+	if cfg.RetentionInvariantViolated() && config.IsProduction() {
+		return nil, fmt.Errorf(
+			"servicekit: INBOX_RETENTION (%s) is shorter than TOPIC_RETENTION (%s) in production: "+
+				"a record redelivered after its inbox row is cleaned up but before topic retention "+
+				"expires would NOT be deduplicated (replay-after-cleanup); set INBOX_RETENTION >= TOPIC_RETENTION",
+			cfg.InboxRetention, cfg.TopicRetention,
+		)
+	}
+
 	// 1. Telemetry FIRST — the logger needs the (opt-in, TELEMETRY_LOGS) OTel
 	// log provider at construction time so records can fan out to the
 	// collector in addition to stdout. Warnings telemetry emits during setup
@@ -136,11 +154,9 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 		return tel.Shutdown(ctx)
 	})
 
-	// Invariant check: the inbox dedup window must cover the broker's topic
-	// retention. If a record can still be redelivered (retention not yet
-	// expired) after its inbox row was cleaned up, the duplicate is no longer
-	// detected. WARN loudly instead of failing — dev setups may not care.
-	if cfg.TopicRetention > 0 && cfg.InboxRetention < cfg.TopicRetention {
+	// Non-production WARN for the same retention invariant (the production HARD
+	// failure already returned at the top of New, before the logger existed).
+	if cfg.RetentionInvariantViolated() {
 		logger.Warn(
 			"INBOX_RETENTION is shorter than TOPIC_RETENTION: "+
 				"redelivered records older than the inbox window will NOT be deduplicated; "+

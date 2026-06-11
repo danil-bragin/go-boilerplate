@@ -100,3 +100,12 @@ type Config struct {
 	AuditRetention       time.Duration `env:"AUDIT_RETENTION"         envDefault:"2160h"`
 	AuditCleanupInterval time.Duration `env:"AUDIT_CLEANUP_INTERVAL"  envDefault:"6h"`
 }
+
+// RetentionInvariantViolated reports whether the inbox dedup window is shorter
+// than the broker's topic-retention horizon — the replay-after-cleanup hole. A
+// record redelivered after its inbox row was cleaned up but before topic
+// retention expired is no longer recognized as a duplicate. Only meaningful
+// when TopicRetention > 0 (0 = "let the broker default decide", not asserted).
+func (c Config) RetentionInvariantViolated() bool {
+	return c.TopicRetention > 0 && c.InboxRetention < c.TopicRetention
+}
