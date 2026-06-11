@@ -258,16 +258,29 @@ the collector only duplicates stdout into the collector's own stdout.
 
 ---
 
-## Per-IP rate limiting (gateway)
+## Rate limiting (gateway)
 
-The gateway applies a per-client-IP token-bucket rate limiter at the edge. Configure via:
+The gateway applies a per-client-IP token-bucket rate limiter at the edge,
+plus an optional SECOND, authed-tier limiter keyed per principal. Configure via:
 
 | Variable | Default | Description |
 |---|---|---|
 | `RATELIMIT_RPS` | `50` | Sustained token refill rate (requests per second per IP) |
 | `RATELIMIT_BURST` | `100` | Maximum burst depth per IP |
-| `RATELIMIT_REDIS` | `false` | Use Redis-backed distributed limiter (requires `REDIS_ADDRS`) |
+| `RATELIMIT_AUTHED_RPS` | `200` | Authed-tier refill rate per principal (token subject). `0` disables the tier |
+| `RATELIMIT_AUTHED_BURST` | `400` | Authed-tier burst depth per principal |
+| `RATELIMIT_REDIS` | `false` | Use Redis-backed distributed limiters (requires `REDIS_ADDRS`; applies to both tiers) |
 | `TRUSTED_PROXIES` | _(empty)_ | Comma-separated CIDRs for trusted reverse proxies (e.g. `10.0.0.0/8`). When set, `X-Forwarded-For` is consulted for client-IP extraction. |
+
+**Per-principal tier:** the per-IP limiter alone cannot cap one identity
+fanning out over many source IPs (botnets, serverless callers), and it
+over-punishes many users behind one NAT/corporate egress IP. The authed tier
+(`httpserver.PrincipalKey`) keys by the verified token subject (`sub:<subject>`),
+falling back to the client IP for anonymous requests, and is chained AFTER
+both the per-IP limiter and the auth middleware — every request must pass
+both tiers. Size it ABOVE the per-IP budget for the common case (defaults:
+200/400 vs 50/100) so a single well-behaved client never feels it; it exists
+to bound the aggregate of one principal across sources.
 
 **Memory vs Redis:** The default in-memory limiter is process-local. For multi-replica deployments set `RATELIMIT_REDIS=true` so all instances share a single Redis-backed counter. If Redis is unavailable the gateway falls back to in-memory (graceful degradation, WARN logged). The distributed limiter uses Redis server time (via `TIME` inside the Lua script) so all replicas share a single clock — immune to wall-clock skew between application instances.
 

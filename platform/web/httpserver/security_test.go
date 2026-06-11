@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/web/httpserver"
 	"go-boilerplate/platform/web/ratelimit"
 
@@ -229,6 +230,97 @@ func newReq(remoteAddr, xff string) *http.Request {
 var okHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 })
+
+// ---------------------------------------------------------------------------
+// PrincipalKey
+// ---------------------------------------------------------------------------
+
+// TestPrincipalKey_AuthenticatedUsesSubject: with a Principal in the request
+// context the key is "sub:"+Subject — the fallback is never consulted.
+func TestPrincipalKey_AuthenticatedUsesSubject(t *testing.T) {
+	fallbackCalled := false
+	fallback := func(*http.Request) string {
+		fallbackCalled = true
+		return "ip:1.2.3.4"
+	}
+	key := httpserver.PrincipalKey(fallback)
+
+	req := newReq("1.2.3.4:50001", "")
+	req = req.WithContext(auth.Into(req.Context(), auth.Principal{Subject: "user-42"}))
+
+	require.Equal(t, "sub:user-42", key(req))
+	require.False(t, fallbackCalled, "fallback must not be consulted for an authenticated request")
+}
+
+// TestPrincipalKey_TwoSubjectsGetDistinctKeys: principal isolation — two
+// subjects sharing one client IP land in independent buckets.
+func TestPrincipalKey_TwoSubjectsGetDistinctKeys(t *testing.T) {
+	key := httpserver.PrincipalKey(httpserver.ClientIPKey(nil))
+
+	reqA := newReq("1.2.3.4:50001", "")
+	reqA = reqA.WithContext(auth.Into(reqA.Context(), auth.Principal{Subject: "alice"}))
+	reqB := newReq("1.2.3.4:50002", "")
+	reqB = reqB.WithContext(auth.Into(reqB.Context(), auth.Principal{Subject: "bob"}))
+
+	require.Equal(t, "sub:alice", key(reqA))
+	require.Equal(t, "sub:bob", key(reqB))
+	require.NotEqual(t, key(reqA), key(reqB), "same IP, different subjects → different buckets")
+}
+
+// TestPrincipalKey_AnonymousFallsBack: no Principal in context → the fallback
+// key function (here ClientIPKey) decides.
+func TestPrincipalKey_AnonymousFallsBack(t *testing.T) {
+	key := httpserver.PrincipalKey(httpserver.ClientIPKey(nil))
+	require.Equal(t, "1.2.3.4", key(newReq("1.2.3.4:50001", "")))
+}
+
+// TestPrincipalKey_EmptySubjectFallsBack: a Principal with an empty Subject
+// must not collapse every such caller into one shared "sub:" bucket.
+func TestPrincipalKey_EmptySubjectFallsBack(t *testing.T) {
+	key := httpserver.PrincipalKey(httpserver.ClientIPKey(nil))
+	req := newReq("9.8.7.6:50001", "")
+	req = req.WithContext(auth.Into(req.Context(), auth.Principal{Subject: ""}))
+	require.Equal(t, "9.8.7.6", key(req))
+}
+
+// TestRateLimitPer_PrincipalBucketIsolation: end-to-end through RateLimitPer —
+// exhausting alice's bucket leaves bob's untouched even from the same IP, and
+// an anonymous caller from that IP has its own (fallback) bucket.
+func TestRateLimitPer_PrincipalBucketIsolation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip: memory limiter uses real time — not suitable for -short")
+	}
+	lim := ratelimit.NewMemory(10, 1) // burst=1: one token per key
+	t.Cleanup(lim.Close)
+
+	h := httpserver.RateLimitPer(lim, httpserver.PrincipalKey(httpserver.ClientIPKey(nil)))(okHandler)
+
+	as := func(subject string) *http.Request {
+		req := newReq("1.2.3.4:50001", "")
+		if subject != "" {
+			req = req.WithContext(auth.Into(req.Context(), auth.Principal{Subject: subject}))
+		}
+		return req
+	}
+
+	// alice: token 1 OK, token 2 → 429.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, as("alice"))
+	require.Equal(t, http.StatusOK, rec.Code)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, as("alice"))
+	require.Equal(t, http.StatusTooManyRequests, rec.Code, "alice's bucket is exhausted")
+
+	// bob (same IP): independent bucket — still OK.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, as("bob"))
+	require.Equal(t, http.StatusOK, rec.Code, "bob must not share alice's bucket")
+
+	// anonymous (same IP): falls back to the IP bucket — also independent.
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, as(""))
+	require.Equal(t, http.StatusOK, rec.Code, "anonymous IP bucket is independent of principal buckets")
+}
 
 // TestRateLimitPer_PerIPIsolation verifies that two distinct RemoteAddrs have
 // independent buckets: exhausting A's bucket does not affect B.

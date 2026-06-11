@@ -43,7 +43,15 @@ type Config struct {
 	TrustedProxies []string `env:"TRUSTED_PROXIES" envSeparator:","`
 	// RatelimitRedis enables a Redis-backed distributed limiter when true.
 	// Falls back to in-memory if Redis is unavailable (graceful degradation).
+	// Applies to BOTH the per-IP and the authed-tier limiter.
 	RatelimitRedis bool `env:"RATELIMIT_REDIS" envDefault:"false"`
+	// RatelimitAuthedRPS is the sustained refill rate of the SECOND, authed-tier
+	// limiter, keyed per principal (token subject; anonymous requests fall back
+	// to the client IP). Chained AFTER the per-IP limiter — both must pass.
+	// 0 disables the authed tier entirely.
+	RatelimitAuthedRPS float64 `env:"RATELIMIT_AUTHED_RPS" envDefault:"200"`
+	// RatelimitAuthedBurst is the burst depth of the authed-tier limiter.
+	RatelimitAuthedBurst int `env:"RATELIMIT_AUTHED_BURST" envDefault:"400"`
 	// SSEHeartbeat is the keep-alive comment interval for SSE streams
 	// (GET /v1/orders/{id}/events). Keep it well below any intermediary's
 	// idle-connection timeout.
