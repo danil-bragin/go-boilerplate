@@ -223,6 +223,16 @@ paths:
           $ref: "#/components/responses/NotFound"
         "429":
           $ref: "#/components/responses/TooManyRequests"
+        "503":
+          description: >
+            Stream capacity reached: this replica's concurrent-stream cap
+            (GATEWAY_SSE_MAX_STREAMS) is in effect — problem+json with code
+            GATEWAY_SSE_SATURATED and a small Retry-After. Transient; retry
+            (typically landing on another replica) succeeds.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
 
   /healthz:
     get:

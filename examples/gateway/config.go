@@ -59,6 +59,11 @@ type Config struct {
 	// SSEPollInterval is the projection-store polling cadence SSE falls back
 	// to when REDIS_ADDRS is not configured (no pub/sub push available).
 	SSEPollInterval time.Duration `env:"GATEWAY_SSE_POLL_INTERVAL" envDefault:"2s"`
+	// SSEMaxStreams caps concurrently open SSE streams per replica (bulkhead
+	// guarding the per-stream memory/FD surface). When the cap is reached a
+	// NEW stream gets 503 GATEWAY_SSE_SATURATED (+ small Retry-After); the
+	// permit frees as soon as any stream ends. 0 (default) = no cap.
+	SSEMaxStreams int `env:"GATEWAY_SSE_MAX_STREAMS" envDefault:"0"`
 	// EmbeddedProjection controls whether this gateway process runs the
 	// read-model projection consumer (default true — single-binary demo
 	// topology). Set false when the projection runs as its own deployment

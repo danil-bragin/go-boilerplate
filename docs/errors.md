@@ -40,6 +40,7 @@ localized texts live in the owning service's i18n catalog, keyed by code.
 | `GATEWAY_INVALID_TIMEZONE` | 400 | yes | `timezone` | invalid X-Timezone value {timezone}: must be an IANA tz database name such as Europe/Kyiv |
 | `GATEWAY_MALFORMED_REQUEST` | 400 | yes | `reason` | malformed request: {reason} |
 | `GATEWAY_ORDER_NOT_FOUND` | 404 | yes | `order_id` | order {order_id} not found |
+| `GATEWAY_SSE_SATURATED` | 503 | no | — | order event stream capacity reached; retry shortly |
 | `INTERNAL` | 500 | no | — | internal error |
 | `MESSAGING_MALFORMED_PAYLOAD` | 400 | yes | — | malformed message payload |
 | `ORDERS_INVALID_ORDER_ID` | 400 | yes | `order_id` | invalid order id {order_id} |

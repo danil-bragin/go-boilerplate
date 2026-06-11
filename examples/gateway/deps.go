@@ -104,6 +104,7 @@ func buildSSE(cfg Config, svc *servicekit.Service) *sse.Streamer {
 		client, svc.Pool(), svc.Logger(), cfg.AuthDisabled,
 		sse.WithHeartbeat(cfg.SSEHeartbeat),
 		sse.WithPollInterval(cfg.SSEPollInterval),
+		sse.WithMaxStreams(cfg.SSEMaxStreams),
 	)
 }
 

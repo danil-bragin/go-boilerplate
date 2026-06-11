@@ -32,3 +32,9 @@ other = "Вложение {{.filename}} для заказа {{.order_id}} не �
 
 ["VALIDATION_FAILED.title"]
 other = "Некорректный запрос"
+
+[GATEWAY_SSE_SATURATED]
+other = "Поток событий заказа достиг предела ёмкости. Повторите попытку чуть позже."
+
+["GATEWAY_SSE_SATURATED.title"]
+other = "Достигнут предел потоков"

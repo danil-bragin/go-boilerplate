@@ -74,11 +74,13 @@ import (
 	"go-boilerplate/examples/gateway/internal/apperrs"
 	"go-boilerplate/examples/gateway/internal/attachments"
 	"go-boilerplate/platform/apperr"
+	"go-boilerplate/platform/resilience"
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/security/authz"
 	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/web/httpx"
 
+	"github.com/failsafe-go/failsafe-go/bulkhead"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -115,6 +117,12 @@ const (
 	// resubscribe refresh + safety poll cover anything missed after that —
 	// delayed, never lost).
 	subscribeWait = 2 * time.Second
+
+	// saturatedRetryAfterSeconds is the Retry-After hint on the 503 emitted
+	// when the concurrent-stream bulkhead is full. Small on purpose: permits
+	// free up as soon as any stream ends, and behind a load balancer the
+	// retry likely lands on a less-loaded replica.
+	saturatedRetryAfterSeconds = 2
 )
 
 // statusUpdate is the broadcast payload published by Notify.
@@ -207,6 +215,14 @@ type Streamer struct {
 	heartbeat    time.Duration
 	pollInterval time.Duration
 
+	// streams caps concurrent open streams per replica (a bulkhead guarding
+	// this instance's memory/FD surface — each stream holds a goroutine, a
+	// response buffer and a registry slot for its whole lifetime). nil = no
+	// cap (GATEWAY_SSE_MAX_STREAMS=0). A full bulkhead rejects the NEW
+	// stream with 503 GATEWAY_SSE_SATURATED instead of degrading every
+	// existing one.
+	streams bulkhead.Bulkhead[any]
+
 	// registry maps order id → the open streams watching it. The shared
 	// subscriber fans broadcast messages out through it; resubscribes push a
 	// refresh to every slot.
@@ -254,6 +270,19 @@ func WithPollInterval(d time.Duration) Option {
 	return func(s *Streamer) {
 		if d > 0 {
 			s.pollInterval = d
+		}
+	}
+}
+
+// WithMaxStreams caps the number of concurrently open SSE streams on this
+// replica via a resilience bulkhead. When the cap is reached, NEW streams are
+// rejected with 503 GATEWAY_SSE_SATURATED (+ a small Retry-After) and the
+// permit is released as soon as a stream ends. n <= 0 leaves streams
+// uncapped (the default).
+func WithMaxStreams(n int) Option {
+	return func(s *Streamer) {
+		if n > 0 {
+			s.streams = resilience.Bulkhead(uint(n))
 		}
 	}
 }
@@ -514,6 +543,20 @@ func (s *Streamer) currentStatus(ctx context.Context, orderID string) (status, c
 func (s *Streamer) Stream(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	orderID := chi.URLParam(r, "id")
+
+	// Concurrent-stream bulkhead (GATEWAY_SSE_MAX_STREAMS): acquired FIRST —
+	// before any DB read — so a saturated replica sheds load at the door.
+	// Non-blocking: a full bulkhead answers 503 immediately (queueing SSE
+	// opens would just hide the saturation behind hung requests). The permit
+	// covers the handler's whole lifetime, including the early-exit paths.
+	if s.streams != nil {
+		if !s.streams.TryAcquirePermit() {
+			w.Header().Set("Retry-After", strconv.Itoa(saturatedRetryAfterSeconds))
+			writeProblem(w, r, apperr.New(apperrs.CodeSSESaturated))
+			return
+		}
+		defer s.streams.ReleasePermit()
+	}
 
 	status, owner, err := s.currentStatus(ctx, orderID)
 	if err != nil && !errors.Is(err, errNotFound) {

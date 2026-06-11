@@ -303,6 +303,7 @@ curl -N -H "Authorization: Bearer $(just token)" \
 |---|---|---|
 | `GATEWAY_SSE_HEARTBEAT` | `15s` | Keep-alive comment interval (keep below any LB idle timeout) |
 | `GATEWAY_SSE_POLL_INTERVAL` | `2s` | Store-polling cadence with no Redis configured; ×30 = the Redis-mode safety-poll cadence |
+| `GATEWAY_SSE_MAX_STREAMS` | `0` | Per-replica cap on concurrently open streams (bulkhead). New streams beyond it get `503 GATEWAY_SSE_SATURATED` with a small `Retry-After`; the permit frees when any stream ends. `0` = no cap |
 
 **Transport:** the projection publishes every committed status change as
 `{"order_id":…,"status":…}` on the single Redis channel `orders:status` (it

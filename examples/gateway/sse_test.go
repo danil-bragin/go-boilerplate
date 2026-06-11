@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -281,6 +282,65 @@ func TestGateway_SSE_LastEventIDResume(t *testing.T) {
 		}
 	})
 	require.Equal(t, "paid", nextEvent(t, events, 30*time.Second, "paid event after resume").Status)
+}
+
+// TestGateway_SSE_MaxStreamsCap: with GATEWAY_SSE_MAX_STREAMS=1 the second
+// concurrent stream is rejected with 503 GATEWAY_SSE_SATURATED (+ Retry-After)
+// while the first keeps streaming; closing the first releases its permit and
+// a new stream is admitted (release on disconnect).
+func TestGateway_SSE_MaxStreamsCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
+
+	t.Setenv("REDIS_ADDRS", "")
+	t.Setenv("GATEWAY_SSE_POLL_INTERVAL", "200ms")
+	t.Setenv("GATEWAY_SSE_MAX_STREAMS", "1")
+	baseURL := startApp(t, broker, dsn)
+
+	orderID := postOrder(t, baseURL)
+
+	// Stream 1 occupies the only permit.
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	req1, err := http.NewRequestWithContext(ctx1, http.MethodGet,
+		fmt.Sprintf("%s/v1/orders/%s/events", baseURL, orderID), http.NoBody)
+	require.NoError(t, err)
+	resp1, err := (&http.Client{}).Do(req1)
+	require.NoError(t, err)
+	t.Cleanup(func() { cancel1(); _ = resp1.Body.Close() })
+	require.Equal(t, http.StatusOK, resp1.StatusCode)
+
+	// Stream 2: capacity reached → 503 problem+json with the coded shape.
+	resp2, err := http.Get(fmt.Sprintf("%s/v1/orders/%s/events", baseURL, orderID))
+	require.NoError(t, err)
+	body2, err := io.ReadAll(resp2.Body)
+	require.NoError(t, err)
+	_ = resp2.Body.Close()
+	require.Equal(t, http.StatusServiceUnavailable, resp2.StatusCode)
+	assert.Contains(t, resp2.Header.Get("Content-Type"), "application/problem+json")
+	assert.NotEmpty(t, resp2.Header.Get("Retry-After"), "saturation must advise when to retry")
+	var prob struct {
+		Status int    `json:"status"`
+		Code   string `json:"code"`
+	}
+	require.NoError(t, json.Unmarshal(body2, &prob))
+	assert.Equal(t, http.StatusServiceUnavailable, prob.Status)
+	assert.Equal(t, "GATEWAY_SSE_SATURATED", prob.Code)
+
+	// Close stream 1 → permit released → a new stream is admitted shortly.
+	cancel1()
+	_ = resp1.Body.Close()
+	require.Eventually(t, func() bool {
+		resp3, err := http.Get(fmt.Sprintf("%s/v1/orders/%s/events", baseURL, orderID))
+		if err != nil {
+			return false
+		}
+		defer resp3.Body.Close()
+		return resp3.StatusCode == http.StatusOK
+	}, 10*time.Second, 200*time.Millisecond, "permit must be released when the stream ends")
 }
 
 // pollOrderStatusAs is pollOrderStatus with a bearer token.
