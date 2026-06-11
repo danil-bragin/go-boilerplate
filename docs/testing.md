@@ -13,6 +13,7 @@ Read this before writing a new test; copy the linked examples rather than invent
 | **Functional** | A use-case slice across several collaborators | None | Hand fakes (`fakes.*`, incl. `fakes.Broker`) + `mockhttp.*` | Always (`-short`) |
 | **Integration** | A service wired to real DB / broker | Docker (testcontainers) | Real infra containers | Full `go test ./...` only |
 | **E2E** | All four services in-process, full choreography over real Kafka + Postgres | Docker (testcontainers — **self-provisioned**, no `docker compose` needed) | None (capture notifier only) | Full `go test ./...` / `just test-e2e` |
+| **Traffic** | Same stack under a seeded adversarial load profile — invariants, not examples (see §6) | Docker (testcontainers) | None | Full `go test ./...` |
 
 ---
 
@@ -223,7 +224,76 @@ go test ./examples/e2e/ -run TestE2E_ChaosBrokerOutageMidFlow -count=1
 
 ---
 
-## 6. Mock Regeneration
+## 6. Traffic Emulation (correctness under load)
+
+`platform/testkit/traffic` + the gateway scenario pack
+(`examples/gateway/traffic`) add a layer the classic pyramid lacks: a
+**seeded, adversarial load profile asserting INVARIANTS, not examples**.
+The e2e choreography test proves one order flows correctly; the traffic
+test (`examples/e2e/traffic_test.go`, `TestE2E_Traffic`, skipped in
+`-short`) proves ~1200 concurrent operations — including idempotency-key
+mismatch races, validation rejects, and SSE clients that drop mid-stream —
+produce zero invariant violations:
+
+- every accepted order reaches its expected terminal status (`paid` /
+  `payment_failed`);
+- one idempotency key NEVER yields two different order ids (the mismatch
+  race's hard invariant — losers get the documented 409, or a
+  202-with-winner-id within the documented replica-lag/async-pending
+  window);
+- invalid payloads carry `VALIDATION_FAILED`, mismatches carry
+  `GATEWAY_IDEMPOTENCY_BODY_MISMATCH`;
+- the orders system of record holds exactly one row per accepted id.
+
+### Seed reproduction workflow
+
+The generator's determinism boundary (see the `platform/testkit/traffic`
+package doc): generation decisions — op count, arrival gaps, scenario
+sequence, payloads — are a pure function of the seed; wall-clock
+interleaving is not, so invariants must hold under any interleaving.
+Every run logs its seed, and every violation embeds it:
+
+```bash
+go test -p 1 ./examples/e2e/ -run TestE2E_Traffic -count=1 -v
+#   traffic_test.go: traffic seed: 1718041200000000000 (replay with TRAFFIC_SEED=...)
+#   invariant violation: [winner] scenario=mismatch id=mismatch-… expected=… (seed=1718041200000000000)
+
+# Replay the exact generation sequence of the red run:
+TRAFFIC_SEED=1718041200000000000 go test -p 1 ./examples/e2e/ -run TestE2E_Traffic -count=1 -v
+```
+
+Against a LIVE stack the same pack runs via `just traffic` / `cmd/trafficgen`
+(`--seed N` to replay) — see docs/operations.md §Load testing for the
+k6-vs-trafficgen split.
+
+### Latency assertions are opt-in (`TRAFFIC_ASSERT_LATENCY=1`)
+
+CI asserts invariants only. In-process latency tolerances (POST p99 <
+1.5s, read p99 < 500ms) run only with `TRAFFIC_ASSERT_LATENCY=1`: a shared
+CI runner cannot hold a p99 — container neighbours, CPU throttling, and
+Docker-for-Mac I/O make tail latencies non-deterministic there, and a
+flaking latency gate teaches people to ignore red. Real SLO enforcement
+belongs to k6 against a deployed stack (`deploy/prometheus/slo.yaml` is
+the source of truth).
+
+### Conventions
+
+Scenario packs live WITH the service that owns the API
+(`examples/gateway/traffic`), not in the testkit: the pack encodes the
+service's contract — status codes, problem codes, documented tolerance
+windows — and must change in the same PR as the API. The platform package
+(`platform/testkit/traffic`) stays target-agnostic: generator, ledger,
+probes. Express invariants as ledger expectations
+(`ExpectTerminal` / `ExpectExactlyOneWinner` / `ExpectRejected` +
+`ObserveRejection`) rather than inline asserts, so they are verified after
+the storm with polling and deadlines, and every violation carries
+scenario + seed context. Unit-test the pack's bookkeeping in `-short`
+against `httptest` fakes — including a deliberately buggy fake that MUST
+trip a violation (a verifier that cannot fail proves nothing).
+
+---
+
+## 7. Mock Regeneration
 
 Mocks are committed to source control and are reproducible. Regenerate after
 changing a platform interface:
