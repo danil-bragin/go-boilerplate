@@ -138,6 +138,42 @@ jobs:
       - name: Run govulncheck
         run: govulncheck ./...
 
+  # ── Secret scan (gitleaks) ────────────────────────────────────────────────
+  # BLOCKING: scans the FULL git history (fetch-depth 0) — a secret committed
+  # and later "removed" is still live until rotated, so the tip alone is not
+  # enough. Action pinned by commit sha (supply-chain hygiene for an action
+  # that reads the whole repo history).
+  gitleaks:
+    name: Gitleaks (secret scan)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history, not just the checked-out tip
+
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Dependency review (PRs only) ──────────────────────────────────────────
+  # Flags newly-introduced vulnerable dependencies (and license problems) in
+  # the PR's dependency diff. PR-only by nature: the action diffs base..head
+  # through the GitHub dependency-graph API, so it cannot run on push — the
+  # `if` skips it there. DORMANT until this repo lives on a GitHub remote and
+  # receives pull requests; it costs nothing meanwhile.
+  dependency-review:
+    name: Dependency review (PRs only)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+
   # ── Fast unit-test lane ───────────────────────────────────────────────────
   # Runs only tests that honour testing.Short() — no containers, completes
   # in seconds. Gives fast PR feedback before the slow integration suite.
