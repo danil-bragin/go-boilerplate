@@ -156,6 +156,11 @@ func mountAPIRoutes(
 			httpserver.MaxBytes(cfg.HTTP.MaxBodyBytes),
 			httpserver.Timeout(cfg.HTTP.HandlerTimeout),
 		),
+		// Param-binding errors (missing required query param, bad date-time,
+		// non-integer limit) are raised by the generated wrapper BEFORE the
+		// strict handler — without this they'd be plain-text http.Error 400s
+		// instead of the coded GATEWAY_MALFORMED_REQUEST problem shape.
+		ErrorHandlerFunc: requestErrorHandler,
 	}
 	// Middleware slice semantics (generated code): handlers are wrapped in
 	// slice order, so the LAST element is the OUTERMOST — list the authed-tier

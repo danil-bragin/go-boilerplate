@@ -110,6 +110,27 @@ Read models are PII copies and must be wired into forgetting from the start:
 - inbox/audit rows: cap their retention (cleanup workers) so scrubbed
   subjects don't linger in `payload` columns past the erasure SLO.
 
+## Access requests (DSAR)
+
+Erasure's sibling obligation (GDPR art. 15, CCPA "right to know") is showing
+a subject what the system did with their identity. The audit trail is the
+backbone of that answer, and the read path is SHIPPED, not just patterned:
+
+- `audit.PgStore.Query(ctx, actor, since, limit)`
+  (`platform/security/audit`) returns one actor's entries newest-first,
+  backed by the `(actor, created_at)` index;
+- the gateway exposes it as `GET /v1/audit?actor=<subject>&since=<rfc3339>&limit=<n>`
+  — **admin-only** (the `admin` role; non-admins get 403), documented in
+  `examples/gateway/openapi.yaml`. Each service owns its own `audit_log`
+  table, so a full DSAR response aggregates this same query across services
+  (the gateway endpoint demonstrates the pattern on its own database).
+
+Two privacy caveats: the audit log is itself a PII location (the `actor`
+column — see the inventory above), so its retention is bounded by the
+cleanup worker (`audit.Cleanup`); and DSAR responses must not over-disclose —
+entries reference subjects/ids, never raw payloads, which is why
+`audit.Entry.Metadata` is a small string map and not the command body.
+
 ## Choosing
 
 | Requirement | Pattern |

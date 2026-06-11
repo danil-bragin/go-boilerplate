@@ -223,3 +223,60 @@ func TestAudit_AnonymousWhenNoPrincipal(t *testing.T) {
 	require.Len(t, rows, 1)
 	require.Equal(t, "anonymous", rows[0].Actor)
 }
+
+// seedAuditRow inserts one audit_log row with an explicit created_at so the
+// since/order assertions are deterministic.
+func seedAuditRow(t *testing.T, pool *pg.Pool, actor, action, subject string, meta string, at time.Time) {
+	t.Helper()
+	_, err := pool.Writer().Exec(context.Background(),
+		`insert into audit_log (actor, action, subject, metadata, created_at) values ($1, $2, $3, $4, $5)`,
+		actor, action, subject, meta, at)
+	require.NoError(t, err)
+}
+
+// TestPgStore_QueryByActor: the DSAR read path — one actor's entries, newest
+// first, since-inclusive filtering, limit, actor isolation, and metadata
+// round-trip.
+func TestPgStore_QueryByActor(t *testing.T) {
+	pool := newPool(t)
+	store := audit.NewPgStore(pool)
+	ctx := context.Background()
+
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	seedAuditRow(t, pool, "alice", "order:create", "order-1", `{"ip":"10.0.0.1"}`, base)
+	seedAuditRow(t, pool, "alice", "order:create", "order-2", `{}`, base.Add(1*time.Hour))
+	seedAuditRow(t, pool, "alice", "payment:process", "pay-1", `{}`, base.Add(2*time.Hour))
+	seedAuditRow(t, pool, "bob", "order:create", "order-9", `{}`, base.Add(90*time.Minute))
+
+	// All of alice's entries, newest first; bob's are invisible.
+	entries, err := store.Query(ctx, "alice", time.Time{}, 10)
+	require.NoError(t, err)
+	require.Len(t, entries, 3)
+	require.Equal(t, []string{"pay-1", "order-2", "order-1"},
+		[]string{entries[0].Subject, entries[1].Subject, entries[2].Subject},
+		"entries must be ordered created_at DESC")
+	for _, e := range entries {
+		require.Equal(t, "alice", e.Actor)
+	}
+	require.Equal(t, map[string]string{"ip": "10.0.0.1"}, entries[2].Metadata,
+		"metadata must round-trip")
+	require.True(t, entries[2].At.Equal(base), "At must carry created_at")
+
+	// since is inclusive: from base+1h on, two entries remain.
+	entries, err = store.Query(ctx, "alice", base.Add(1*time.Hour), 10)
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+	require.Equal(t, "pay-1", entries[0].Subject)
+	require.Equal(t, "order-2", entries[1].Subject)
+
+	// limit keeps the NEWEST rows.
+	entries, err = store.Query(ctx, "alice", time.Time{}, 1)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, "pay-1", entries[0].Subject)
+
+	// Unknown actor: empty, no error.
+	entries, err = store.Query(ctx, "nobody", time.Time{}, 10)
+	require.NoError(t, err)
+	require.Empty(t, entries)
+}
