@@ -217,6 +217,11 @@ load vus='10' duration='30s':
       -e TOKEN="${TOKEN:-}" \
       grafana/k6 run --vus {{vus}} --duration {{duration}} - < scripts/k6/order-flow.js
 
+# Correctness-under-load: seeded adversarial traffic against a running gateway (see docs/operations.md §Load testing)
+# Usage: just traffic [--rate 50 --duration 1m | --phases "10rps:5s,40rps:20s"] [--seed N] [--mix happy=70,sse=0] [--token "$TOKEN"]
+traffic *ARGS:
+    go run ./cmd/trafficgen {{ARGS}}
+
 # Install git hooks via lefthook
 hooks:
     lefthook install
