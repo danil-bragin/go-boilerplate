@@ -160,6 +160,40 @@ func TestAuditAppendOnly_OwnershipTransferModel(t *testing.T) {
 	require.EqualValues(t, 1, tag.RowsAffected())
 }
 
+// TestAuditMigration_TransfersOwnershipWhenAuditAdminExists exercises the
+// ownership-transfer BRANCH of the append-only migration: when an audit_admin
+// role exists at migration time, migration 00003 must ALTER TABLE audit_log
+// OWNER TO audit_admin (re-granting the app role INSERT+SELECT) without error,
+// and audit_admin must end up the owner. This is the production path
+// (deploy/postgres/init.sql provisions audit_admin before migrations run); the
+// other append-only tests run as a single superuser where the branch is
+// skipped, so this is the only coverage of the transfer SQL itself.
+func TestAuditMigration_TransfersOwnershipWhenAuditAdminExists(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (postgres container)")
+	}
+	dsn := pgtest.NewDSN(t)
+	ctx := context.Background()
+
+	// Provision audit_admin BEFORE migrating so the transfer branch fires.
+	bootstrap, err := pgxpool.New(ctx, dsn)
+	require.NoError(t, err)
+	_, err = bootstrap.Exec(ctx, `create role audit_admin login password 'audit_admin'`)
+	require.NoError(t, err)
+	bootstrap.Close()
+
+	require.NoError(t, pg.Migrate(ctx, dsn, migrations, "migrations"))
+
+	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pool.Close(ctx) })
+
+	var owner string
+	require.NoError(t, pool.Reader().QueryRow(ctx,
+		`select pg_get_userbyid(relowner) from pg_class where relname = 'audit_log'`).Scan(&owner))
+	require.Equal(t, "audit_admin", owner, "migration must transfer audit_log ownership to audit_admin")
+}
+
 // TestAuditCleanup_DisabledWithoutAdminPool: with no admin pool wired, Cleanup
 // is a deliberate no-op (ErrCleanupDisabled) — the append-only REVOKE means a
 // DELETE through the app pool would be denied, so cleanup refuses rather than
