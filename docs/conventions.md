@@ -75,7 +75,8 @@ Split when a file mixes two or more responsibilities **or** exceeds ~200–250 l
 | `platform/web/` | `httpserver`, `httpx`, `ratelimit` |
 | `platform/security/` | `auth`, `authz`, `audit` |
 | `platform/storage/` | `pg`, `cache`, `blob` |
-| standalone | `config`, `run`, `cqrs`, `resilience`, `featureflags`, `servicekit`, `testkit` |
+| `platform/testkit/` | `fakes`, `mockhttp`, `mocks`, `fixtures`, `goleakopts`, `traffic` |
+| standalone | `config`, `run`, `cqrs`, `resilience`, `featureflags`, `servicekit`, `apperr`, `i18n`, `clock` |
 
 `platform/` packages never depend on each other circularly; the `messaging/outboxkafka` package exists specifically to bridge `messaging/outbox` and `messaging/kafka` without creating a cycle.
 
@@ -402,3 +403,5 @@ Mechanics (`platform/i18n`, built on go-i18n v2 + `x/text` matching):
 ## 13. Observability: duration metrics
 
 **Every new RPC-ish path ships a duration histogram.** Anything that crosses a process or network boundary — an HTTP route, a CQRS handler, a Kafka handler or produce, a DB query, an outbox hop, a business state machine reaching its terminal state — records how long it took, as a **histogram** (never a gauge or a pair of counters: histograms are what p50/p95/p99 quantiles, heatmaps, and SLO burn rates are computed from). Naming and shape rules: instrument name `<area>.<thing>.duration` (e.g. `kafka.consumer.handler.duration`, `pg.query.duration`, `orders.lifecycle.duration`; lag-style end-to-end delays may use `<area>.<thing>_lag`), unit **seconds** (`metric.WithUnit("s")`, float values via `d.Seconds()`), and **low-cardinality labels only** — bounded enums like `{topic, status=ok|error}`, `{query, pool=writer|reader}`, `{terminal_status}`; never IDs, never raw SQL, never unbounded user input. Instruments are created from the global otel meter at constructor time and nil-degrade on creation failure (metrics must never break the path they measure) — see `platform/messaging/kafka/metrics.go` for the canonical pattern. Bucket layout is not configured at the instrument: the telemetry SDK applies exponential-histogram aggregation by view, so call sites stay layout-agnostic.
+
+**Legacy exceptions (grandfathered):** `cqrs.handler.duration_ms` and `http.server.duration` predate the seconds rule and record **milliseconds**. They stay as-is — a metric's name+unit is part of the operational contract (dashboards, recording rules, alerts all encode it), so renaming or re-uniting them is a breaking metric change, not a cleanup. New instruments must follow the seconds rule above; do not copy these two.

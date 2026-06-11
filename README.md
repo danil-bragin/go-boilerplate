@@ -126,7 +126,8 @@ Tests use testcontainers-go and spin up real containers. **Docker must be runnin
 
 ```bash
 just test-unit          # fast lane: -short, no Docker, seconds
-just test-integration   # go test ./... (3–5 min; starts Postgres, Redpanda, Redis, SeaweedFS)
+just test-integration   # go test -p 1 ./... (10–20 min: packages run serially, each starting
+                        # real Postgres/Redpanda/Redis/SeaweedFS containers)
 ```
 
 ### Auth — Keycloak
@@ -188,7 +189,9 @@ go-boilerplate/
 │   ├── cqrs/        HandlerFunc + Behavior decorators (log/trace/metrics/validate/tx/cache)
 │   ├── resilience/  failsafe-go policy builders
 │   ├── featureflags/ OpenFeature wrapper + provider
-│   └── testkit/     test doubles: fakes, mockhttp, mocks, fixtures
+│   └── testkit/     test doubles + harnesses: fakes, mockhttp, mocks, fixtures,
+│                    goleakopts (shared goleak ignore set), traffic (seeded
+│                    adversarial load generator + correctness ledger)
 │
 ├── examples/        ★ DELETABLE — demonstrates platform usage
 │   ├── gateway/     REST edge; publishes commands; owns read-model projection
@@ -205,7 +208,7 @@ go-boilerplate/
 ├── docs/            ARCHITECTURE.md, ADRs, adding-a-service guide
 ├── Dockerfile       parametric multi-stage (--build-arg SERVICE=<svc>)
 ├── docker-compose.yml full local stack
-├── justfile         dev loop: up/up-obs/up-apps/up-full/down/logs/test/lint/buf/sqlc/build-images
+├── justfile         dev loop: up/up-obs/up-apps/up-full/down/logs/test/lint/gen/errgen/traffic/promtool/build-images
 ├── .air.toml        air hot-reload config (default target: skeleton; override via just dev <svc>)
 └── buf.yaml         buf v2 config (proto lint + breaking rules)
 ```
