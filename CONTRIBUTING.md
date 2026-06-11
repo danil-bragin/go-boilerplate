@@ -27,6 +27,23 @@ just hooks
 
 That's it. From that point on, hooks run automatically on every `git commit` and `git push`.
 
+### Fresh clone → green: what to expect
+
+Measured once on an Apple M4 Pro (14 cores, 48 GB RAM, Docker Desktop) with
+warm Go build/module caches and Docker images already pulled — your numbers
+will vary with hardware and network:
+
+| Step | What it covers | Wall time |
+|---|---|---|
+| `just up` | core infra (postgres, redpanda, redis, seaweedfs, keycloak) started, health-gated dependencies settled | ~60 s |
+| `just test-unit` | the full fast lane (`go test -short ./...`), cold test cache | ~36 s |
+
+So a warmed-up machine goes from clone to a green fast lane in **roughly two
+minutes**. The very first run adds one-time, network-bound costs these numbers
+exclude: `go mod download`, Docker image pulls, and a cold Go build cache.
+For an end-to-end proof of life afterwards, run `just demo` — it brings up the
+full stack and follows one order through the choreography to `paid`.
+
 ## Git hooks (lefthook)
 
 Managed via `lefthook.yml` in the repo root. Install once with `just hooks` (`lefthook install`).
@@ -91,6 +108,7 @@ just fmt            # golangci-lint fmt ./...
 just audit          # fmt + lint + vuln + unit tests
 just hooks          # (re)install lefthook git hooks
 just up             # start core infra via docker compose
+just demo           # one-command proof of life: stack up → order created → status "paid"
 just test           # run all tests
 just new-service x  # scaffold examples/x from the payments template
 just rename-module github.com/acme/myapp   # adopt the boilerplate under your module path

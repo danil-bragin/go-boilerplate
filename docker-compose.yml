@@ -122,18 +122,19 @@ services:
   redpanda-console:
     image: redpandadata/console:v2.7.2
     restart: unless-stopped
+    # Canonical Redpanda pattern: the image ENTRYPOINT is ./console, so a bare
+    # `command: sh -c …` is passed to console as argv (never executed) — the
+    # entrypoint override is required for the config-file write to actually run.
+    entrypoint: /bin/sh
+    command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml; exec /app/console'
     environment:
-      CONFIG_FILEPATH: /etc/redpanda-console/config.yaml
-    command: >
-      sh -c "
-        cat > /etc/redpanda-console/config.yaml <<'EOF'
-      kafka:
-        brokers: [\"redpanda:9092\"]
-        schemaRegistry:
-          enabled: true
-          urls: [\"http://redpanda:8081\"]
-      EOF
-        exec /app/console"
+      CONFIG_FILEPATH: /tmp/config.yml
+      CONSOLE_CONFIG_FILE: |
+        kafka:
+          brokers: ["redpanda:9092"]
+          schemaRegistry:
+            enabled: true
+            urls: ["http://redpanda:8081"]
     ports:
       - "8090:8080"
     depends_on:
@@ -204,6 +205,13 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
       KC_DB: dev-mem
       KC_HEALTH_ENABLED: "true"
+      # Pin the issuer to the host-facing URL. Without this, tokens minted via
+      # localhost:8180 carry iss=http://localhost:8180/… while the gateway
+      # expects the in-network issuer — every host-fetched token (just token,
+      # the README curl flow, just demo) fails verification with 401.
+      # The gateway's GATEWAY_JWKS_ISSUER matches this value; JWKS keys are
+      # still fetched over the internal DNS name (GATEWAY_JWKS_URL).
+      KC_HOSTNAME: http://localhost:8180
     command: ["start-dev", "--import-realm"]
     volumes:
       - ./deploy/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
@@ -292,7 +300,9 @@ services:
       - jaeger
 
   pyroscope:
-    image: grafana/pyroscope:1.8.1
+    # 1.8.0, not 1.8.1: the 1.8.1 tag does not exist on Docker Hub — pulling
+    # it fails the whole observability profile (caught by `just demo`).
+    image: grafana/pyroscope:1.8.0
     restart: unless-stopped
     profiles: ["observability"]
     ports:
@@ -338,7 +348,9 @@ services:
       # To disable for local dev without Keycloak: set GATEWAY_AUTH_DISABLED=true.
       GATEWAY_AUTH_DISABLED: "false"
       GATEWAY_JWKS_URL: http://keycloak:8080/realms/app/protocol/openid-connect/certs
-      GATEWAY_JWKS_ISSUER: http://keycloak:8080/realms/app
+      # Must equal the iss claim Keycloak mints — pinned host-facing via
+      # KC_HOSTNAME on the keycloak service (NOT the internal DNS name).
+      GATEWAY_JWKS_ISSUER: http://localhost:8180/realms/app
       GATEWAY_JWKS_AUDIENCE: gateway
       # Topics
       ORDERS_COMMANDS_TOPIC: orders.commands
@@ -354,6 +366,17 @@ services:
       # Go runtime memory limit: ~90% of the container memory limit above.
       # Keeps the GC soft-trim target below the cgroup hard limit, preventing OOM-kill.
       GOMEMLIMIT: 460MiB
+    # In-image static probe (cmd/probe, baked into the distroless image):
+    # GET http://127.0.0.1:<port>/livez where <port> comes from ADMIN_HTTP_ADDR
+    # (unset here → servicekit default :9090). The Dockerfile declares the same
+    # HEALTHCHECK; this block repeats it so compose-level tuning (start_period)
+    # is explicit and visible next to depends_on consumers.
+    healthcheck:
+      test: ["CMD", "/probe"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
     depends_on:
       postgres:
         condition: service_healthy
@@ -393,6 +416,13 @@ services:
       ORDERS_COMMANDS_TOPIC: orders.commands
       # Go runtime memory limit: ~90% of the container memory limit above.
       GOMEMLIMIT: 460MiB
+    # In-image static probe (cmd/probe) → admin /livez; see the gateway block.
+    healthcheck:
+      test: ["CMD", "/probe"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
     depends_on:
       postgres:
         condition: service_healthy
@@ -430,6 +460,13 @@ services:
       ORDERS_EVENTS_TOPIC: orders.events
       # Go runtime memory limit: ~90% of the container memory limit above.
       GOMEMLIMIT: 460MiB
+    # In-image static probe (cmd/probe) → admin /livez; see the gateway block.
+    healthcheck:
+      test: ["CMD", "/probe"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
     depends_on:
       postgres:
         condition: service_healthy
@@ -467,6 +504,13 @@ services:
       PAYMENTS_EVENTS_TOPIC: payments.events
       # Go runtime memory limit: ~90% of the container memory limit above.
       GOMEMLIMIT: 460MiB
+    # In-image static probe (cmd/probe) → admin /livez; see the gateway block.
+    healthcheck:
+      test: ["CMD", "/probe"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
     depends_on:
       postgres:
         condition: service_healthy

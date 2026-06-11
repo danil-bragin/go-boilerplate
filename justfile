@@ -146,6 +146,61 @@ up-apps:
 up-full:
     docker compose --profile observability --profile apps up -d --build
 
+# One-command proof of life: full stack up → create an order → watch it reach "paid" — requires jq.
+# Idempotent: re-runs reuse the running stack and the same Idempotency-Key maps to the same order.
+# DEMO_GATEWAY_URL / DEMO_KEYCLOAK_URL override the default host ports (e.g. when 8080 is taken).
+demo:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    gw="${DEMO_GATEWAY_URL:-http://localhost:8080}"
+    kc="${DEMO_KEYCLOAK_URL:-http://localhost:8180}"
+    echo "▸ starting the stack (core + observability + apps — the first run builds 4 images, allow a few minutes)"
+    docker compose --profile observability --profile apps up -d --build
+    echo "▸ waiting for keycloak + gateway (up to 90s)"
+    token=""; ready=""
+    for _ in $(seq 1 90); do
+        token="$(curl -s --max-time 2 -d client_id=gateway -d username=demo -d password=demo -d grant_type=password -d scope=openid \
+            "$kc/realms/app/protocol/openid-connect/token" 2>/dev/null | jq -r '.access_token // empty' || true)"
+        if [[ -n "$token" && "$(curl -s --max-time 2 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "$gw/v1/orders?limit=1")" == "200" ]]; then
+            ready=1; break
+        fi
+        sleep 1
+    done
+    [[ -n "$ready" ]] || { echo "demo: gateway not ready after 90s — inspect with 'just logs'" >&2; exit 1; }
+    # The read path is ownership-checked (non-admin sees only customer_id == sub),
+    # so the order must be created AS the demo user — sub via the userinfo endpoint.
+    sub="$(curl -s -H "Authorization: Bearer $token" "$kc/realms/app/protocol/openid-connect/userinfo" | jq -r '.sub // empty')"
+    [[ -n "$sub" ]] || { echo "demo: could not resolve the demo user's subject" >&2; exit 1; }
+    echo "▸ POST /v1/orders (Idempotency-Key: demo-order-0001 — retries/re-runs return the same order)"
+    order_id="$(curl -s -XPOST "$gw/v1/orders" \
+        -H "Authorization: Bearer $token" \
+        -H 'Content-Type: application/json' \
+        -H 'Idempotency-Key: demo-order-0001' \
+        -d '{"customer_id":"'"$sub"'","amount_cents":1500,"currency":"USD"}' | jq -r '.order_id // empty')"
+    [[ -n "$order_id" ]] || { echo "demo: order creation failed — inspect with 'just logs'" >&2; exit 1; }
+    echo "  order_id=$order_id"
+    echo "▸ polling status until 'paid' (gateway → Kafka → orders → payments → read model; up to 60s)"
+    status=""
+    for _ in $(seq 1 60); do
+        # problem+json carries a numeric .status — only trust .status on an order body
+        status="$(curl -s -H "Authorization: Bearer $token" "$gw/v1/orders/$order_id" | jq -r 'if .order_id then .status else empty end')"
+        [[ "$status" == "paid" ]] && break
+        sleep 1
+    done
+    [[ "$status" == "paid" ]] || { echo "demo: order stuck at '${status:-unknown}' after 60s — inspect with 'just logs'" >&2; exit 1; }
+    echo "▸ final order:"
+    curl -s -H "Authorization: Bearer $token" "$gw/v1/orders/$order_id" | jq .
+    echo ""
+    echo "Demo complete — the order traveled gateway → Kafka → orders → payments → back into the gateway read model."
+    echo ""
+    echo "Explore the running stack:"
+    echo "  Gateway API       $gw            (token: just token)"
+    echo "  Jaeger traces     http://localhost:16686"
+    echo "  Grafana           http://localhost:3000   (admin/admin)"
+    echo "  Redpanda Console  http://localhost:8090"
+    echo ""
+    echo "The stack stays up. Stop everything with: just down"
+
 # Stop everything and remove volumes
 down:
     docker compose --profile observability --profile apps --profile pgbouncer down -v

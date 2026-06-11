@@ -69,6 +69,9 @@ All domain state transitions are driven by Kafka events. The gateway owns a **re
 
 **Prerequisites:** Docker, Go 1.26+, [just](https://just.systems/).
 
+> **One command:** `just demo` automates this whole section — full stack up,
+> order created, status followed to `paid`, observability URLs printed.
+
 ### Compose profiles
 
 The stack is split into four profiles so you only run what you need:
@@ -93,7 +96,13 @@ just down
 ```
 
 ```bash
-# Create an order (auth disabled by default). Returns 202 + Location header
+# NOTE: auth is ENABLED in the compose stack — add
+#   -H "Authorization: Bearer $(just token)"
+# to each curl below (or set GATEWAY_AUTH_DISABLED: "true" in compose).
+# The read path is ownership-checked: a non-admin token only sees orders whose
+# customer_id equals its own subject (`just demo` handles all of this for you).
+
+# Create an order. Returns 202 + Location header
 # + order_id; an immediate GET returns 200 {status:"pending"} — not 404.
 curl -s -XPOST localhost:8080/v1/orders \
   -H 'Content-Type: application/json' \
@@ -132,13 +141,14 @@ just test-integration   # go test -p 1 ./... (10–20 min: packages run serially
 
 ### Auth — Keycloak
 
-Auth is **disabled** by default (`GATEWAY_AUTH_DISABLED=true`). To enable:
+Auth is **enabled** by default in the compose stack:
 
 ```bash
-# In docker-compose.yml gateway environment, change to:
+# docker-compose.yml gateway environment (set GATEWAY_AUTH_DISABLED: "true"
+# to turn auth off for tokenless local curls):
 GATEWAY_AUTH_DISABLED: "false"
 GATEWAY_JWKS_URL: http://keycloak:8080/realms/app/protocol/openid-connect/certs
-GATEWAY_JWKS_ISSUER: http://keycloak:8080/realms/app
+GATEWAY_JWKS_ISSUER: http://localhost:8180/realms/app   # = KC_HOSTNAME issuer (host-facing)
 GATEWAY_JWKS_AUDIENCE: gateway
 ```
 
