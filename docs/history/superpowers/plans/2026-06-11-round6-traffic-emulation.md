@@ -1,5 +1,13 @@
 # Round 6 — Traffic Emulation in testkit
 
+> **STATUS: COMPLETE (2026-06-11).** T1–T5 done (~8 commits incl. arch-rule exception).
+> Gates: gofumpt clean, golangci-lint 0 (after cache clean — shared cache had cross-worktree
+> phantoms), `go test -short -count=1 ./...` green (~37s wall), e2e traffic green ×2
+> (57.65s / 59.65s; generation ~30s, verify <1s), full `go test -p 1 ./examples/...` green,
+> `just -n traffic` parses. Seed workflow proven: buggy stub gateway → 35 winner violations,
+> `--seed` replay reproduced identical violation groups. Found+fixed during T3 gate: SSE
+> client must close (never drain) live event-stream bodies — drain blocked until ctx budget.
+
 > User decisions: both levels (testkit primitives + in-process integration test + live-stack CLI);
 > weighted scenarios + Poisson arrivals + phases; adversarial mix; seeded determinism;
 > CI asserts INVARIANTS, latency asserts behind env flag. TDD; one commit per task;
