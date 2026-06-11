@@ -131,6 +131,25 @@ func (s *PgStore) Record(ctx context.Context, e Entry) error {
 	return nil
 }
 
+// RecordOutOfBand records an audit entry in its OWN fresh transaction, separate
+// from any ambient command tx. Use it for events that have no command tx to
+// join: access denials (authz/ownership 403), admin DSAR reads, attachment
+// access. The dedicated tx is essential — the hash chain's FOR UPDATE lock +
+// insert + head-advance must run on ONE connection, which a bare pool call
+// (no ambient tx) would NOT guarantee.
+//
+// It is BEST-EFFORT from the caller's perspective: the returned error should be
+// logged and swallowed (a denial must still return 403 even if its audit row
+// could not be written). It deliberately uses context.WithoutCancel so the
+// audit write survives a request whose own context is being cancelled by the
+// denial/response path.
+func (s *PgStore) RecordOutOfBand(ctx context.Context, e Entry) error {
+	auditCtx := context.WithoutCancel(ctx)
+	return pg.RunInTx(auditCtx, s.pool, func(ctx context.Context) error {
+		return s.Record(ctx, e)
+	})
+}
+
 // computeEntryHash returns sha256(prevHash || canonical(entry)). The canonical
 // serialization is deterministic and unambiguous: every field is
 // length-prefixed (8-byte big-endian length + bytes) so no concatenation of

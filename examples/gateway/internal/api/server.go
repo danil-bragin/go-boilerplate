@@ -111,6 +111,44 @@ func (s *Server) HealthCheck(_ context.Context, _ HealthCheckRequestObject) (Hea
 	return HealthCheck200Response{}, nil
 }
 
+// auditDenial records an authorization-denial security event out-of-band
+// (best-effort: a failed write is logged, never propagated — the request is
+// still denied). Only a PRESENT principal is audited: anonymous 401s are not
+// recorded, so an unauthenticated flood cannot fill the audit log (the
+// principal's presence is the trust signal that makes the entry worth keeping).
+func (s *Server) auditDenial(ctx context.Context, p auth.Principal, action, subject string) {
+	if s.authDisabled {
+		return
+	}
+	meta := map[string]string{"denied_action": action}
+	if len(p.Roles) > 0 {
+		meta["roles"] = fmt.Sprint(p.Roles)
+	}
+	if err := s.auditStore.RecordOutOfBand(ctx, audit.Entry{
+		Actor:    p.Subject,
+		Action:   audit.ActionAuthzDenied,
+		Subject:  subject,
+		Metadata: meta,
+	}); err != nil {
+		s.logger.WarnContext(ctx, "gateway: audit denial write failed", "error", err, "denied_action", action)
+	}
+}
+
+// auditAdminRead records an admin DSAR/forensics read out-of-band (the read
+// audits itself). Best-effort, same policy as auditDenial.
+func (s *Server) auditAdminRead(ctx context.Context, p auth.Principal, action, subject string) {
+	if s.authDisabled {
+		return
+	}
+	if err := s.auditStore.RecordOutOfBand(ctx, audit.Entry{
+		Actor:   p.Subject,
+		Action:  action,
+		Subject: subject,
+	}); err != nil {
+		s.logger.WarnContext(ctx, "gateway: audit admin-read write failed", "error", err, "read_action", action)
+	}
+}
+
 // CreateOrder implements StrictServerInterface.
 //
 // Authorization: when auth is enabled (AuthDisabled=false), the principal in
@@ -141,6 +179,7 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 			return nil, authz.ErrUnauthenticated
 		}
 		if err := rbacPolicy.Authorize(ctx, p, "order:create", nil); err != nil {
+			s.auditDenial(ctx, p, "order:create", "")
 			return nil, err
 		}
 	}
@@ -343,8 +382,11 @@ func (s *Server) QueryAudit(ctx context.Context, request QueryAuditRequestObject
 			return nil, authz.ErrUnauthenticated
 		}
 		if !slices.Contains(p.Roles, attachments.AdminRole) {
+			s.auditDenial(ctx, p, "audit:read", request.Params.Actor)
 			return nil, authz.ErrForbidden
 		}
+		// The DSAR/forensics read audits itself: who read whose trail.
+		s.auditAdminRead(ctx, p, audit.ActionAuditRead, request.Params.Actor)
 	}
 
 	var since time.Time // zero = full retained trail
@@ -388,8 +430,12 @@ func (s *Server) VerifyAudit(ctx context.Context, request VerifyAuditRequestObje
 			return nil, authz.ErrUnauthenticated
 		}
 		if !slices.Contains(p.Roles, attachments.AdminRole) {
+			s.auditDenial(ctx, p, "audit:verify", "")
 			return nil, authz.ErrForbidden
 		}
+		// Record the verify read BEFORE walking, so a self-audit row is part of
+		// the chain when VerifyChain runs (the read audits itself).
+		s.auditAdminRead(ctx, p, audit.ActionAuditVerify, "")
 	}
 
 	var since time.Time
@@ -505,6 +551,9 @@ func (s *Server) GetOrder(ctx context.Context, request GetOrderRequestObject) (G
 			return nil, authz.ErrUnauthenticated
 		}
 		if !slices.Contains(p.Roles, attachments.AdminRole) && view.CustomerID != p.Subject {
+			// Ownership denial: audited even though the client sees a masked
+			// 404 (the audit records the real denial for forensics).
+			s.auditDenial(ctx, p, "order:read", request.Id)
 			return nil, app.OrderNotFound(request.Id)
 		}
 	}

@@ -100,7 +100,10 @@ func TestGateway_AuditEndpoint(t *testing.T) {
 	})
 
 	t.Run("non-admin → 403", func(t *testing.T) {
-		status, body := getAudit(t, baseURL, "alice", q) // alice holds only "user"
+		// Use bob (non-admin) here so the resulting authz.denied audit row is
+		// attributed to bob, not alice — the alice read-assertions below count
+		// alice's order:create rows exactly and must not see a denial row.
+		status, body := getAudit(t, baseURL, "bob", q) // bob holds only "user"
 		require.Equal(t, http.StatusForbidden, status)
 		var prob struct {
 			Code string `json:"code"`
@@ -177,6 +180,98 @@ func getVerify(t *testing.T, baseURL, token string) (int, []byte) {
 	var body json.RawMessage
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	return resp.StatusCode, body
+}
+
+// auditRowsByAction reads (actor, subject) for all audit_log rows with the
+// given action, ordered by id. Used by the audit-on-denial tests.
+func auditRowsByAction(t *testing.T, dsn, action string) [][2]string {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
+	require.NoError(t, err)
+	defer conn.Close(ctx)
+	rows, err := conn.Query(ctx,
+		`select actor, subject from audit_log where action = $1 order by id`, action)
+	require.NoError(t, err)
+	defer rows.Close()
+	var out [][2]string
+	for rows.Next() {
+		var actor, subject string
+		require.NoError(t, rows.Scan(&actor, &subject))
+		out = append(out, [2]string{actor, subject})
+	}
+	require.NoError(t, rows.Err())
+	return out
+}
+
+// waitForAuditRow polls until at least one row with the given action exists
+// (the denial/read audits are written out-of-band on a separate connection,
+// so they may land a beat after the HTTP response returns).
+func waitForAuditRow(t *testing.T, dsn, action string) [][2]string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rows := auditRowsByAction(t, dsn, action)
+		if len(rows) > 0 {
+			return rows
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no audit_log row with action=%q appeared within deadline", action)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestGateway_AuditOnDenial proves B3: a valid principal denied by authorization
+// produces an authz.denied audit row attributed to that principal, and an admin
+// DSAR read produces an audit.read row — both written out-of-band.
+func TestGateway_AuditOnDenial(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
+	baseURL := startAppWithVerifier(t, broker, dsn, multiUserVerifier{})
+
+	t.Run("ownership-denied read → authz.denied audit row", func(t *testing.T) {
+		// alice (non-admin) tries to read bob's audit trail → 403.
+		status, _ := getAudit(t, baseURL, "alice", url.Values{"actor": {"bob"}})
+		require.Equal(t, http.StatusForbidden, status)
+
+		rows := waitForAuditRow(t, dsn, "authz.denied")
+		var found bool
+		for _, r := range rows {
+			if r[0] == "alice" {
+				found = true
+			}
+		}
+		assert.True(t, found, "authz.denied row attributed to alice must exist; got %v", rows)
+	})
+
+	t.Run("admin read → audit.read row", func(t *testing.T) {
+		status, _ := getAudit(t, baseURL, "root", url.Values{"actor": {"alice"}})
+		require.Equal(t, http.StatusOK, status)
+
+		rows := waitForAuditRow(t, dsn, "audit.read")
+		var found bool
+		for _, r := range rows {
+			if r[0] == "root" && r[1] == "alice" {
+				found = true
+			}
+		}
+		assert.True(t, found, "audit.read row (actor=root subject=alice) must exist; got %v", rows)
+	})
+
+	t.Run("anonymous 401 is NOT audited", func(t *testing.T) {
+		before := len(auditRowsByAction(t, dsn, "authz.denied"))
+		status, _ := getAudit(t, baseURL, "", url.Values{"actor": {"alice"}})
+		require.Equal(t, http.StatusUnauthorized, status)
+		// Give any (erroneous) out-of-band write a chance to land.
+		time.Sleep(300 * time.Millisecond)
+		after := len(auditRowsByAction(t, dsn, "authz.denied"))
+		assert.Equal(t, before, after, "anonymous 401 must NOT produce an authz.denied audit row")
+	})
 }
 
 // TestGateway_AuditVerifyEndpoint covers the admin-only audit-chain integrity
