@@ -1,9 +1,9 @@
 // Package traffic is the gateway's reusable scenario pack for the
 // platform/testkit/traffic generator: a weighted, adversarial mix of order
 // flows (happy path, deterministic declines, edge-validation rejects,
-// idempotent retries, idempotency-key mismatch races, read traffic, and SSE
-// subscribers) that records the gateway's correctness invariants in a
-// traffic.Ledger.
+// idempotent retries, idempotency-key mismatch races, read traffic, SSE
+// subscribers, and an SSE kill/reconnect storm) that records the gateway's
+// correctness invariants in a traffic.Ledger.
 //
 // The pack lives WITH the service that owns the API (see
 // docs/testing.md §Traffic emulation) and is imported by both the e2e
@@ -129,6 +129,7 @@ func Pack(base string, client *http.Client, token string) []kit.Scenario {
 		{Name: "mismatch", Weight: 2, Run: p.mismatch},
 		{Name: "reads", Weight: 6, Run: p.reads},
 		{Name: "sse", Weight: 2, Run: p.sse},
+		{Name: "sse-storm", Weight: 1, Run: p.sseStorm},
 	}
 }
 
@@ -417,6 +418,85 @@ func (p *pack) sse(ctx context.Context, rng *rand.Rand, ledger *kit.Ledger) erro
 	}
 	if !terminalStatuses[status] {
 		return kit.CodedError("SSE", fmt.Errorf("sse: stream for %s ended before a terminal status (last %q)", res.orderID, status))
+	}
+	return nil
+}
+
+// sseStorm regression-protects the SSE races fixed in rounds 3/5 under
+// load: it posts ONE order and opens N ∈ [5,15] concurrent streams on it,
+// killing roughly half mid-flow (body closed after their first event) and
+// reconnecting them with Last-Event-ID. Every stream — survivor or
+// reconnect — must reach a terminal status, and streamEvents asserts the
+// ordinal contract inline (ids strictly increasing; a resumed stream only
+// sees ids GREATER than its Last-Event-ID).
+//
+// All rng decisions (N, which streams get killed) are drawn BEFORE any
+// goroutine starts: the per-op rng is not safe for concurrent use, and
+// up-front draws keep the run reproducible from its seed. Stream/transport
+// blips surface as scenario FAILURES (code SSE), never ledger violations —
+// per the round-6 semantics, the order's own terminal invariant stays
+// ledgered via ExpectTerminal and is probed independently of the streams.
+func (p *pack) sseStorm(ctx context.Context, rng *rand.Rand, ledger *kit.Ledger) error {
+	body := genOrderBody(rng)
+	n := 5 + rng.IntN(11) // 5..15 streams
+	kill := make([]bool, n)
+	for i := range kill {
+		kill[i] = i < (n+1)/2 // ~half die mid-flow…
+	}
+	rng.Shuffle(n, func(i, j int) { kill[i], kill[j] = kill[j], kill[i] }) // …at random positions
+
+	res, err := p.postOrder(ctx, "", body)
+	if err != nil {
+		return kit.CodedError("TRANSPORT", err)
+	}
+	if res.status != http.StatusAccepted {
+		return kit.CodedError(res.codeOrHTTP(), fmt.Errorf("sse-storm: want 202, got %d", res.status))
+	}
+	ledger.ExpectTerminal(res.orderID, []string{"paid"}, TerminalDeadline)
+	p.poolAdd(res.orderID)
+
+	ctx, cancel := context.WithTimeout(ctx, sseBudget)
+	defer cancel()
+
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = p.stormStream(ctx, res.orderID, kill[i])
+		}()
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return kit.CodedError("SSE", fmt.Errorf("sse-storm: order %s (%d streams): %w", res.orderID, n, err))
+	}
+	return nil
+}
+
+// stormStream is one storm participant. A survivor reads straight to the
+// terminal status; a killed stream reads its first event, gets its body
+// closed mid-flow (streamEvents returns and closes), then resumes with
+// Last-Event-ID and reads on to terminal — the resumed stream must only see
+// GREATER ids (no ordinal regression), enforced inside streamEvents.
+func (p *pack) stormStream(ctx context.Context, orderID string, killMidFlow bool) error {
+	lastID := -1
+	if killMidFlow {
+		id, status, err := p.streamEvents(ctx, orderID, -1, stopAfterFirst)
+		if err != nil {
+			return fmt.Errorf("first read: %w", err)
+		}
+		if terminalStatuses[status] {
+			return nil // already terminal on the first event — nothing to resume
+		}
+		lastID = id
+	}
+	_, status, err := p.streamEvents(ctx, orderID, lastID, stopAtTerminal)
+	if err != nil {
+		return fmt.Errorf("read to terminal (resume after id %d): %w", lastID, err)
+	}
+	if !terminalStatuses[status] {
+		return fmt.Errorf("stream ended before a terminal status (last %q)", status)
 	}
 	return nil
 }

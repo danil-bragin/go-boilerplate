@@ -38,6 +38,22 @@ var (
 // here so SSE subscribers receive live updates. May be nil (no-op).
 type StatusNotifier func(ctx context.Context, orderID string)
 
+// Store is the narrow orders_read write surface the projection handlers use.
+// *storegen.Queries implements it; fast-lane contract tests substitute a
+// recording fake (see NewHandlerWithStore).
+type Store interface {
+	UpsertOrderCreated(ctx context.Context, arg storegen.UpsertOrderCreatedParams) error
+	MarkPaid(ctx context.Context, orderID uuid.UUID) (storegen.MarkPaidRow, error)
+	MarkPaymentFailed(ctx context.Context, orderID uuid.UUID) (storegen.MarkPaymentFailedRow, error)
+	MarkPaymentTimeout(ctx context.Context, orderID uuid.UUID) (storegen.MarkPaymentTimeoutRow, error)
+}
+
+// StoreFor resolves the Store for the current ctx. In production it binds the
+// sqlc queries to the ambient inbox transaction (pg.FromContext); the
+// indirection exists so contract tests can observe the exact field mapping
+// the handlers write, without a database.
+type StoreFor func(ctx context.Context) Store
+
 // NewHandler returns a kafka.HandlerFunc that handles both "orders.events"
 // and "payments.events" records, routing on the versioned "event-type"
 // header via consume.Typed (which also supplies inbox dedup, the uniform
@@ -50,6 +66,16 @@ type StatusNotifier func(ctx context.Context, orderID string)
 // instead of a stale cached view. notify (may be nil) runs in the same
 // post-commit hook and pushes the change to SSE subscribers.
 func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify StatusNotifier, opts ...consume.Option) kafka.HandlerFunc {
+	return NewHandlerWithStore(pool, func(ctx context.Context) Store {
+		return storegen.New(pg.FromContext(ctx, pool))
+	}, logger, cache, notify, opts...)
+}
+
+// NewHandlerWithStore is NewHandler with the orders_read write surface
+// injected. It exists for fast-lane contract tests (recording Store, nil
+// pool, consume.WithoutInbox); production wiring goes through NewHandler so
+// writes always join the ambient inbox transaction.
+func NewHandlerWithStore(pool *pg.Pool, storeFor StoreFor, logger *slog.Logger, cache cqrs.Cache, notify StatusNotifier, opts ...consume.Option) kafka.HandlerFunc {
 	committed := func(ctx context.Context, orderID string) {
 		bustOrderCache(ctx, cache, logger, orderID)
 		if notify != nil {
@@ -66,7 +92,7 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 				if err != nil {
 					return err
 				}
-				q := storegen.New(pg.FromContext(ctx, pool))
+				q := storeFor(ctx)
 				if err := q.UpsertOrderCreated(ctx, storegen.UpsertOrderCreatedParams{
 					OrderID:     orderID,
 					CustomerID:  evt.GetCustomerId(),
@@ -89,7 +115,7 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 				if err != nil {
 					return err
 				}
-				q := storegen.New(pg.FromContext(ctx, pool))
+				q := storeFor(ctx)
 				row, err := q.MarkPaid(ctx, orderID)
 				if errors.Is(err, pgx.ErrNoRows) {
 					// First terminal state wins: the row is already in a
@@ -123,7 +149,7 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 				if err != nil {
 					return err
 				}
-				q := storegen.New(pg.FromContext(ctx, pool))
+				q := storeFor(ctx)
 				row, err := q.MarkPaymentTimeout(ctx, orderID)
 				if errors.Is(err, pgx.ErrNoRows) {
 					logger.Warn("projection: OrderPaymentTimedOut ignored — order already in a terminal status",
@@ -152,7 +178,7 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 				if err != nil {
 					return err
 				}
-				q := storegen.New(pg.FromContext(ctx, pool))
+				q := storeFor(ctx)
 				row, err := q.MarkPaymentFailed(ctx, orderID)
 				if errors.Is(err, pgx.ErrNoRows) {
 					logger.Warn("projection: PaymentFailed ignored — order already in a terminal status",

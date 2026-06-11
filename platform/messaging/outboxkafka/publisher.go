@@ -134,6 +134,15 @@ func (p *KafkaPublisher) messageToRecord(msg outbox.Message) (kafka.Record, erro
 	}, nil
 }
 
+// Record exposes the publisher's outbox.Message → kafka.Record mapping
+// WITHOUT producing: the exact record (topic, key, value framing, headers)
+// the relay would hand to Kafka. It exists as a seam for fast-lane contract
+// tests (examples/e2e/contract) that need the real produce-side wire mapping
+// with no broker — production code should call Publish/PublishBatch.
+func (p *KafkaPublisher) Record(msg outbox.Message) (kafka.Record, error) {
+	return p.messageToRecord(msg)
+}
+
 // PublishBatch produces all messages to Kafka via a single batched flush,
 // reducing broker round-trips from O(N) to O(1). It implements
 // outbox.BatchPublisher and is used by the Relay when available.

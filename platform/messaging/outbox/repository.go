@@ -32,7 +32,7 @@ func NewRepository(pool *pg.Pool) *Repository {
 // is the parent message id from ctx when present. Explicit values already in
 // Message.Headers always win — stamping never overwrites.
 func (r *Repository) Enqueue(ctx context.Context, msg Message) error {
-	headers := stampChainHeaders(ctx, msg)
+	headers := StampChainHeaders(ctx, msg).Headers
 	topic := msg.Topic
 	if topic == "" {
 		topic = msg.AggregateType
@@ -53,15 +53,20 @@ func (r *Repository) Enqueue(ctx context.Context, msg Message) error {
 	return nil
 }
 
-// stampChainHeaders merges correlation/causation ids from ctx into the
-// message's JSON headers. Malformed Message.Headers are passed through
-// untouched (the kafka publisher already tolerates and drops them — a poison
-// row must not fail the enqueue path either).
-func stampChainHeaders(ctx context.Context, msg Message) []byte {
+// StampChainHeaders returns msg with the correlation/causation ids from ctx
+// merged into its JSON Headers — exactly the stamping Enqueue persists.
+// Malformed Message.Headers are passed through untouched (the kafka publisher
+// already tolerates and drops them — a poison row must not fail the enqueue
+// path either).
+//
+// Exported as a seam for fast-lane contract tests (examples/e2e/contract)
+// that exercise the producer→consumer chain-lineage roundtrip without a
+// database; production code goes through Enqueue.
+func StampChainHeaders(ctx context.Context, msg Message) Message {
 	h := map[string]string{}
 	if len(msg.Headers) > 0 {
 		if err := json.Unmarshal(msg.Headers, &h); err != nil {
-			return msg.Headers // not a JSON object — leave as-is
+			return msg // not a JSON object — leave as-is
 		}
 	}
 	if _, ok := h[msgctx.HeaderCorrelationID]; !ok {
@@ -80,7 +85,9 @@ func stampChainHeaders(ctx context.Context, msg Message) []byte {
 	}
 	out, err := json.Marshal(h)
 	if err != nil {
-		return []byte("{}") // unreachable for map[string]string; defensive
+		msg.Headers = []byte("{}") // unreachable for map[string]string; defensive
+		return msg
 	}
-	return out
+	msg.Headers = out
+	return msg
 }
