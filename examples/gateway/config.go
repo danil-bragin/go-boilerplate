@@ -29,6 +29,13 @@ type Config struct {
 	// claim to match — pins tokens to the OAuth client they were issued to.
 	// Empty disables the check.
 	AuthRequiredAZP string `env:"AUTH_REQUIRED_AZP" envDefault:""`
+	// AuthMaxTokenBytes caps the Bearer-token size the auth middleware will
+	// even attempt to verify: a token longer than this is rejected with 401
+	// by a cheap len-check BEFORE jwt.Parse, so an oversized Authorization
+	// header cannot force per-request signature/parse work. Default 8192
+	// comfortably holds a fat Keycloak token; a non-positive value falls back
+	// to the middleware default.
+	AuthMaxTokenBytes int `env:"AUTH_MAX_TOKEN_BYTES" envDefault:"8192"`
 	// CORSOrigins is the list of allowed CORS origins for the public HTTP server.
 	// Default empty = DENY ALL cross-origin browser requests (no ACAO header
 	// emitted, preflights rejected). Set explicit origins in production, or

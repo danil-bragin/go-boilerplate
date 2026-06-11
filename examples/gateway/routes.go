@@ -169,7 +169,7 @@ func mountAPIRoutes(
 		chiOpts.Middlewares = append(chiOpts.Middlewares, api.MiddlewareFunc(authedLimit))
 	}
 	if !cfg.AuthDisabled {
-		authMiddleware := auth.Middleware(verifier)
+		authMiddleware := auth.Middleware(verifier, auth.WithMaxTokenBytes(cfg.AuthMaxTokenBytes))
 		chiOpts.Middlewares = append(chiOpts.Middlewares, api.MiddlewareFunc(
 			func(next http.Handler) http.Handler {
 				authed := authMiddleware(next)
@@ -210,7 +210,7 @@ func mountAttachmentRoutes(
 		httpserver.Timeout(cfg.HTTP.HandlerTimeout),
 	)
 	if !cfg.AuthDisabled {
-		attachMiddleware := auth.Middleware(verifier)
+		attachMiddleware := auth.Middleware(verifier, auth.WithMaxTokenBytes(cfg.AuthMaxTokenBytes))
 		attachRouter = attachRouter.With(func(next http.Handler) http.Handler {
 			return attachMiddleware(next)
 		})
@@ -247,7 +247,7 @@ func mountSSERoutes(
 ) {
 	var r chi.Router = httpSrv.Mux()
 	if !cfg.AuthDisabled {
-		sseMiddleware := auth.Middleware(verifier)
+		sseMiddleware := auth.Middleware(verifier, auth.WithMaxTokenBytes(cfg.AuthMaxTokenBytes))
 		r = r.With(func(next http.Handler) http.Handler {
 			return sseMiddleware(next)
 		})
