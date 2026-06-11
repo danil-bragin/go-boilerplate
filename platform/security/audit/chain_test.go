@@ -48,6 +48,42 @@ func TestVerifyChain_CleanVerifies(t *testing.T) {
 	require.Equal(t, 25, res.Verified)
 }
 
+// TestVerifyChain_RoundTripsThroughDB is the regression guard for the
+// nanosecond-vs-microsecond truncation bug: Record hashes the timestamp as
+// UnixNano, but timestamptz stores only microseconds. If Record hashed a
+// full-nanosecond `at` while the column truncated it, VerifyChain — which
+// recomputes from the µs-truncated created_at it reads BACK FROM THE DB — would
+// mismatch on every clean row. We deliberately feed an entry whose At carries
+// sub-microsecond nanoseconds; the round trip must still verify, proving Record
+// truncates to µs before BOTH hashing and INSERT.
+func TestVerifyChain_RoundTripsThroughDB(t *testing.T) {
+	pool := newPool(t)
+	store := audit.NewPgStore(pool)
+	ctx := context.Background()
+
+	// 123456789ns has sub-µs digits (…789) that timestamptz cannot store.
+	at := time.Date(2026, 6, 12, 10, 30, 0, 123456789, time.UTC)
+	for i := range 5 {
+		e := audit.Entry{
+			Actor:    "rt-actor",
+			Action:   "order:create",
+			Subject:  fmt.Sprintf("order-%d", i),
+			Metadata: map[string]string{"seq": strconv.Itoa(i)},
+			At:       at.Add(time.Duration(i) * time.Second),
+		}
+		require.NoError(t, pg.RunInTx(ctx, pool, func(ctx context.Context) error {
+			return store.Record(ctx, e)
+		}))
+	}
+
+	res, err := store.VerifyChain(ctx, zeroTime())
+	require.NoError(t, err)
+	require.True(t, res.OK,
+		"sub-µs timestamp round-tripped through timestamptz must still verify; break at id=%d reason=%q",
+		res.BreakID, res.Reason)
+	require.Equal(t, 5, res.Verified)
+}
+
 // TestVerifyChain_DetectsTamper: a superuser UPDATE of a historical row's
 // payload (bypassing the append-only REVOKE) breaks the chain; VerifyChain
 // reports the break at that row's id.

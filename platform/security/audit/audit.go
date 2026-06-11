@@ -111,6 +111,13 @@ func (s *PgStore) Record(ctx context.Context, e Entry) error {
 	if at.IsZero() {
 		at = time.Now().UTC()
 	}
+	// CRITICAL: Postgres timestamptz stores MICROSECOND precision, but the hash
+	// canonicalizes the timestamp as UnixNano. If we hash the full-nanosecond
+	// `at` here but the column truncates it to µs on INSERT, VerifyChain (which
+	// recomputes from the µs-truncated created_at it reads back) would mismatch
+	// on EVERY clean row. Truncate to microsecond up front so the value we hash
+	// is byte-identical to the value the row will round-trip back as.
+	at = at.Truncate(time.Microsecond)
 	entryHash := computeEntryHash(prevHash, e.Actor, e.Action, e.Subject, at, e.Metadata)
 
 	if _, err := db.Exec(
