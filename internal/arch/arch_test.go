@@ -145,6 +145,19 @@ func TestNoCrossServiceInternalImports(t *testing.T) {
 // binary.
 func TestTestkitOnlyImportedFromTests(t *testing.T) {
 	testkit := module() + "/platform/testkit"
+
+	// Exception: platform/testkit/traffic is a load-generation library, not
+	// a test double — by design it is consumed OUTSIDE _test.go files by
+	// exactly two packages: the gateway scenario pack (which lives with the
+	// service so the e2e traffic test AND the CLI can share it) and the
+	// trafficgen dev tool. Neither is linked into a service binary; every
+	// other testkit package stays test-only everywhere.
+	trafficDep := testkit + "/traffic"
+	trafficImporters := map[string]bool{
+		module() + "/examples/gateway/traffic": true,
+		module() + "/cmd/trafficgen":           true,
+	}
+
 	for _, line := range goList(t, "-f", `{{.ImportPath}}|{{join .Deps " "}}`, "./...") {
 		importer, deps, ok := strings.Cut(line, "|")
 		if !ok {
@@ -156,6 +169,9 @@ func TestTestkitOnlyImportedFromTests(t *testing.T) {
 		}
 		for _, dep := range strings.Fields(deps) {
 			if dep == testkit || strings.HasPrefix(dep, testkit+"/") {
+				if dep == trafficDep && trafficImporters[importer] {
+					continue
+				}
 				t.Errorf("non-test package %s depends on %s — testkit must only be imported from _test.go files", importer, dep)
 			}
 		}
