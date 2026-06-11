@@ -81,9 +81,7 @@ func buildCache(cfg Config, svc *servicekit.Service) cqrs.Cache {
 func buildSSE(cfg Config, svc *servicekit.Service) *sse.Streamer {
 	var client rueidis.Client
 	if len(cfg.Cache.RedisAddrs) > 0 && cfg.Cache.RedisAddrs[0] != "" {
-		c, err := rueidis.NewClient(rueidis.ClientOption{
-			InitAddress: cfg.Cache.RedisAddrs,
-		})
+		c, err := rueidis.NewClient(cache.BuildRueidisOption(cfg.Cache))
 		if err != nil {
 			svc.Logger().Warn(
 				"gateway: SSE Redis unavailable, falling back to projection-store polling",
@@ -200,9 +198,7 @@ func newLimiter(cfg Config, svc *servicekit.Service, name string, rps float64, b
 		// accessible via the cqrs.Cache interface, so we open a second connection
 		// to the same address. This is cheap: rueidis uses a single multiplexed
 		// connection per address.
-		client, err := rueidis.NewClient(rueidis.ClientOption{
-			InitAddress: cfg.Cache.RedisAddrs,
-		})
+		client, err := rueidis.NewClient(cache.BuildRueidisOption(cfg.Cache))
 		if err != nil {
 			svc.Logger().Warn(
 				"gateway: rate-limit Redis unavailable, falling back to in-memory limiter",
