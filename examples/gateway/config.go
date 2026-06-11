@@ -105,6 +105,13 @@ type Config struct {
 	// default; Download additionally forces an attachment disposition).
 	// Empty falls back to attachments.DefaultAllowedContentTypes.
 	AttachmentContentTypes []string `env:"GATEWAY_ATTACHMENT_CONTENT_TYPES" envSeparator:"," envDefault:"application/pdf,image/png,image/jpeg,image/gif,text/plain,application/octet-stream"`
+	// RatelimitFailClosed makes the Redis-backed rate limiters DENY requests
+	// when Redis is unavailable instead of failing open (the default). Trade-off:
+	// fail-open preserves edge availability during a Redis outage but can admit
+	// bursts beyond the configured rate; fail-closed enforces strictly at the
+	// cost of denying traffic while Redis is down. The production preflight
+	// REQUIRES this true when RATELIMIT_REDIS=true (see Validate).
+	RatelimitFailClosed bool `env:"RATELIMIT_FAIL_CLOSED" envDefault:"false"`
 }
 
 // defaultDevPGDSN is the shipped development PG_DSN (see pg.Config). Booting
@@ -128,10 +135,7 @@ func (c Config) Validate() error {
 		c.checkPGSecure,
 		c.checkS3Secure,
 		c.checkCORSNotWildcard,
-		// TODO(W1.2/lane-C): once C2 wires RATELIMIT_FAIL_CLOSED, add a check
-		// here requiring fail-closed in production. Left as a hook so lane C
-		// completes it without a merge collision — do NOT hard-fail on the
-		// ratelimit fail-open default from this lane.
+		c.checkRatelimitFailClosed,
 	)
 }
 
@@ -168,6 +172,20 @@ func (c Config) checkS3Secure() error {
 func (c Config) checkCORSNotWildcard() error {
 	if slices.Contains(c.CORSOrigins, "*") {
 		return errors.New(`GATEWAY_CORS_ORIGINS must not be "*" in production: set explicit allowed origins`)
+	}
+	return nil
+}
+
+// checkRatelimitFailClosed forbids a fail-open distributed rate limiter in
+// production. With RATELIMIT_REDIS=true the limiter is the edge's defence
+// against floods; if it fails OPEN, a Redis outage silently lifts the limit and
+// lets unbounded traffic through. Production must fail CLOSED so an outage
+// sheds load instead of removing the guard. The check is scoped to
+// RATELIMIT_REDIS=true: the in-memory limiter has no external dependency to
+// fail open against.
+func (c Config) checkRatelimitFailClosed() error {
+	if c.RatelimitRedis && !c.RatelimitFailClosed {
+		return errors.New("RATELIMIT_FAIL_CLOSED must be true in production when RATELIMIT_REDIS=true: a fail-open limiter lets a Redis outage silently remove the rate limit")
 	}
 	return nil
 }

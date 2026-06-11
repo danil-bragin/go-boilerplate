@@ -58,6 +58,14 @@ func TestConfigValidate_ProductionRejectsInsecure(t *testing.T) {
 			mutate:  func(c *Config) { c.CORSOrigins = []string{"*"} },
 			wantSub: "GATEWAY_CORS_ORIGINS",
 		},
+		{
+			name: "ratelimit fail-open with redis",
+			mutate: func(c *Config) {
+				c.RatelimitRedis = true
+				c.RatelimitFailClosed = false
+			},
+			wantSub: "RATELIMIT_FAIL_CLOSED",
+		},
 	}
 
 	for _, tc := range cases {
@@ -100,4 +108,26 @@ func TestConfigValidate_DevelopmentAllowsInsecure(t *testing.T) {
 func TestConfigValidate_ProductionAllSafe(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	assert.NoError(t, safeProdConfig().Validate())
+}
+
+// TestConfigValidate_RatelimitFailClosed: the fail-open production guard is
+// scoped to RATELIMIT_REDIS=true. A fail-open in-memory limiter (no Redis) is
+// fine — there is no external dependency to fail open against — and a
+// Redis-backed limiter that fails CLOSED passes.
+func TestConfigValidate_RatelimitFailClosed(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+
+	t.Run("redis fail-closed passes", func(t *testing.T) {
+		c := safeProdConfig()
+		c.RatelimitRedis = true
+		c.RatelimitFailClosed = true
+		assert.NoError(t, c.Validate())
+	})
+
+	t.Run("in-memory fail-open allowed", func(t *testing.T) {
+		c := safeProdConfig()
+		c.RatelimitRedis = false
+		c.RatelimitFailClosed = false
+		assert.NoError(t, c.Validate(), "in-memory limiter has no backend to fail open against")
+	})
 }
