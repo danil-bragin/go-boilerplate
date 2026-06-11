@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 type secretConfig struct {
@@ -57,6 +59,59 @@ func TestSecret_LogValueRedacted(t *testing.T) {
 	assert.Equal(t, "[REDACTED]", s.String())
 	assert.Equal(t, "[REDACTED]", s.GoString())
 	assert.Equal(t, "topsecret", s.Reveal())
+}
+
+// TestSecret_MarshalJSONRedacted: json.Marshal of a struct carrying a Secret
+// must redact the value — serializing a config struct to JSON (debug dumps,
+// config-echo endpoints, error context) must never leak credentials. Both the
+// MarshalJSON and the TextMarshaler paths are exercised: json prefers
+// MarshalJSON, so this pins that path directly.
+func TestSecret_MarshalJSONRedacted(t *testing.T) {
+	type holder struct {
+		S config.Secret `json:"s"`
+	}
+	out, err := json.Marshal(holder{S: config.Secret("hunter2")})
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "hunter2", "json.Marshal leaked the secret")
+	assert.Contains(t, string(out), "[REDACTED]", "json.Marshal must emit the redacted marker")
+
+	// The bare Secret value (not wrapped in a struct) must redact too.
+	bare, err := json.Marshal(config.Secret("topsecret"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(bare), "topsecret")
+	assert.Contains(t, string(bare), "[REDACTED]")
+}
+
+// TestSecret_MarshalYAMLRedacted: yaml.Marshal (yaml.v3 routes Secret through
+// its encoding.TextMarshaler) must redact the value.
+func TestSecret_MarshalYAMLRedacted(t *testing.T) {
+	type holder struct {
+		S config.Secret `yaml:"s"`
+	}
+	out, err := yaml.Marshal(holder{S: config.Secret("hunter2")})
+	require.NoError(t, err)
+	assert.NotContains(t, string(out), "hunter2", "yaml.Marshal leaked the secret")
+	assert.Contains(t, string(out), "[REDACTED]", "yaml.Marshal must emit the redacted marker")
+}
+
+// TestSecret_MarshalTextRedacted: the TextMarshaler returns the same redacted
+// constant String() uses — covers encoding/json (via TextMarshaler fallback),
+// yaml.v3, and any encoding.TextMarshaler consumer.
+func TestSecret_MarshalTextRedacted(t *testing.T) {
+	b, err := config.Secret("topsecret").MarshalText()
+	require.NoError(t, err)
+	assert.Equal(t, "[REDACTED]", string(b))
+	assert.Equal(t, config.Secret("topsecret").String(), string(b),
+		"MarshalText must match String()'s redacted constant")
+}
+
+// TestSecret_UnmarshalTextRoundTrip: redaction on the marshal side must not
+// break the env-parsing round-trip — UnmarshalText still populates the raw
+// value (env parse is unaffected by adding marshalers).
+func TestSecret_UnmarshalTextRoundTrip(t *testing.T) {
+	var s config.Secret
+	require.NoError(t, s.UnmarshalText([]byte("hunter2")))
+	assert.Equal(t, "hunter2", s.Reveal())
 }
 
 // validatedConfig implements the Validate hook.

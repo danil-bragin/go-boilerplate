@@ -1,8 +1,13 @@
 package gateway
 
 import (
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
 	"time"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/servicekit"
 	"go-boilerplate/platform/storage/blob"
 	"go-boilerplate/platform/storage/cache"
@@ -29,6 +34,13 @@ type Config struct {
 	// claim to match — pins tokens to the OAuth client they were issued to.
 	// Empty disables the check.
 	AuthRequiredAZP string `env:"AUTH_REQUIRED_AZP" envDefault:""`
+	// AuthMaxTokenBytes caps the Bearer-token size the auth middleware will
+	// even attempt to verify: a token longer than this is rejected with 401
+	// by a cheap len-check BEFORE jwt.Parse, so an oversized Authorization
+	// header cannot force per-request signature/parse work. Default 8192
+	// comfortably holds a fat Keycloak token; a non-positive value falls back
+	// to the middleware default.
+	AuthMaxTokenBytes int `env:"AUTH_MAX_TOKEN_BYTES" envDefault:"8192"`
 	// CORSOrigins is the list of allowed CORS origins for the public HTTP server.
 	// Default empty = DENY ALL cross-origin browser requests (no ACAO header
 	// emitted, preflights rejected). Set explicit origins in production, or
@@ -86,4 +98,87 @@ type Config struct {
 	// batch INSERTs — the projection creates the row when OrderCreated
 	// arrives regardless).
 	PendingAsync bool `env:"GATEWAY_PENDING_ASYNC" envDefault:"false"`
+}
+
+// defaultDevPGDSN is the shipped development PG_DSN (see pg.Config). Booting
+// production against it means the operator never set PG_DSN — a clear
+// misconfiguration that the preflight rejects.
+const defaultDevPGDSN = "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable" //nolint:gosec // G101: this is the documented dev default mirrored from pg.Config — comparing against it is the feature
+
+// Validate runs the production-safety preflight (W1.2). config.Load invokes it
+// after env parsing (config.Validator hook). The checks RUN ONLY when
+// APP_ENV=production — development and test keep the convenient-but-insecure
+// shipped defaults — and a failed boot reports EVERY insecure value at once so
+// the operator fixes them in a single pass.
+//
+// Each check fails closed on a value that would silently weaken the service's
+// trust model in production: disabled auth, an unencrypted or defaulted
+// database connection, plaintext object storage against a remote endpoint, or
+// a wildcard CORS origin.
+func (c Config) Validate() error {
+	return config.RequireProductionSafety(
+		c.checkAuthEnabled,
+		c.checkPGSecure,
+		c.checkS3Secure,
+		c.checkCORSNotWildcard,
+		// TODO(W1.2/lane-C): once C2 wires RATELIMIT_FAIL_CLOSED, add a check
+		// here requiring fail-closed in production. Left as a hook so lane C
+		// completes it without a merge collision — do NOT hard-fail on the
+		// ratelimit fail-open default from this lane.
+	)
+}
+
+func (c Config) checkAuthEnabled() error {
+	if c.AuthDisabled {
+		return errors.New("GATEWAY_AUTH_DISABLED=true is forbidden in production: the service would accept unauthenticated requests")
+	}
+	return nil
+}
+
+func (c Config) checkPGSecure() error {
+	dsn := c.PG.DSN.Reveal()
+	// The defaulted dev DSN is the more specific diagnosis (operator never set
+	// PG_DSN at all) and also contains sslmode=disable — report it first.
+	if dsn == defaultDevPGDSN {
+		return errors.New("PG_DSN is the default development PG_DSN (postgres:postgres@localhost) — set a real production DSN")
+	}
+	if strings.Contains(dsn, "sslmode=disable") {
+		return errors.New("PG_DSN must not contain sslmode=disable in production: the database connection would be unencrypted")
+	}
+	return nil
+}
+
+func (c Config) checkS3Secure() error {
+	// Plaintext object storage is fine against a loopback sidecar but not a
+	// remote endpoint, where credentials and payloads would cross the network
+	// in the clear.
+	if c.S3.UseSSL || isLoopbackEndpoint(c.S3.Endpoint) {
+		return nil
+	}
+	return fmt.Errorf("S3_USE_SSL=false against a non-localhost endpoint (%q) is forbidden in production: object-store traffic would be unencrypted", c.S3.Endpoint)
+}
+
+func (c Config) checkCORSNotWildcard() error {
+	if slices.Contains(c.CORSOrigins, "*") {
+		return errors.New(`GATEWAY_CORS_ORIGINS must not be "*" in production: set explicit allowed origins`)
+	}
+	return nil
+}
+
+// isLoopbackEndpoint reports whether an S3 endpoint (host:port, optionally
+// scheme-prefixed) targets the local machine, where plaintext is acceptable.
+func isLoopbackEndpoint(endpoint string) bool {
+	e := endpoint
+	if i := strings.Index(e, "://"); i >= 0 {
+		e = e[i+3:]
+	}
+	host := e
+	if i := strings.IndexByte(host, '/'); i >= 0 {
+		host = host[:i]
+	}
+	if i := strings.LastIndexByte(host, ':'); i >= 0 {
+		host = host[:i]
+	}
+	host = strings.TrimSpace(host)
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
