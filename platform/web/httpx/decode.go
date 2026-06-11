@@ -106,8 +106,8 @@ func Decode[T any](r *http.Request) (T, error) {
 func WriteDecodeError(w http.ResponseWriter, err error) {
 	var ve *ValidationError
 	if errors.As(err, &ve) {
-		// FromError keeps the historical 422 + Errors map and adds the
-		// VALIDATION_FAILED code with Params["fields"].
+		// FromError renders 400 VALIDATION_FAILED with the Errors map and
+		// Params["fields"].
 		WriteProblem(w, FromError(ve))
 		return
 	}

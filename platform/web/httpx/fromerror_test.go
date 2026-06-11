@@ -83,7 +83,11 @@ func TestFromError_ValidationError(t *testing.T) {
 
 	p := httpx.FromError(verr)
 
-	assert.Equal(t, http.StatusUnprocessableEntity, p.Status)
+	// Decode-stage validation uses the REGISTERED status (400) — same as
+	// command-stage validation. The historical 422 was removed pre-1.0; the
+	// apperr registry is the single source of truth for code→status.
+	assert.Equal(t, http.StatusBadRequest, p.Status)
+	assert.Equal(t, http.StatusText(http.StatusBadRequest), p.Title)
 	assert.Equal(t, apperr.CodeValidationFailed, p.Code)
 	assert.Equal(t, verr.Fields, p.Errors)
 	require.Contains(t, p.Params, "fields")
