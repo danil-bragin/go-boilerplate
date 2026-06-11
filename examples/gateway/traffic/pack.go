@@ -220,15 +220,25 @@ func (p *pack) invalid(ctx context.Context, rng *rand.Rand, ledger *kit.Ledger) 
 		body.CustomerID = "" // required
 	}
 	opID := fmt.Sprintf("invalid-%016x", rng.Uint64())
-	ledger.ExpectRejected(opID, "VALIDATION_FAILED")
 
 	res, err := p.postOrder(ctx, "", body)
 	if err != nil {
-		ledger.ObserveRejection(opID, "TRANSPORT_ERROR")
+		// Transport blip: a scenario failure, NOT an invariant violation —
+		// the request may never have reached validation at all.
 		return kit.CodedError("TRANSPORT", err)
 	}
-	ledger.ObserveRejection(opID, res.codeOrHTTP())
-	return nil
+	switch {
+	case res.status == http.StatusBadRequest, res.status == http.StatusAccepted:
+		// Definitive outcomes only: 400 must carry VALIDATION_FAILED; an
+		// (incorrect) 202 must surface as a rejected-violation. Throttling
+		// (429) and server errors stay scenario failures — per the ops doc,
+		// a throttled run shows up as HTTP_429 failures, never violations.
+		ledger.ExpectRejected(opID, "VALIDATION_FAILED")
+		ledger.ObserveRejection(opID, res.codeOrHTTP())
+		return nil
+	default:
+		return kit.CodedError(res.codeOrHTTP(), fmt.Errorf("invalid: non-definitive status %d", res.status))
+	}
 }
 
 // idem fires 2–3 CONCURRENT same-key same-body POSTs: a true retry storm.
@@ -285,18 +295,37 @@ func (p *pack) mismatch(ctx context.Context, rng *rand.Rand, ledger *kit.Ledger)
 
 	var errs []error
 	winner := ""
+	sawOther := false
+	type loser struct {
+		opID string
+		code string
+	}
+	var losers []loser
 	for i, res := range results {
 		switch res.status {
 		case http.StatusAccepted:
 			ledger.ExpectExactlyOneWinner(key, res.orderID)
 			winner = res.orderID
 		case http.StatusConflict:
-			opID := fmt.Sprintf("%s-loser-%d", key, i)
-			ledger.ExpectRejected(opID, "GATEWAY_IDEMPOTENCY_BODY_MISMATCH")
-			ledger.ObserveRejection(opID, res.codeOrHTTP())
-			ledger.ObserveLoser(key)
+			losers = append(losers, loser{
+				opID: fmt.Sprintf("%s-loser-%d", key, i),
+				code: res.codeOrHTTP(),
+			})
 		default:
+			sawOther = true
 			errs = append(errs, fmt.Errorf("mismatch: want 202 or 409, got %d (%s)", res.status, res.codeOrHTTP()))
+		}
+	}
+	// A 409 is a correct response even when the would-be winner later
+	// 5xx-ed after reserving the key. Ledger the losers ONLY when the group
+	// has a definitive shape (a 202 winner, or nothing but 409s): a 5xx/429
+	// in the group already surfaces as a scenario failure, and reporting
+	// "0 accepted, N rejected" as an invariant breach would be false.
+	if winner != "" || !sawOther {
+		for _, l := range losers {
+			ledger.ExpectRejected(l.opID, "GATEWAY_IDEMPOTENCY_BODY_MISMATCH")
+			ledger.ObserveRejection(l.opID, l.code)
+			ledger.ObserveLoser(key)
 		}
 	}
 	if winner != "" {

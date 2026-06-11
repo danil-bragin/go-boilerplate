@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -302,17 +303,45 @@ func (l *Ledger) verifyTerminals(ctx context.Context, probes Probes, terminals [
 		open = append(open, &pending{exp: exp, deadline: start.Add(exp.within), last: "<never observed>"})
 	}
 
+	// Probes run with bounded parallelism: a serial pass over thousands of
+	// expectations (CLI scale) would erode every per-expectation deadline to
+	// one or two polls. 16 in flight keeps probe pressure trivial for any
+	// real target while making pass time ~O(n/16).
+	const probeParallelism = 16
+
 	for len(open) > 0 {
+		sem := make(chan struct{}, probeParallelism)
+		var wg sync.WaitGroup
+		satisfied := make([]atomic.Bool, len(open))
+		for i, p := range open {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+				status, err := probes.OrderStatus(ctx, p.exp.orderID)
+				if err != nil && time.Now().After(p.deadline) && ctx.Err() == nil {
+					// A transient probe error on the FINAL poll must not turn
+					// a satisfied expectation into a violation: one immediate
+					// grace retry before the deadline check below.
+					status, err = probes.OrderStatus(ctx, p.exp.orderID)
+				}
+				switch {
+				case err != nil:
+					p.last = "probe error: " + err.Error()
+				case status != "":
+					p.last = status
+				}
+				if err == nil && slices.Contains(p.exp.allowed, status) {
+					satisfied[i].Store(true)
+				}
+			}()
+		}
+		wg.Wait()
+
 		next := open[:0]
-		for _, p := range open {
-			status, err := probes.OrderStatus(ctx, p.exp.orderID)
-			switch {
-			case err != nil:
-				p.last = "probe error: " + err.Error()
-			case status != "":
-				p.last = status
-			}
-			if err == nil && slices.Contains(p.exp.allowed, status) {
+		for i, p := range open {
+			if satisfied[i].Load() {
 				continue // satisfied
 			}
 			if time.Now().After(p.deadline) || ctx.Err() != nil {
