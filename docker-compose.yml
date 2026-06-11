@@ -354,6 +354,17 @@ services:
       # Go runtime memory limit: ~90% of the container memory limit above.
       # Keeps the GC soft-trim target below the cgroup hard limit, preventing OOM-kill.
       GOMEMLIMIT: 460MiB
+    # In-image static probe (cmd/probe, baked into the distroless image):
+    # GET http://127.0.0.1:<port>/livez where <port> comes from ADMIN_HTTP_ADDR
+    # (unset here → servicekit default :9090). The Dockerfile declares the same
+    # HEALTHCHECK; this block repeats it so compose-level tuning (start_period)
+    # is explicit and visible next to depends_on consumers.
+    healthcheck:
+      test: ["CMD", "/probe"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
     depends_on:
       postgres:
         condition: service_healthy
@@ -393,6 +404,13 @@ services:
       ORDERS_COMMANDS_TOPIC: orders.commands
       # Go runtime memory limit: ~90% of the container memory limit above.
       GOMEMLIMIT: 460MiB
+    # In-image static probe (cmd/probe) → admin /livez; see the gateway block.
+    healthcheck:
+      test: ["CMD", "/probe"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
     depends_on:
       postgres:
         condition: service_healthy
@@ -430,6 +448,13 @@ services:
       ORDERS_EVENTS_TOPIC: orders.events
       # Go runtime memory limit: ~90% of the container memory limit above.
       GOMEMLIMIT: 460MiB
+    # In-image static probe (cmd/probe) → admin /livez; see the gateway block.
+    healthcheck:
+      test: ["CMD", "/probe"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
     depends_on:
       postgres:
         condition: service_healthy
@@ -467,6 +492,13 @@ services:
       PAYMENTS_EVENTS_TOPIC: payments.events
       # Go runtime memory limit: ~90% of the container memory limit above.
       GOMEMLIMIT: 460MiB
+    # In-image static probe (cmd/probe) → admin /livez; see the gateway block.
+    healthcheck:
+      test: ["CMD", "/probe"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
     depends_on:
       postgres:
         condition: service_healthy
