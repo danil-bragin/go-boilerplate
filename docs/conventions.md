@@ -391,6 +391,11 @@ Everything is UTC, end to end. The rules:
 
 **The API contract is `code` + `params`, and the client localizes.** Server-side localization of problem `title`/`detail` via `Accept-Language` is a courtesy for humans reading raw responses — clients must never parse those strings, and `code`/`params` are never localized.
 
+The legacy `errors` field map on validation problems is ALSO locale-dependent
+(it renders per-rule catalog messages for the negotiated locale). Machine
+clients must never string-match it — `params.fields` (`{field, rule, param}`)
+is the stable machine contract; `errors` is display-only.
+
 Mechanics (`platform/i18n`, built on go-i18n v2 + `x/text` matching):
 
 - **Message IDs** are apperr codes (`GATEWAY_ORDER_NOT_FOUND`), optional `<code>.title` title overrides, and `validation.<rule>` keys for per-field validator rules (`validation.required`, `validation.min`, …).

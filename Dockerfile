@@ -44,6 +44,6 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 USER nonroot
 
-HEALTHCHECK --interval=10s --timeout=3s --retries=5 CMD ["/probe"]
+HEALTHCHECK --interval=10s --timeout=3s --retries=5 --start-period=15s CMD ["/probe"]
 
 ENTRYPOINT ["/bin/app"]

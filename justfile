@@ -169,10 +169,10 @@ demo:
     [[ -n "$ready" ]] || { echo "demo: gateway not ready after 90s — inspect with 'just logs'" >&2; exit 1; }
     # The read path is ownership-checked (non-admin sees only customer_id == sub),
     # so the order must be created AS the demo user — sub via the userinfo endpoint.
-    sub="$(curl -s -H "Authorization: Bearer $token" "$kc/realms/app/protocol/openid-connect/userinfo" | jq -r '.sub // empty')"
+    sub="$(curl -s --max-time 5 -H "Authorization: Bearer $token" "$kc/realms/app/protocol/openid-connect/userinfo" | jq -r '.sub // empty')"
     [[ -n "$sub" ]] || { echo "demo: could not resolve the demo user's subject" >&2; exit 1; }
     echo "▸ POST /v1/orders (Idempotency-Key: demo-order-0001 — retries/re-runs return the same order)"
-    order_id="$(curl -s -XPOST "$gw/v1/orders" \
+    order_id="$(curl -s --max-time 5 -XPOST "$gw/v1/orders" \
         -H "Authorization: Bearer $token" \
         -H 'Content-Type: application/json' \
         -H 'Idempotency-Key: demo-order-0001' \
@@ -183,13 +183,13 @@ demo:
     status=""
     for _ in $(seq 1 60); do
         # problem+json carries a numeric .status — only trust .status on an order body
-        status="$(curl -s -H "Authorization: Bearer $token" "$gw/v1/orders/$order_id" | jq -r 'if .order_id then .status else empty end')"
+        status="$(curl -s --max-time 5 -H "Authorization: Bearer $token" "$gw/v1/orders/$order_id" | jq -r 'if .order_id then .status else empty end')"
         [[ "$status" == "paid" ]] && break
         sleep 1
     done
     [[ "$status" == "paid" ]] || { echo "demo: order stuck at '${status:-unknown}' after 60s — inspect with 'just logs'" >&2; exit 1; }
     echo "▸ final order:"
-    curl -s -H "Authorization: Bearer $token" "$gw/v1/orders/$order_id" | jq .
+    curl -s --max-time 5 -H "Authorization: Bearer $token" "$gw/v1/orders/$order_id" | jq .
     echo ""
     echo "Demo complete — the order traveled gateway → Kafka → orders → payments → back into the gateway read model."
     echo ""

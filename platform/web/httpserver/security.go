@@ -341,7 +341,19 @@ func RateLimitPer(l ratelimit.Limiter, key KeyFunc) func(http.Handler) http.Hand
 // setRateLimitHeaders writes the RateLimit-* budget headers from res.
 // Unknown values (-1 for Limit/Remaining, 0 for Reset — see ratelimit.Result)
 // are omitted rather than lied about.
+//
+// With CHAINED limiters (per-IP outer + per-principal inner) each tier calls
+// this once; the headers must describe the policy CLOSEST TO EXHAUSTION
+// (ratelimit-headers draft), so an inner tier only overwrites the outer
+// tier's values when its Remaining is LOWER — otherwise a client pacing on
+// RateLimit-Remaining would see the roomy authed budget and then an
+// unexplained 429 from the tighter per-IP bucket.
 func setRateLimitHeaders(w http.ResponseWriter, res ratelimit.Result) {
+	if prev := w.Header().Get("RateLimit-Remaining"); prev != "" && res.Remaining >= 0 {
+		if prevN, err := strconv.ParseInt(prev, 10, 64); err == nil && prevN <= res.Remaining {
+			return // the earlier tier is the binding constraint — keep it
+		}
+	}
 	if res.Limit > 0 {
 		w.Header().Set("RateLimit-Limit", strconv.FormatInt(res.Limit, 10))
 	}

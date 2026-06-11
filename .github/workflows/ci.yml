@@ -155,6 +155,10 @@ jobs:
 
       - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
+          # NOTE: organization-owned repos additionally require a (free for
+          # OSS) GITLEAKS_LICENSE secret — without it this job fails on the
+          # first org push. Personal repos need only GITHUB_TOKEN.
+          # GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ── Dependency review (PRs only) ──────────────────────────────────────────

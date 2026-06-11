@@ -116,7 +116,10 @@ func (s *PgStore) Query(ctx context.Context, actor string, since time.Time, limi
 		var meta map[string]string
 		if len(r.Metadata) > 0 {
 			if err := json.Unmarshal(r.Metadata, &meta); err != nil {
-				return nil, fmt.Errorf("audit: unmarshal metadata (audit_log id %d): %w", r.ID, err)
+				// The column is open jsonb: a single row written by another
+				// tool (manual forensics insert, future schema user) must not
+				// 500 the whole DSAR query — surface the raw payload instead.
+				meta = map[string]string{"_raw": string(r.Metadata)}
 			}
 		}
 		out[i] = Entry{

@@ -216,7 +216,11 @@ func newLimiter(cfg Config, svc *servicekit.Service, name string, rps float64, b
 				client.Close()
 				return nil
 			})
-			return ratelimit.NewRedis(client, rps, burst)
+			// Per-tier key prefix: without it both tiers share the default
+			// "rl:" namespace, and an anonymous request (PrincipalKey falls
+			// back to the IP key) would double-debit ONE bucket with two
+			// different rps/burst clamps — wrong admitted rate and headers.
+			return ratelimit.NewRedis(client, rps, burst, ratelimit.WithKeyPrefix("rl:"+name+":"))
 		}
 	} else if cfg.RatelimitRedis {
 		svc.Logger().Warn("gateway: RATELIMIT_REDIS=true but REDIS_ADDRS not set, falling back to in-memory limiter",
