@@ -1,5 +1,14 @@
 # Round 7 — S2 Hygiene + S3 Capabilities
 
+> **STATUS: COMPLETE (2026-06-11).** W1 + lanes B/C/D + review fixes merged (~25 commits).
+> Final: 60/60 packages ok ×2 (pre/post review fixes), lint 0, errgen sync, compose all
+> profiles valid. Lane B's demo smoke found 3 latent compose bugs (pyroscope tag, console
+> entrypoint crashloop, Keycloak issuer mismatch — every `just token` 401'd). Review caught
+> a real MUST-FIX: redis-mode rate-limit tiers shared one bucket for anonymous requests
+> (double debit, wrong clamps) — per-tier key prefixes now. Plus binding-tier RateLimit
+> headers, DSAR poison-row resilience, gitleaks org-license note. S1 (remote + first CI run)
+> deferred per user order.
+
 > User order: S2 entirely → ALL of S3 → S1 (remote/CI) later. TDD; one commit per task;
 > "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"; `--no-verify`.
 > Waves: W1 = S2 (single lane, must land first — touches httpx/validation that S3-D touches);
