@@ -26,11 +26,21 @@ updates:
       - "dependencies"
       - "ci"
 
-  # ── Docker base images ───────────────────────────────────────────────────────
+  # ── Docker base images + digest pins ─────────────────────────────────────────
+  # Covers the Dockerfile base images (golang, distroless) AND the digest-pinned
+  # service images in docker-compose.yml (postgres, redis, keycloak, grafana,
+  # redpanda, console, jaeger, …). Dependabot's docker ecosystem proposes BOTH
+  # tag bumps and sha256 digest refreshes for tag@sha256-pinned references, so
+  # the round-8 digest pins stay maintained instead of going stale. Renovate is
+  # an alternative with finer-grained digest-only/grouping control if preferred.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      docker-images:
+        patterns:
+          - "*"
     labels:
       - "dependencies"
       - "docker"
