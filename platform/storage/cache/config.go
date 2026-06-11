@@ -1,6 +1,13 @@
 package cache
 
-import "time"
+import (
+	"crypto/tls"
+	"time"
+
+	"go-boilerplate/platform/config"
+
+	"github.com/redis/rueidis"
+)
 
 // defaultLoaderTimeout bounds GetOrLoad loaders when Config.LoaderTimeout is
 // unset (the loader runs detached from the caller's cancellation).
@@ -17,6 +24,14 @@ const defaultL2OpTimeout = time.Second
 type Config struct {
 	// RedisAddrs is a comma-separated list of Redis addresses.
 	RedisAddrs []string `env:"REDIS_ADDRS" envSeparator:"," envDefault:"localhost:6379"`
+	// Password authenticates to Redis (AUTH / requirepass). Empty = no auth
+	// (back-compatible default). config.Secret keeps it out of log/JSON/YAML
+	// dumps. Used by the cache client AND the gateway's ratelimit + SSE
+	// rueidis clients via buildRueidisOption.
+	Password config.Secret `env:"REDIS_PASSWORD" envDefault:""`
+	// TLSEnabled wraps the Redis connection in TLS. Enable it whenever Redis
+	// auth credentials or cached payloads traverse an untrusted network.
+	TLSEnabled bool `env:"REDIS_TLS_ENABLED" envDefault:"false"`
 	// L1Capacity is the maximum number of entries held in the in-process cache.
 	L1Capacity int `env:"CACHE_L1_CAPACITY" envDefault:"10000"`
 	// DefaultTTL is the TTL used when the caller does not supply one (ttl <= 0).
@@ -35,4 +50,22 @@ type Config struct {
 	// within this bound and feed the L2 circuit breaker. <= 0 falls back
 	// to 1s.
 	L2OpTimeout time.Duration `env:"CACHE_L2_OP_TIMEOUT" envDefault:"1s"`
+}
+
+// BuildRueidisOption assembles a rueidis.ClientOption from cfg's Redis address,
+// password, and TLS settings. It is the single seam every rueidis client in
+// the service shares (cache.New plus the gateway's ratelimit and SSE clients)
+// so that auth and transport security stay consistent across all of them.
+//
+// An empty Password leaves the connection unauthenticated; TLSEnabled=false
+// leaves it cleartext (both back-compatible defaults).
+func BuildRueidisOption(cfg Config) rueidis.ClientOption {
+	opt := rueidis.ClientOption{
+		InitAddress: cfg.RedisAddrs,
+		Password:    cfg.Password.Reveal(),
+	}
+	if cfg.TLSEnabled {
+		opt.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	return opt
 }

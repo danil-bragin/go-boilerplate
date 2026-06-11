@@ -84,10 +84,8 @@ func New(cfg Config) (*Cache, error) {
 		return nil, err
 	}
 
-	// Build L2 rueidis client.
-	l2, err := rueidis.NewClient(rueidis.ClientOption{
-		InitAddress: cfg.RedisAddrs,
-	})
+	// Build L2 rueidis client (password + TLS via the shared option seam).
+	l2, err := rueidis.NewClient(BuildRueidisOption(cfg))
 	if err != nil {
 		l1.InvalidateAll()
 		return nil, err

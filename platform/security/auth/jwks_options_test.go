@@ -31,7 +31,7 @@ func futureToken(js *mockhttp.JWKSServer) string {
 // token minted 15s "in the future" (issuer clock ahead) must verify.
 func TestJWKSVerifier_ClockSkew_AcceptsFutureToken(t *testing.T) {
 	js := mockhttp.JWKS(t)
-	v, err := auth.NewJWKSVerifier(context.Background(), js.URL(), testIssuer, testAudience,
+	v, err := auth.NewJWKSVerifier(context.Background(), js.URL(), testIssuer, testAudience, auth.WithAllowInsecureJWKS(true),
 		auth.WithClockSkew(30*time.Second))
 	require.NoError(t, err)
 
@@ -44,7 +44,7 @@ func TestJWKSVerifier_ClockSkew_AcceptsFutureToken(t *testing.T) {
 // future-dated token must be rejected (nbf not yet valid).
 func TestJWKSVerifier_ClockSkew_ZeroRejectsFutureToken(t *testing.T) {
 	js := mockhttp.JWKS(t)
-	v, err := auth.NewJWKSVerifier(context.Background(), js.URL(), testIssuer, testAudience)
+	v, err := auth.NewJWKSVerifier(context.Background(), js.URL(), testIssuer, testAudience, auth.WithAllowInsecureJWKS(true))
 	require.NoError(t, err)
 
 	_, err = v.Verify(context.Background(), futureToken(js))
@@ -57,7 +57,7 @@ func TestJWKSVerifier_ClockSkew_ZeroRejectsFutureToken(t *testing.T) {
 // though issuer/audience/signature are all valid.
 func TestJWKSVerifier_AZP_MismatchRejected(t *testing.T) {
 	js := mockhttp.JWKS(t)
-	v, err := auth.NewJWKSVerifier(context.Background(), js.URL(), testIssuer, testAudience,
+	v, err := auth.NewJWKSVerifier(context.Background(), js.URL(), testIssuer, testAudience, auth.WithAllowInsecureJWKS(true),
 		auth.WithRequiredAZP("gateway"))
 	require.NoError(t, err)
 
@@ -80,7 +80,7 @@ func TestJWKSVerifier_AZP_MismatchRejected(t *testing.T) {
 // TestJWKSVerifier_AZP_MatchAccepted: matching azp passes.
 func TestJWKSVerifier_AZP_MatchAccepted(t *testing.T) {
 	js := mockhttp.JWKS(t)
-	v, err := auth.NewJWKSVerifier(context.Background(), js.URL(), testIssuer, testAudience,
+	v, err := auth.NewJWKSVerifier(context.Background(), js.URL(), testIssuer, testAudience, auth.WithAllowInsecureJWKS(true),
 		auth.WithRequiredAZP("gateway"))
 	require.NoError(t, err)
 

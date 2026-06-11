@@ -38,6 +38,9 @@ func buildVerifier(ctx context.Context, cfg Config, override auth.Verifier) (aut
 	if cfg.AuthRequiredAZP != "" {
 		opts = append(opts, auth.WithRequiredAZP(cfg.AuthRequiredAZP))
 	}
+	if cfg.AuthAllowInsecureJWKS {
+		opts = append(opts, auth.WithAllowInsecureJWKS(true))
+	}
 	v, err := auth.NewJWKSVerifier(ctx, cfg.JWKSUrl, cfg.JWKSIssuer, cfg.JWKSAudience, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("gateway: building JWKS verifier (auth is enabled): %w", err)
@@ -81,9 +84,7 @@ func buildCache(cfg Config, svc *servicekit.Service) cqrs.Cache {
 func buildSSE(cfg Config, svc *servicekit.Service) *sse.Streamer {
 	var client rueidis.Client
 	if len(cfg.Cache.RedisAddrs) > 0 && cfg.Cache.RedisAddrs[0] != "" {
-		c, err := rueidis.NewClient(rueidis.ClientOption{
-			InitAddress: cfg.Cache.RedisAddrs,
-		})
+		c, err := rueidis.NewClient(cache.BuildRueidisOption(cfg.Cache))
 		if err != nil {
 			svc.Logger().Warn(
 				"gateway: SSE Redis unavailable, falling back to projection-store polling",
@@ -200,9 +201,7 @@ func newLimiter(cfg Config, svc *servicekit.Service, name string, rps float64, b
 		// accessible via the cqrs.Cache interface, so we open a second connection
 		// to the same address. This is cheap: rueidis uses a single multiplexed
 		// connection per address.
-		client, err := rueidis.NewClient(rueidis.ClientOption{
-			InitAddress: cfg.Cache.RedisAddrs,
-		})
+		client, err := rueidis.NewClient(cache.BuildRueidisOption(cfg.Cache))
 		if err != nil {
 			svc.Logger().Warn(
 				"gateway: rate-limit Redis unavailable, falling back to in-memory limiter",

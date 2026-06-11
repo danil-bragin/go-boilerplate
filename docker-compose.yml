@@ -348,6 +348,11 @@ services:
       # To disable for local dev without Keycloak: set GATEWAY_AUTH_DISABLED=true.
       GATEWAY_AUTH_DISABLED: "false"
       GATEWAY_JWKS_URL: http://keycloak:8080/realms/app/protocol/openid-connect/certs
+      # The JWKS URL above is plaintext http (internal-only dev Keycloak). The
+      # verifier refuses a non-https JWKS URL unless this opt-in is set — DEV
+      # ONLY. In production point GATEWAY_JWKS_URL at https and drop this line
+      # (an http JWKS can be MITM-swapped to forge tokens).
+      AUTH_ALLOW_INSECURE_JWKS: "true"
       # Must equal the iss claim Keycloak mints — pinned host-facing via
       # KC_HOSTNAME on the keycloak service (NOT the internal DNS name).
       GATEWAY_JWKS_ISSUER: http://localhost:8180/realms/app

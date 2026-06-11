@@ -37,7 +37,7 @@ func TestJWKS_MintedTokenVerifies(t *testing.T) {
 
 	// Verify via the real auth.JWKSVerifier — this proves end-to-end integration.
 	ctx := context.Background()
-	v, err := auth.NewJWKSVerifier(ctx, js.URL(), issuer, audience)
+	v, err := auth.NewJWKSVerifier(ctx, js.URL(), issuer, audience, auth.WithAllowInsecureJWKS(true))
 	require.NoError(t, err)
 
 	p, err := v.Verify(ctx, token)
@@ -65,7 +65,7 @@ func TestJWKS_ExpiredTokenRejected(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	v, err := auth.NewJWKSVerifier(ctx, js.URL(), issuer, audience)
+	v, err := auth.NewJWKSVerifier(ctx, js.URL(), issuer, audience, auth.WithAllowInsecureJWKS(true))
 	require.NoError(t, err)
 
 	_, err = v.Verify(ctx, expiredToken)

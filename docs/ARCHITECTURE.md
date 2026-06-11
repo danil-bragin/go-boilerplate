@@ -97,7 +97,7 @@ The system achieves effectively-once processing over at-least-once Kafka deliver
 
 ### Principal propagation over Kafka
 
-The edge service that verified the caller's JWT injects `principal-sub` and `principal-roles` record headers (`auth.InjectHeaders`) when producing commands; the shared consumer pipeline (`platform/messaging/consume`) installs them back into the handler context (`auth.ExtractToContext`), so the audit behavior records the real actor instead of `anonymous`. These headers are **transport metadata, not authentication** — any client with produce rights can forge them. The trust boundary is the Kafka cluster itself: restrict produce access to command/event topics with broker ACLs and authenticate inter-service connections (mTLS/SASL). Never make authorization decisions from these headers for data that may originate outside that perimeter.
+The edge service that verified the caller's JWT injects `principal-sub` and `principal-roles` record headers (`auth.InjectHeaders`) when producing commands; the shared consumer pipeline (`platform/messaging/consume`) installs them back into the handler context (`auth.ExtractToContext`), so the audit behavior records the real actor instead of `anonymous`. These headers are **transport metadata, not authentication** — any client with produce rights can forge them. The trust boundary is the Kafka cluster itself: restrict produce access to command/event topics with broker ACLs and authenticate inter-service connections (mTLS/SASL). **These controls are now configurable** (ADR-0014): `kafka.Config` carries `SASLMechanism`/`SASLUser`/`SASLPassword` (PLAIN | SCRAM-SHA-256/512) and `TLSEnabled`, wired into the franz-go client (`KAFKA_SASL_*`, `KAFKA_TLS_ENABLED`). Dev stays `PLAINTEXT` (defaults off); see `operations.md` § Transport security to enable the perimeter. Never make authorization decisions from these headers for data that may originate outside that perimeter.
 
 ---
 
@@ -187,7 +187,7 @@ The following items are genuine gaps deferred to a later iteration:
 | Item | Notes |
 |---|---|
 | Multi-tenancy | Tenant-id context + event propagation is a documented seam; not built in v1 |
-| TLS (inter-service) | All connections are plaintext (HTTP, OTLP `WithInsecure`, `sslmode=disable`, Kafka `PLAINTEXT`). In production TLS terminates at the ingress layer or service mesh. |
+| TLS (inter-service) | **Configurable** (ADR-0014): Kafka SASL+TLS (`KAFKA_SASL_*`, `KAFKA_TLS_ENABLED`) and Redis password+TLS (`REDIS_PASSWORD`, `REDIS_TLS_ENABLED`) are wired into the franz-go / rueidis clients; the JWKS URL must be `https` unless `AUTH_ALLOW_INSECURE_JWKS=true`. Defaults stay plaintext for dev; HTTP and OTLP (`WithInsecure`, `sslmode=disable`) still terminate TLS at the ingress/mesh in production. See `operations.md` § Transport security. |
 | Table partitioning / age-based cleanup | Age-based cleanup (polling delete of old published outbox rows, old audit rows) is wired; range-based Postgres table partitioning for true hot/cold archival is deferred. |
 | Read replica pool routing | `pg.Pool` supports reader/writer split; replica routing not enabled in the example services |
 | Image signing activated | `cosign sign` step in CI is commented out pending a container registry |
