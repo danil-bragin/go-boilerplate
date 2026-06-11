@@ -36,6 +36,21 @@ func FuzzHTTPXDecode(f *testing.F) {
 	f.Add([]byte(`{"name":"a","email":"a@b.com"}`), "text/plain")
 	f.Add([]byte{}, "application/json")
 	f.Add([]byte{0xff, 0xfe, 0x00}, "application/octet-stream")
+	// Deeply-nested JSON: 20000 open brackets exceed Go 1.26's encoding/json
+	// nesting-depth limit. The invariant being pinned is that Decode returns an
+	// ERROR (the depth limit fires) rather than panicking or overflowing the
+	// goroutine stack on attacker-controlled nesting.
+	{
+		const depth = 20000
+		nested := make([]byte, 0, depth*2)
+		for range depth {
+			nested = append(nested, '[')
+		}
+		for range depth {
+			nested = append(nested, ']')
+		}
+		f.Add(nested, "application/json")
+	}
 
 	f.Fuzz(func(t *testing.T, body []byte, contentType string) {
 		r := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))

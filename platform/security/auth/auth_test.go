@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/lestrrat-go/jwx/v3/jwa"
 	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v3/jws"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -248,6 +250,65 @@ func TestJWKSVerifier_CustomRolesClaimPath(t *testing.T) {
 	p, err := v.Verify(context.Background(), string(signed))
 	require.NoError(t, err)
 	assert.Contains(t, p.Roles, "superadmin")
+}
+
+// TestJWKSVerifier_AlgConfusion_Rejected is a regression test for the classic
+// RS256→HS256 algorithm-confusion attack and the alg:none attack.
+//
+// alg-confusion: the server publishes its RSA PUBLIC key in JWKS. An attacker
+// takes those public-key bytes and uses them as an HMAC SECRET to sign a token
+// with HS256. A verifier that trusts the token's "alg" header would HMAC-verify
+// with the public key it holds — which the attacker also holds — and accept the
+// forgery. The defence is pinning the algorithm from the JWK (RS256), not the
+// token header.
+//
+// alg:none: an unsecured token (empty signature, "alg":"none") must never be
+// accepted.
+//
+// Both forgeries carry an otherwise-valid claim set, so the ONLY thing keeping
+// them out is correct algorithm handling.
+func TestJWKSVerifier_AlgConfusion_Rejected(t *testing.T) {
+	keys := generateTestKeys(t)
+	srv := startJWKSServer(t, keys)
+	v := newVerifier(t, srv.URL, testIssuer, testAudience)
+
+	// The public-key bytes the attacker scrapes from JWKS, reused as an HMAC key.
+	pubDER, err := x509.MarshalPKIXPublicKey(keys.priv.Public())
+	require.NoError(t, err)
+
+	validClaims := func() jwt.Token {
+		tok, err := jwt.NewBuilder().
+			Issuer(testIssuer).
+			Audience([]string{testAudience}).
+			Subject(testSubject).
+			IssuedAt(time.Now()).
+			Expiration(time.Now().Add(time.Hour)).
+			Build()
+		require.NoError(t, err)
+		return tok
+	}
+
+	t.Run("HS256 forged with RSA public-key bytes", func(t *testing.T) {
+		forged, err := jwt.Sign(validClaims(), jwt.WithKey(jwa.HS256(), pubDER))
+		require.NoError(t, err, "forging the HS256 token must succeed (the attack input)")
+
+		_, err = v.Verify(context.Background(), string(forged))
+		require.Error(t, err, "HS256-with-RSA-pubkey forgery must be rejected")
+		assert.True(t, errors.Is(err, auth.ErrInvalidToken),
+			"alg-confusion forgery must be ErrInvalidToken, got: %v", err)
+	})
+
+	t.Run("alg:none unsecured token", func(t *testing.T) {
+		payload, err := jwt.NewSerializer().Serialize(validClaims())
+		require.NoError(t, err)
+		unsigned, err := jws.Sign(payload, jws.WithInsecureNoSignature())
+		require.NoError(t, err, "crafting the alg:none token must succeed (the attack input)")
+
+		_, err = v.Verify(context.Background(), string(unsigned))
+		require.Error(t, err, "alg:none token must be rejected")
+		assert.True(t, errors.Is(err, auth.ErrInvalidToken),
+			"alg:none token must be ErrInvalidToken, got: %v", err)
+	})
 }
 
 // ─── Middleware tests ─────────────────────────────────────────────────────────
