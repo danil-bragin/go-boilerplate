@@ -106,6 +106,11 @@ func TestGateway_KeycloakRealToken(t *testing.T) {
 	t.Setenv("HTTP_ADDR", "127.0.0.1:0")
 	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
 	t.Setenv("GATEWAY_AUTH_DISABLED", "false")
+	// The Keycloak testcontainer serves its JWKS over plaintext http (local dev
+	// IdP). NewJWKSVerifier fails closed on an http JWKS URL unless this escape
+	// hatch is set — exactly the documented dev opt-in. NEVER set in production
+	// (the preflight rejects it; see Config.checkJWKSSecure).
+	t.Setenv("AUTH_ALLOW_INSECURE_JWKS", "true")
 	t.Setenv("GATEWAY_JWKS_URL", jwksURL)
 	t.Setenv("GATEWAY_JWKS_ISSUER", baseURL)
 	t.Setenv("GATEWAY_JWKS_AUDIENCE", "gateway")
