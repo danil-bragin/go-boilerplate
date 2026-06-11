@@ -3,6 +3,7 @@ package gateway
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -118,6 +119,14 @@ type Config struct {
 	// cost of denying traffic while Redis is down. The production preflight
 	// REQUIRES this true when RATELIMIT_REDIS=true (see Validate).
 	RatelimitFailClosed bool `env:"RATELIMIT_FAIL_CLOSED" envDefault:"false"`
+	// AllowCleartextTransport is the explicit escape hatch for the
+	// production cleartext-credential preflight (checkInsecureTransport). When
+	// false (default) production REFUSES a Kafka SASL mechanism without
+	// KAFKA_TLS_ENABLED=true, and a Redis password without REDIS_TLS_ENABLED=true
+	// — either would send credentials in the clear. Set true ONLY when the
+	// broker/Redis traffic rides a trusted private network (mTLS sidecar, VPC
+	// peering, service mesh) where the operator accepts plaintext on the wire.
+	AllowCleartextTransport bool `env:"APP_ALLOW_CLEARTEXT_TRANSPORT" envDefault:"false"`
 }
 
 // defaultDevPGDSN is the shipped development PG_DSN (see pg.Config). Booting
@@ -138,11 +147,58 @@ const defaultDevPGDSN = "postgres://postgres:postgres@localhost:5432/postgres?ss
 func (c Config) Validate() error {
 	return config.RequireProductionSafety(
 		c.checkAuthEnabled,
+		c.checkJWKSSecure,
 		c.checkPGSecure,
 		c.checkS3Secure,
 		c.checkCORSNotWildcard,
 		c.checkRatelimitFailClosed,
+		c.checkInsecureTransport,
 	)
+}
+
+// checkJWKSSecure forbids an insecure JWKS configuration in production. Keys
+// fetched over plaintext http can be swapped by a man-in-the-middle who could
+// then mint tokens this gateway would trust — a full auth bypass. Two ways that
+// surfaces, both rejected:
+//   - AUTH_ALLOW_INSECURE_JWKS=true: the dev escape hatch must never be on in
+//     production (it disables the verifier's own https guard).
+//   - auth enabled with a non-https GATEWAY_JWKS_URL: even without the escape
+//     hatch, a configured http URL is rejected here so the misconfiguration
+//     fails the preflight loudly rather than only at verifier construction.
+//
+// An empty JWKS URL is not flagged here: that is a separate "auth enabled but
+// no IdP configured" misconfiguration the verifier builder reports.
+func (c Config) checkJWKSSecure() error {
+	if c.AuthAllowInsecureJWKS {
+		return errors.New("AUTH_ALLOW_INSECURE_JWKS=true is forbidden in production: an http JWKS can be MITM-swapped to forge tokens (auth bypass)")
+	}
+	if c.AuthDisabled || c.JWKSUrl == "" {
+		return nil
+	}
+	if u, err := url.Parse(c.JWKSUrl); err != nil || u.Scheme != "https" {
+		return fmt.Errorf("GATEWAY_JWKS_URL %q must use https in production: an http JWKS can be MITM-swapped to forge tokens", c.JWKSUrl)
+	}
+	return nil
+}
+
+// checkInsecureTransport forbids sending credentials in cleartext in production
+// (security review #6). Kafka SASL and a Redis password both authenticate over
+// the wire; without TLS the secret crosses the network in the clear. Each is
+// allowed only when its transport is TLS-wrapped, or when the operator has
+// explicitly accepted a trusted private network via
+// APP_ALLOW_CLEARTEXT_TRANSPORT=true.
+func (c Config) checkInsecureTransport() error {
+	if c.AllowCleartextTransport {
+		return nil
+	}
+	var errs []error
+	if c.Kafka.SASLMechanism != "" && !c.Kafka.TLSEnabled {
+		errs = append(errs, errors.New("KAFKA_SASL_MECHANISM is set with KAFKA_TLS_ENABLED=false in production: the SASL password would cross the network in cleartext (set KAFKA_TLS_ENABLED=true, or APP_ALLOW_CLEARTEXT_TRANSPORT=true for a trusted network)"))
+	}
+	if c.Cache.Password.Reveal() != "" && !c.Cache.TLSEnabled {
+		errs = append(errs, errors.New("REDIS_PASSWORD is set with REDIS_TLS_ENABLED=false in production: the Redis AUTH password would cross the network in cleartext (set REDIS_TLS_ENABLED=true, or APP_ALLOW_CLEARTEXT_TRANSPORT=true for a trusted network)"))
+	}
+	return errors.Join(errs...)
 }
 
 func (c Config) checkAuthEnabled() error {

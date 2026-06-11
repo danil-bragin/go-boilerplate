@@ -40,6 +40,7 @@ func safeProdConfig() Config {
 	c.PG = pg.Config{DSN: "postgres://app:s3cret@db.internal:5432/app?sslmode=require"}
 	c.S3 = blob.Config{Endpoint: "s3.internal:443", UseSSL: true}
 	c.CORSOrigins = []string{"https://app.example.com"}
+	c.JWKSUrl = "https://idp.internal/realms/app/protocol/openid-connect/certs"
 	return c
 }
 
@@ -86,6 +87,32 @@ func TestConfigValidate_ProductionRejectsInsecure(t *testing.T) {
 			},
 			wantSub: "RATELIMIT_FAIL_CLOSED",
 		},
+		{
+			name:    "insecure jwks escape hatch",
+			mutate:  func(c *Config) { c.AuthAllowInsecureJWKS = true },
+			wantSub: "AUTH_ALLOW_INSECURE_JWKS",
+		},
+		{
+			name:    "non-https jwks url with auth enabled",
+			mutate:  func(c *Config) { c.JWKSUrl = "http://idp.internal/realms/app/certs" },
+			wantSub: "GATEWAY_JWKS_URL",
+		},
+		{
+			name: "kafka SASL without TLS",
+			mutate: func(c *Config) {
+				c.Kafka.SASLMechanism = "PLAIN"
+				c.Kafka.TLSEnabled = false
+			},
+			wantSub: "KAFKA_SASL_MECHANISM",
+		},
+		{
+			name: "redis password without TLS",
+			mutate: func(c *Config) {
+				c.Cache.Password = "s3cret"
+				c.Cache.TLSEnabled = false
+			},
+			wantSub: "REDIS_PASSWORD",
+		},
 	}
 
 	for _, tc := range cases {
@@ -128,6 +155,61 @@ func TestConfigValidate_DevelopmentAllowsInsecure(t *testing.T) {
 func TestConfigValidate_ProductionAllSafe(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	assert.NoError(t, safeProdConfig().Validate())
+}
+
+// TestConfigValidate_JWKSSecure covers the auth-bypass preflight (#1): an empty
+// JWKS URL is not flagged (separate misconfiguration), an https URL passes, and
+// the cleartext escape hatch / http URL are rejected by the table test above.
+func TestConfigValidate_JWKSSecure(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+
+	t.Run("empty jwks url not flagged here", func(t *testing.T) {
+		c := safeProdConfig()
+		c.JWKSUrl = ""
+		assert.NoError(t, c.Validate(), "empty JWKS URL is a separate concern, not the https guard")
+	})
+	t.Run("https jwks url passes", func(t *testing.T) {
+		c := safeProdConfig()
+		c.JWKSUrl = "https://idp.example.com/certs"
+		assert.NoError(t, c.Validate())
+	})
+	t.Run("auth disabled skips jwks url check", func(t *testing.T) {
+		c := safeProdConfig()
+		c.AuthDisabled = true // this trips checkAuthEnabled, but not the JWKS-url check
+		c.JWKSUrl = "http://idp.example.com/certs"
+		err := c.Validate()
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), "GATEWAY_JWKS_URL", "JWKS-url check is skipped when auth is disabled")
+	})
+}
+
+// TestConfigValidate_InsecureTransport covers the cleartext-credential preflight
+// (#6): SASL/Redis-password over TLS passes, and the explicit trusted-network
+// escape hatch (APP_ALLOW_CLEARTEXT_TRANSPORT) allows plaintext.
+func TestConfigValidate_InsecureTransport(t *testing.T) {
+	t.Setenv("APP_ENV", "production")
+
+	t.Run("kafka SASL with TLS passes", func(t *testing.T) {
+		c := safeProdConfig()
+		c.Kafka.SASLMechanism = "SCRAM-SHA-256"
+		c.Kafka.TLSEnabled = true
+		assert.NoError(t, c.Validate())
+	})
+	t.Run("redis password with TLS passes", func(t *testing.T) {
+		c := safeProdConfig()
+		c.Cache.Password = "s3cret"
+		c.Cache.TLSEnabled = true
+		assert.NoError(t, c.Validate())
+	})
+	t.Run("escape hatch allows cleartext", func(t *testing.T) {
+		c := safeProdConfig()
+		c.AllowCleartextTransport = true
+		c.Kafka.SASLMechanism = "PLAIN"
+		c.Kafka.TLSEnabled = false
+		c.Cache.Password = "s3cret"
+		c.Cache.TLSEnabled = false
+		assert.NoError(t, c.Validate(), "explicit trusted-network opt-in permits cleartext")
+	})
 }
 
 // TestConfigValidate_RatelimitFailClosed: the fail-open production guard is
