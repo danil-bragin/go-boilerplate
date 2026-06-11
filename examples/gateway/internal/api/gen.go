@@ -19,6 +19,21 @@ const (
 	BearerAuthScopes = "bearerAuth.Scopes"
 )
 
+// AuditChainStatus Result of an audit hash-chain verification walk.
+type AuditChainStatus struct {
+	// BreakId Id of the first broken row (absent when ok).
+	BreakId *int64 `json:"break_id,omitempty"`
+
+	// Ok True when the chain verified with no break.
+	Ok bool `json:"ok"`
+
+	// Reason Why the chain broke ("entry_hash mismatch" or "prev_hash link broken"); absent when ok.
+	Reason *string `json:"reason,omitempty"`
+
+	// Verified Number of rows walked.
+	Verified int `json:"verified"`
+}
+
 // AuditEntry One audit-log record of a successfully executed command.
 type AuditEntry struct {
 	// Action Audited action name (e.g. "order:create").
@@ -149,6 +164,12 @@ type QueryAuditParams struct {
 	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// VerifyAuditParams defines parameters for VerifyAudit.
+type VerifyAuditParams struct {
+	// Since Inclusive lower bound (RFC 3339) on the rows walked. Omit to verify the whole chain.
+	Since *time.Time `form:"since,omitempty" json:"since,omitempty"`
+}
+
 // ListOrdersParams defines parameters for ListOrders.
 type ListOrdersParams struct {
 	// Cursor Opaque pagination cursor returned by a previous page.
@@ -186,6 +207,9 @@ type ServerInterface interface {
 	// Query the audit trail by actor (admin only)
 	// (GET /v1/audit)
 	QueryAudit(w http.ResponseWriter, r *http.Request, params QueryAuditParams)
+	// Verify the audit hash-chain (admin only)
+	// (GET /v1/audit/verify)
+	VerifyAudit(w http.ResponseWriter, r *http.Request, params VerifyAuditParams)
 	// List orders
 	// (GET /v1/orders)
 	ListOrders(w http.ResponseWriter, r *http.Request, params ListOrdersParams)
@@ -210,6 +234,12 @@ func (_ Unimplemented) HealthCheck(w http.ResponseWriter, r *http.Request) {
 // Query the audit trail by actor (admin only)
 // (GET /v1/audit)
 func (_ Unimplemented) QueryAudit(w http.ResponseWriter, r *http.Request, params QueryAuditParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Verify the audit hash-chain (admin only)
+// (GET /v1/audit/verify)
+func (_ Unimplemented) VerifyAudit(w http.ResponseWriter, r *http.Request, params VerifyAuditParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -301,6 +331,39 @@ func (siw *ServerInterfaceWrapper) QueryAudit(w http.ResponseWriter, r *http.Req
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.QueryAudit(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// VerifyAudit operation middleware
+func (siw *ServerInterfaceWrapper) VerifyAudit(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params VerifyAuditParams
+
+	// ------------- Optional query parameter "since" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "since", r.URL.Query(), &params.Since)
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "since", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.VerifyAudit(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -593,6 +656,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 		r.Get(options.BaseURL+"/v1/audit", wrapper.QueryAudit)
 	})
 	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/audit/verify", wrapper.VerifyAudit)
+	})
+	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/v1/orders", wrapper.ListOrders)
 	})
 	r.Group(func(r chi.Router) {
@@ -700,6 +766,67 @@ type QueryAudit503ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response QueryAudit503ApplicationProblemPlusJSONResponse) VisitQueryAuditResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type VerifyAuditRequestObject struct {
+	Params VerifyAuditParams
+}
+
+type VerifyAuditResponseObject interface {
+	VisitVerifyAuditResponse(w http.ResponseWriter) error
+}
+
+type VerifyAudit200JSONResponse AuditChainStatus
+
+func (response VerifyAudit200JSONResponse) VisitVerifyAuditResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type VerifyAudit401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response VerifyAudit401ApplicationProblemPlusJSONResponse) VisitVerifyAuditResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type VerifyAudit403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response VerifyAudit403ApplicationProblemPlusJSONResponse) VisitVerifyAuditResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type VerifyAudit429ApplicationProblemPlusJSONResponse struct {
+	TooManyRequestsApplicationProblemPlusJSONResponse
+}
+
+func (response VerifyAudit429ApplicationProblemPlusJSONResponse) VisitVerifyAuditResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(429)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type VerifyAudit503ApplicationProblemPlusJSONResponse struct {
+	ServiceUnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response VerifyAudit503ApplicationProblemPlusJSONResponse) VisitVerifyAuditResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(503)
 
@@ -940,6 +1067,9 @@ type StrictServerInterface interface {
 	// Query the audit trail by actor (admin only)
 	// (GET /v1/audit)
 	QueryAudit(ctx context.Context, request QueryAuditRequestObject) (QueryAuditResponseObject, error)
+	// Verify the audit hash-chain (admin only)
+	// (GET /v1/audit/verify)
+	VerifyAudit(ctx context.Context, request VerifyAuditRequestObject) (VerifyAuditResponseObject, error)
 	// List orders
 	// (GET /v1/orders)
 	ListOrders(ctx context.Context, request ListOrdersRequestObject) (ListOrdersResponseObject, error)
@@ -1023,6 +1153,32 @@ func (sh *strictHandler) QueryAudit(w http.ResponseWriter, r *http.Request, para
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(QueryAuditResponseObject); ok {
 		if err := validResponse.VisitQueryAuditResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// VerifyAudit operation middleware
+func (sh *strictHandler) VerifyAudit(w http.ResponseWriter, r *http.Request, params VerifyAuditParams) {
+	var request VerifyAuditRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.VerifyAudit(ctx, request.(VerifyAuditRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "VerifyAudit")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(VerifyAuditResponseObject); ok {
+		if err := validResponse.VisitVerifyAuditResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -10,6 +10,12 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AuditChainHead struct {
+	ID        int16
+	LastHash  []byte
+	UpdatedAt pgtype.Timestamptz
+}
+
 type AuditLog struct {
 	ID        int64
 	Actor     string
@@ -17,4 +23,6 @@ type AuditLog struct {
 	Subject   string
 	Metadata  json.RawMessage
 	CreatedAt pgtype.Timestamptz
+	PrevHash  []byte
+	EntryHash []byte
 }

@@ -377,6 +377,41 @@ func (s *Server) QueryAudit(ctx context.Context, request QueryAuditRequestObject
 	return QueryAudit200JSONResponse{Items: items}, nil
 }
 
+// VerifyAudit implements StrictServerInterface: the admin-only audit-chain
+// integrity check — GET /v1/audit/verify walks the hash chain and reports
+// whether it is intact (see audit.VerifyChain). Same ADMIN-ONLY authorization
+// as QueryAudit.
+func (s *Server) VerifyAudit(ctx context.Context, request VerifyAuditRequestObject) (VerifyAuditResponseObject, error) {
+	if !s.authDisabled {
+		p, ok := auth.From(ctx)
+		if !ok {
+			return nil, authz.ErrUnauthenticated
+		}
+		if !slices.Contains(p.Roles, attachments.AdminRole) {
+			return nil, authz.ErrForbidden
+		}
+	}
+
+	var since time.Time
+	if request.Params.Since != nil {
+		since = *request.Params.Since
+	}
+
+	res, err := s.auditStore.VerifyChain(ctx, since)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: verify audit chain: %w", err)
+	}
+
+	out := VerifyAudit200JSONResponse{Ok: res.OK, Verified: res.Verified}
+	if !res.OK {
+		breakID := res.BreakID
+		out.BreakId = &breakID
+		reason := res.Reason
+		out.Reason = &reason
+	}
+	return out, nil
+}
+
 // ListOrders implements StrictServerInterface: cursor-paginated listing of
 // the read model (keyset over (created_at, order_id) descending). An
 // undecodable cursor maps to 400 problem+json.

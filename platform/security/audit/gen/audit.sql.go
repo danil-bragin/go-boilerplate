@@ -7,6 +7,7 @@ package gen
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -26,18 +27,27 @@ type QueryByActorParams struct {
 	RowLimit int32
 }
 
+type QueryByActorRow struct {
+	ID        int64
+	Actor     string
+	Action    string
+	Subject   string
+	Metadata  json.RawMessage
+	CreatedAt pgtype.Timestamptz
+}
+
 // DSAR/audit read path: one actor's audit trail, newest first. since is
 // INCLUSIVE (pass the zero time for "everything"); row_limit caps the result
 // at the newest rows. Backed by the (actor, created_at) index.
-func (q *Queries) QueryByActor(ctx context.Context, arg QueryByActorParams) ([]AuditLog, error) {
+func (q *Queries) QueryByActor(ctx context.Context, arg QueryByActorParams) ([]QueryByActorRow, error) {
 	rows, err := q.db.Query(ctx, queryByActor, arg.Actor, arg.Since, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []AuditLog
+	var items []QueryByActorRow
 	for rows.Next() {
-		var i AuditLog
+		var i QueryByActorRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Actor,

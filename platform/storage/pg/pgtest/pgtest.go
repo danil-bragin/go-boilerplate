@@ -18,8 +18,9 @@ import (
 )
 
 // NewDSN starts a Postgres container and returns its DSN. The container is
-// terminated automatically when the test finishes.
-func NewDSN(t *testing.T) string {
+// terminated automatically when the test (or benchmark) finishes. It accepts
+// testing.TB so both *testing.T and *testing.B callers can use it.
+func NewDSN(t testing.TB) string {
 	t.Helper()
 	ctx := context.Background()
 

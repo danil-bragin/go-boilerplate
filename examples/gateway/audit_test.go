@@ -161,3 +161,57 @@ func TestGateway_AuditEndpoint(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, status)
 	})
 }
+
+// getVerify GETs /v1/audit/verify with the given token, returning status + body.
+func getVerify(t *testing.T, baseURL, token string) (int, []byte) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		baseURL+"/v1/audit/verify", http.NoBody)
+	require.NoError(t, err)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	var body json.RawMessage
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	return resp.StatusCode, body
+}
+
+// TestGateway_AuditVerifyEndpoint covers the admin-only audit-chain integrity
+// endpoint: RBAC (401/403) and that an untampered chain (here: an empty fresh
+// DB) verifies OK. Deep chain/tamper correctness is proven at the platform
+// level (platform/security/audit chain_test).
+func TestGateway_AuditVerifyEndpoint(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.Shared(t)
+	dsn := pgtest.SharedDSN(t)
+	baseURL := startAppWithVerifier(t, broker, dsn, multiUserVerifier{})
+
+	t.Run("no token → 401", func(t *testing.T) {
+		status, _ := getVerify(t, baseURL, "")
+		require.Equal(t, http.StatusUnauthorized, status)
+	})
+
+	t.Run("non-admin → 403", func(t *testing.T) {
+		status, _ := getVerify(t, baseURL, "alice")
+		require.Equal(t, http.StatusForbidden, status)
+	})
+
+	t.Run("admin → 200, chain verifies", func(t *testing.T) {
+		status, body := getVerify(t, baseURL, "root")
+		require.Equal(t, http.StatusOK, status)
+		var res struct {
+			Ok       bool   `json:"ok"`
+			Verified int    `json:"verified"`
+			BreakID  *int64 `json:"break_id"`
+		}
+		require.NoError(t, json.Unmarshal(body, &res))
+		assert.True(t, res.Ok, "fresh chain must verify")
+		assert.Nil(t, res.BreakID)
+	})
+}
