@@ -124,7 +124,7 @@ func TestE2E_ChaosBrokerOutageMidFlow(t *testing.T) {
 	ctx := context.Background()
 
 	// --- Infrastructure: Redpanda (handle kept for pause/unpause) + 4 DBs ---
-	rp, err := redpanda.Run(ctx, "redpandadata/redpanda:v24.2.7")
+	rp, err := redpanda.Run(ctx, "redpandadata/redpanda:v25.3.15")
 	require.NoError(t, err, "chaos: start redpanda")
 	t.Cleanup(func() { _ = rp.Terminate(context.Background()) })
 	broker, err := rp.KafkaSeedBroker(ctx)

@@ -29,7 +29,8 @@ services:
   # ── Infrastructure ──────────────────────────────────────────────────────────
 
   postgres:
-    image: postgres:16-alpine
+    # postgres:16-alpine (digest-pinned — bump via Renovate/Dependabot docker lane).
+    image: postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
@@ -88,7 +89,8 @@ services:
       start_period: 5s
 
   redpanda:
-    image: redpandadata/redpanda:v24.2.7
+    # v25.3.15 (digest-pinned).
+    image: redpandadata/redpanda:v25.3.15@sha256:2c77434b8c7a13016f0d936563fa3a8725aaaac7cd31e9be0ad7d1eb9cd6cb76
     restart: unless-stopped
     command:
       - redpanda
@@ -120,7 +122,10 @@ services:
       start_period: 20s
 
   redpanda-console:
-    image: redpandadata/console:v2.7.2
+    # v3.7.4 (digest-pinned). Console v3 config schema change: schemaRegistry
+    # is now a TOP-LEVEL stanza (was nested under kafka in v2). See
+    # https://docs.redpanda.com/current/migrate/console-v3/
+    image: redpandadata/console:v3.7.4@sha256:72bd99bdc304a7c6aab58bfaccf92e302d4e826f6f4737d14953eb04ceed7c07
     restart: unless-stopped
     # Canonical Redpanda pattern: the image ENTRYPOINT is ./console, so a bare
     # `command: sh -c …` is passed to console as argv (never executed) — the
@@ -132,9 +137,9 @@ services:
       CONSOLE_CONFIG_FILE: |
         kafka:
           brokers: ["redpanda:9092"]
-          schemaRegistry:
-            enabled: true
-            urls: ["http://redpanda:8081"]
+        schemaRegistry:
+          enabled: true
+          urls: ["http://redpanda:8081"]
     ports:
       - "8090:8080"
     depends_on:
@@ -142,14 +147,20 @@ services:
         condition: service_healthy
 
   redis:
-    image: redis:7-alpine
+    # redis:7-alpine (digest-pinned). --requirepass enables auth (round-8
+    # hardening). Dev cred "redis" — the gateway reads it via REDIS_PASSWORD
+    # (lane A's cache.Config.Password / extra rueidis clients). Override or use
+    # the _FILE convention in any non-throwaway setup.
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     restart: unless-stopped
+    command: ["redis-server", "--requirepass", "redis"]
     ports:
       - "6379:6379"
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # -a authenticates the probe against the requirepass above.
+      test: ["CMD", "redis-cli", "-a", "redis", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -198,19 +209,26 @@ services:
       "
 
   keycloak:
-    image: quay.io/keycloak/keycloak:25.0.6
+    # 26.6.3 (digest-pinned). KC 26 ships hostname v2 and requires http to be
+    # explicitly enabled for the dev http listener (start-dev enables it, but we
+    # also set KC_HTTP_ENABLED=true so a future `start` swap keeps working).
+    image: quay.io/keycloak/keycloak:26.6.3@sha256:5fdbf2dbb5897cc34e82de49d13e23db011f9925089dbc555fc095f2c8bc1dac
     restart: unless-stopped
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
       KC_DB: dev-mem
       KC_HEALTH_ENABLED: "true"
+      # KC 26 hostname v2: enable the plain-HTTP listener for the dev stack
+      # (TLS terminates at ingress in production — see the header banner).
+      KC_HTTP_ENABLED: "true"
       # Pin the issuer to the host-facing URL. Without this, tokens minted via
       # localhost:8180 carry iss=http://localhost:8180/… while the gateway
       # expects the in-network issuer — every host-fetched token (just token,
       # the README curl flow, just demo) fails verification with 401.
       # The gateway's GATEWAY_JWKS_ISSUER matches this value; JWKS keys are
       # still fetched over the internal DNS name (GATEWAY_JWKS_URL).
+      # KC 26 hostname v2 accepts the full origin URL here (unchanged from KC 25).
       KC_HOSTNAME: http://localhost:8180
     command: ["start-dev", "--import-realm"]
     volumes:
@@ -249,11 +267,14 @@ services:
     # published above for host-side / orchestrator probes.
 
   jaeger:
-    image: jaegertracing/all-in-one:1.62.0
+    # Jaeger v2 (2.19.0, digest-pinned). v2 is OpenTelemetry-Collector-based and
+    # OTLP-native: it accepts OTLP on 4317/4318 directly out of the box, so the
+    # v1-only COLLECTOR_OTLP_ENABLED env is gone. The default all-in-one config
+    # (memory storage + OTLP receivers + UI) needs no config file. The otel
+    # collector still exports OTLP gRPC to jaeger:4317 (deploy/otel-collector.yaml).
+    image: jaegertracing/jaeger:2.19.0@sha256:ede4864215be4cd85bd8c3129a2fea6c5713c5653c7282c429dba123014bc68b
     restart: unless-stopped
     profiles: ["observability"]
-    environment:
-      COLLECTOR_OTLP_ENABLED: "true"
     ports:
       - "16686:16686"  # Jaeger UI
       - "14317:4317"   # OTLP gRPC (host-mapped to avoid conflict with collector)
@@ -281,14 +302,20 @@ services:
       - --web.enable-lifecycle
 
   grafana:
-    image: grafana/grafana:11.3.1
+    # 12.3.7 (digest-pinned). Anonymous auth DISABLED — log in with the dev
+    # admin credentials below (admin / admin; change GF_SECURITY_ADMIN_PASSWORD
+    # or mount GF_SECURITY_ADMIN_PASSWORD__FILE in any non-throwaway setup).
+    image: grafana/grafana:12.3.7@sha256:f02eb8dfe2cd57c1d4cdfaa18394403e2df31e3150efc0fcd7981567958f8364
     restart: unless-stopped
     profiles: ["observability"]
     environment:
       GF_SECURITY_ADMIN_USER: admin
+      # DEMO credential — override via env or the _FILE convention in real use:
+      #   GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/grafana_admin
       GF_SECURITY_ADMIN_PASSWORD: admin
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # Anonymous access disabled (round-8 hardening): the dashboards are no
+      # longer world-readable; authenticate as admin.
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_INSTALL_PLUGINS: grafana-pyroscope-app
     volumes:
       - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
@@ -318,6 +345,17 @@ services:
         SERVICE: gateway
     restart: unless-stopped
     profiles: ["apps"]
+    # Container hardening (round-8): the distroless app logs to stdout and writes
+    # nothing to disk, so a read-only rootfs is safe. tmpfs /tmp covers any
+    # transient scratch (e.g. Go's os.TempDir); cap_drop ALL + no-new-privileges
+    # shrink the blast radius of a compromised process.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "8080:8080"
     # Runtime resource limits — tune per workload in production.
@@ -365,6 +403,11 @@ services:
       RATELIMIT_AUTHED_RPS: "200"
       RATELIMIT_AUTHED_BURST: "400"
       RATELIMIT_REDIS: "false"
+      # Redis auth: matches the redis service --requirepass. Consumed by lane A's
+      # cache.Config.Password (and the ratelimit/sse rueidis clients) once merged;
+      # harmless until then (RATELIMIT_REDIS=false means redis is not dialed here).
+      # REDIS_ADDRS: "redis:6379"
+      REDIS_PASSWORD: redis
       # TRUSTED_PROXIES: ""
       # Go runtime memory limit: ~90% of the container memory limit above.
       # Keeps the GC soft-trim target below the cgroup hard limit, preventing OOM-kill.
@@ -396,6 +439,14 @@ services:
         SERVICE: orders
     restart: unless-stopped
     profiles: ["apps"]
+    # Container hardening (round-8) — see the gateway service for rationale.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     # Runtime resource limits — tune per workload in production.
     deploy:
       resources:
@@ -440,6 +491,14 @@ services:
         SERVICE: payments
     restart: unless-stopped
     profiles: ["apps"]
+    # Container hardening (round-8) — see the gateway service for rationale.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     # Runtime resource limits — tune per workload in production.
     deploy:
       resources:
@@ -484,6 +543,14 @@ services:
         SERVICE: notifications
     restart: unless-stopped
     profiles: ["apps"]
+    # Container hardening (round-8) — see the gateway service for rationale.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     # Runtime resource limits — tune per workload in production.
     deploy:
       resources:
