@@ -37,6 +37,7 @@
 | `audit` | `platform/security/audit` | `Behavior` — on successful command writes an audit entry (who/what/when/resource) to the audit table via `pg.FromContext` |
 | `featureflags` | `platform/featureflags` | OpenFeature Go SDK v2 wrapper; `BoolValue`/`StringValue` helpers; swappable provider (in-memory provider included; flagd/LaunchDarkly via `openfeature.SetProviderAndWait`) |
 | `servicekit` | `platform/servicekit` | Service wiring harness: `New` (+`WithoutKafka`/`WithoutPG`), `AddConsumer`/`AddConsumerWithRetry`/`AddOutboxRelay`/`AddWorker`/`AddHTTPServer`/`AddAuditCleanup`, `Main` entry point; readiness-first drain-gate teardown |
+| `testkit` | `platform/testkit` | Test doubles + harnesses: `fakes` (in-memory broker/stores), `mockhttp` (JWKS test server), `mocks` (moq-generated), `fixtures`, `goleakopts` (shared goleak ignore set), `traffic` (seeded adversarial load generator + correctness ledger — `cmd/trafficgen`, e2e traffic tests) |
 
 ---
 

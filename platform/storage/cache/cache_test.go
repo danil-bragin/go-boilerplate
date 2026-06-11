@@ -1,8 +1,10 @@
 package cache_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"strconv"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"go-boilerplate/platform/observability/log"
 	"go-boilerplate/platform/storage/cache"
 
 	"github.com/moby/moby/api/types/container"
@@ -18,6 +21,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
+	"go.opentelemetry.io/otel"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.uber.org/goleak"
 	"golang.org/x/sync/errgroup"
 )
@@ -500,6 +506,76 @@ func TestCache_L2Breaker_RedisDownNoLatencyCliff(t *testing.T) {
 		_, ok := b.Get(ctx, key)
 		return ok
 	}, 30*time.Second, 1*time.Second, "breaker did not recover within 30s of Redis restart")
+}
+
+// TestCache_L2ErrorsVisible_RedisDown verifies the call-site wiring of the L2
+// visibility seam end to end: with Redis stopped, Get/Set/Delete each
+// increment cache.l2.errors{op} and WARN on the ctx logger instead of failing
+// silently (the historical TODO(obs) behaviour).
+func TestCache_L2ErrorsVisible_RedisDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test requires Docker (redis container)")
+	}
+	ctx := context.Background()
+
+	// Local manual-reader meter provider so the counter built in cache.New
+	// (global otel meter) is collectable here.
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	prev := otel.GetMeterProvider()
+	otel.SetMeterProvider(provider)
+	t.Cleanup(func() {
+		otel.SetMeterProvider(prev)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	rc, err := tcredis.Run(ctx, "redis:7-alpine")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rc.Terminate(context.Background()) })
+	addr, err := rc.ConnectionString(ctx)
+	require.NoError(t, err)
+
+	c := newCacheAt(t, stripRedisScheme(addr))
+
+	// Kill Redis, then drive each op once. 3 failures < the breaker's
+	// 5-failure threshold, so every op genuinely reaches L2.
+	stopTimeout := 2 * time.Second
+	require.NoError(t, rc.Stop(ctx, &stopTimeout))
+
+	var buf bytes.Buffer
+	lctx := log.Into(ctx, slog.New(slog.NewJSONHandler(&buf, nil)))
+
+	c.Set(lctx, "k-set", []byte("v"), time.Minute)
+	_, ok := c.Get(lctx, "k-get")
+	assert.False(t, ok)
+	_ = c.Delete(lctx, "k-del")
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(ctx, &rm))
+	byOp := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "cache.l2.errors" {
+				continue
+			}
+			sum, isSum := m.Data.(metricdata.Sum[int64])
+			require.True(t, isSum)
+			for _, dp := range sum.DataPoints {
+				for _, attr := range dp.Attributes.ToSlice() {
+					if string(attr.Key) == "op" {
+						byOp[attr.Value.AsString()] += dp.Value
+					}
+				}
+			}
+		}
+	}
+	assert.GreaterOrEqual(t, byOp["set"], int64(1), "set error must be counted")
+	assert.GreaterOrEqual(t, byOp["get"], int64(1), "get error must be counted")
+	assert.GreaterOrEqual(t, byOp["del"], int64(1), "del error must be counted")
+
+	logged := buf.String()
+	assert.Contains(t, logged, "cache: L2 error")
+	assert.Contains(t, logged, `"level":"WARN"`)
 }
 
 // TestCache_Close_NoSubscriberLeak verifies the pub/sub subscriber goroutine

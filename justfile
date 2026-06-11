@@ -148,11 +148,11 @@ up-full:
 
 # Stop everything and remove volumes
 down:
-    docker compose --profile observability --profile apps down -v
+    docker compose --profile observability --profile apps --profile pgbouncer down -v
 
 # Stream logs from all services
 logs:
-    docker compose --profile observability --profile apps logs -f
+    docker compose --profile observability --profile apps --profile pgbouncer logs -f
 
 # Show running compose services
 ps:

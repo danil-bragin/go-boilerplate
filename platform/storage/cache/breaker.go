@@ -41,6 +41,20 @@ func newL2Breaker() (circuitbreaker.CircuitBreaker[any], metric.Int64Gauge) {
 	return cb, gauge
 }
 
+// newL2ErrorCounter builds the "cache.l2.errors" counter recorded by l2Error
+// for every genuine L2 failure ({op=get|set|del}). Nil on creation failure —
+// recording degrades to a no-op while the WARN log path stays alive.
+func newL2ErrorCounter() metric.Int64Counter {
+	ctr, err := otel.Meter("cache").Int64Counter(
+		"cache.l2.errors",
+		metric.WithDescription("L2 (Redis) operation errors, by op (get|set|del)"),
+	)
+	if err != nil {
+		return nil
+	}
+	return ctr
+}
+
 // l2Allowed reports whether L2 may be used right now. False means the breaker
 // is open (callers must degrade to L1-only behaviour without touching Redis)
 // or the caller's context is already done — a cancelled caller can never

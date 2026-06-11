@@ -101,22 +101,3 @@ func Decode[T any](r *http.Request) (T, error) {
 	}
 	return v, nil
 }
-
-// WriteDecodeError maps a decode/validation error to an appropriate problem.
-func WriteDecodeError(w http.ResponseWriter, err error) {
-	var ve *ValidationError
-	if errors.As(err, &ve) {
-		// FromError keeps the historical 422 + Errors map and adds the
-		// VALIDATION_FAILED code with Params["fields"].
-		WriteProblem(w, FromError(ve))
-		return
-	}
-	if errors.Is(err, ErrUnsupportedMediaType) {
-		WriteProblem(w, Problem{
-			Status: http.StatusUnsupportedMediaType,
-			Title:  http.StatusText(http.StatusUnsupportedMediaType),
-		})
-		return
-	}
-	Error(w, http.StatusBadRequest, "invalid request body")
-}

@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -40,6 +44,57 @@ func TestRender_OneRowPerRegisteredCode(t *testing.T) {
 			t.Errorf("row for %s is out of sorted order", e.Code)
 		}
 		lastIdx = idx
+	}
+}
+
+// TestMain_ImportsEveryExampleServiceRoot is the linkage guard for the blank
+// imports in main.go: every example SERVICE (a directory under examples/ with
+// a cmd/ subdirectory, i.e. it ships a binary) must have its root package
+// blank-imported here, so a new service that registers apperr codes cannot
+// silently skip the generated registry. Non-service example dirs (e2e,
+// testing) are exempt — they own no codes and ship no binary.
+func TestMain_ImportsEveryExampleServiceRoot(t *testing.T) {
+	// 1. Discover services: examples/<name>/cmd exists.
+	entries, err := os.ReadDir(filepath.Join("..", "..", "examples"))
+	if err != nil {
+		t.Fatalf("reading examples/: %v", err)
+	}
+	want := map[string]bool{}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join("..", "..", "examples", e.Name(), "cmd")); err == nil {
+			want["go-boilerplate/examples/"+e.Name()] = true
+		}
+	}
+	if len(want) == 0 {
+		t.Fatal("no example services discovered — layout changed? update this test")
+	}
+
+	// 2. Collect the example imports actually present in main.go.
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "main.go", nil, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("parsing main.go: %v", err)
+	}
+	got := map[string]bool{}
+	for _, imp := range f.Imports {
+		path := strings.Trim(imp.Path.Value, `"`)
+		if strings.HasPrefix(path, "go-boilerplate/examples/") {
+			got[path] = true
+		}
+	}
+
+	for path := range want {
+		if !got[path] {
+			t.Errorf("main.go is missing the blank import %q — its apperr codes would silently skip docs/errors.md", path)
+		}
+	}
+	for path := range got {
+		if !want[path] {
+			t.Errorf("main.go imports %q which is not an example service (no cmd/ dir) — stale import?", path)
+		}
 	}
 }
 

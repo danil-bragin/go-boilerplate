@@ -111,15 +111,3 @@ func TestDecode_NoContentType_Accepted(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "a", got.Name)
 }
-
-func TestWriteDecodeError_UnsupportedMediaType(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"a","email":"a@b.com"}`))
-	r.Header.Set("Content-Type", "text/plain")
-	_, err := httpx.Decode[createReq](r)
-	require.Error(t, err)
-
-	rec := httptest.NewRecorder()
-	httpx.WriteDecodeError(rec, err)
-	require.Equal(t, http.StatusUnsupportedMediaType, rec.Code)
-	require.Equal(t, "application/problem+json", rec.Header().Get("Content-Type"))
-}

@@ -46,8 +46,10 @@ type Problem struct {
 //     platform auth sentinels (authz.ErrForbidden, authz.ErrUnauthenticated,
 //     cqrs.ErrUnauthenticated) are apperr errors, so they map to
 //     403 AUTH_FORBIDDEN / 401 AUTH_UNAUTHENTICATED through this branch.
-//   - *ValidationError (request decode) → 422 VALIDATION_FAILED with the
-//     legacy Errors field-map plus Params["fields"] = [{field, rule, param}].
+//   - *ValidationError (request decode) → VALIDATION_FAILED at its registered
+//     status (400 — same as command-level validation; the registry is the
+//     single source of truth for code→status) with the legacy Errors
+//     field-map plus Params["fields"] = [{field, rule, param}].
 //   - anything else → 500 INTERNAL with no detail (unknown errors must not
 //     leak internals to clients).
 //
@@ -68,11 +70,6 @@ func FromError(err error) Problem {
 	var ve *ValidationError
 	if errors.As(err, &ve) {
 		p := problemForCode(apperr.CodeValidationFailed)
-		// Decode-level validation keeps the historical 422 (the request was
-		// well-formed JSON but semantically invalid) while command-level
-		// validation uses the registered 400 via the apperr branch above.
-		p.Status = http.StatusUnprocessableEntity
-		p.Title = http.StatusText(p.Status)
 		p.Errors = ve.Fields
 		if len(ve.Details) > 0 {
 			fields := make([]map[string]any, len(ve.Details))
@@ -129,6 +126,9 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 				if detail != "" {
 					p.Detail = detail
 				}
+			}
+			if p.Code == apperr.CodeValidationFailed {
+				p.Errors = localizeFieldErrors(loc, p.Errors, p.Params)
 			}
 		}
 	}

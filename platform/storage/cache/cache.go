@@ -17,10 +17,12 @@ import (
 	"time"
 
 	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/observability/log"
 
 	"github.com/failsafe-go/failsafe-go/circuitbreaker"
 	"github.com/maypok86/otter/v2"
 	"github.com/redis/rueidis"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/singleflight"
 )
@@ -40,8 +42,8 @@ var _ cqrs.Cache = (*Cache)(nil)
 //     degrades to TTL-bounded staleness, so keep TTLs modest as the floor.
 //
 //   - An L2 (Redis) error on read is treated as a cache miss (availability over
-//     strictness). Such errors are currently unlogged.
-//     TODO(obs/SP7): expose L2 errors via metrics/structured logging.
+//     strictness). Such errors are surfaced via the "cache.l2.errors" counter
+//     ({op=get|set|del}) and a WARN log (see l2Error) — never to the caller.
 type Cache struct {
 	l1  *otter.Cache[string, []byte]
 	l2  rueidis.Client
@@ -52,6 +54,9 @@ type Cache struct {
 	// L1-only instead of a per-request connection wait.
 	l2cb      circuitbreaker.CircuitBreaker[any]
 	l2cbGauge metric.Int64Gauge
+
+	// L2 error counter ("cache.l2.errors", {op=get|set|del}); nil-degrades.
+	l2errs metric.Int64Counter
 
 	// Pub/sub invalidation broadcast state (see invalidation.go).
 	instanceID string
@@ -90,8 +95,25 @@ func New(cfg Config) (*Cache, error) {
 
 	c := &Cache{l1: l1, l2: l2, cfg: cfg}
 	c.l2cb, c.l2cbGauge = newL2Breaker()
+	c.l2errs = newL2ErrorCounter()
 	c.startInvalidationSubscriber()
 	return c, nil
+}
+
+// l2Error surfaces a (previously silent) L2 failure: it increments the
+// "cache.l2.errors" counter for op and emits a WARN on the ctx logger.
+//
+// Failure attribution mirrors l2Done: an op that failed because the CALLER's
+// ctx ended says nothing about Redis health, so it is neither counted nor
+// logged — a burst of cancelled requests must not look like an L2 outage.
+func (c *Cache) l2Error(ctx context.Context, op, key string, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+	if c.l2errs != nil {
+		c.l2errs.Add(ctx, 1, metric.WithAttributes(attribute.String("op", op)))
+	}
+	log.From(ctx).Warn("cache: L2 error", "op", op, "key", key, "error", err)
 }
 
 // JitteredTTL returns ttl adjusted by a random ±TTLJitter fraction.
@@ -140,7 +162,11 @@ func (c *Cache) Get(ctx context.Context, key string) ([]byte, bool) {
 	c.l2Done(ctx, err)
 	if err != nil {
 		// Redis nil → genuine miss; network / protocol error → treat as
-		// miss too (the breaker absorbs repeated failures).
+		// miss too (the breaker absorbs repeated failures) but make it
+		// visible: counter + WARN instead of the historical silent ignore.
+		if !rueidis.IsRedisNil(err) {
+			c.l2Error(ctx, "get", key, err)
+		}
 		return nil, false
 	}
 
@@ -155,8 +181,8 @@ func (c *Cache) Get(ctx context.Context, key string) ([]byte, bool) {
 }
 
 // Set writes val into both L2 (Redis) and L1 with a jittered ttl.
-// L2 errors are silently ignored so cache writes never fail the caller.
-// TODO(obs): surface L2 write errors via metrics/logging once an obs package exists.
+// L2 errors never fail the caller; they surface via the "cache.l2.errors"
+// counter and a WARN log (see l2Error).
 func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Duration) {
 	jttl := c.JitteredTTL(ttl)
 
@@ -168,7 +194,9 @@ func (c *Cache) Set(ctx context.Context, key string, val []byte, ttl time.Durati
 		err := c.l2.Do(opCtx, c.l2.B().Set().Key(key).Value(rueidis.BinaryString(val)).Ex(jttl).Build()).Error()
 		opCancel()
 		c.l2Done(ctx, err)
-		// TODO(obs): log L2 error.
+		if err != nil {
+			c.l2Error(ctx, "set", key, err)
+		}
 
 		// Broadcast so other instances drop their (now stale) L1 entry and
 		// re-read the new value from L2. The receiver skips this instance
@@ -199,6 +227,9 @@ func (c *Cache) Delete(ctx context.Context, key string) error {
 	err := c.l2.Do(opCtx, c.l2.B().Del().Key(key).Build()).Error()
 	opCancel()
 	c.l2Done(ctx, err)
+	if err != nil {
+		c.l2Error(ctx, "del", key, err)
+	}
 
 	c.publishInvalidation(ctx, key)
 	return err
