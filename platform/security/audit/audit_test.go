@@ -288,3 +288,47 @@ func TestPgStore_QueryByActor(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, entries)
 }
+
+// TestRecordOutOfBand_DenialStormBounded proves the denial-audit DoS bound
+// (security review #5): a burst of denial audits for one (actor,action) writes
+// only up to the per-key burst depth; the rest are coalesced (onDenialDropped
+// fires) instead of each taking the global chain lock. Non-denial out-of-band
+// writes are unaffected.
+func TestRecordOutOfBand_DenialStormBounded(t *testing.T) {
+	pool := newPool(t)
+	var dropped int
+	store := audit.NewPgStore(pool, audit.WithOnDenialDropped(func() { dropped++ }))
+	ctx := context.Background()
+
+	const burst = 50
+	for i := 0; i < burst; i++ {
+		err := store.RecordOutOfBand(ctx, audit.Entry{
+			Actor:   "attacker",
+			Action:  audit.ActionAuthzDenied,
+			Subject: "forbidden-endpoint",
+		})
+		require.NoError(t, err)
+	}
+
+	// Count the denial rows actually written.
+	var written int
+	require.NoError(t, pool.Reader().QueryRow(ctx,
+		`select count(*) from audit_log where action = $1 and actor = 'attacker'`,
+		audit.ActionAuthzDenied).Scan(&written))
+
+	require.LessOrEqual(t, written, 5, "denial storm must be bounded to the per-key burst")
+	require.Greater(t, written, 0, "the onset of the abuse pattern must still be recorded")
+	require.Equal(t, burst-written, dropped, "every coalesced denial must fire onDenialDropped")
+
+	// A denial for a DIFFERENT actor is independently admitted.
+	require.NoError(t, store.RecordOutOfBand(ctx, audit.Entry{
+		Actor:   "legit-user",
+		Action:  audit.ActionAuthzDenied,
+		Subject: "forbidden-endpoint",
+	}))
+	var legit int
+	require.NoError(t, pool.Reader().QueryRow(ctx,
+		`select count(*) from audit_log where action = $1 and actor = 'legit-user'`,
+		audit.ActionAuthzDenied).Scan(&legit))
+	require.Equal(t, 1, legit, "a different principal's denial is not silenced by the attacker's flood")
+}

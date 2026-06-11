@@ -71,6 +71,13 @@ type PgStore struct {
 	// be kept out of the application's reach in a hardened deployment — that is
 	// what makes the chain forgery-resistant against the app role itself.
 	chainKey []byte
+	// denialLimiter coalesces a storm of denial audits (ActionAuthzDenied) per
+	// (actor,action) so an authenticated attacker hammering a forbidden
+	// endpoint cannot serialize unbounded RecordOutOfBand writes on the global
+	// chain lock (security review #5). onDenialDropped, when set, is invoked
+	// each time a denial audit is coalesced away (wire a metric counter).
+	denialLimiter   *denialLimiter
+	onDenialDropped func()
 }
 
 // Option configures a PgStore at construction.
@@ -104,12 +111,20 @@ func WithChainKey(key config.Secret) Option {
 	}
 }
 
+// WithOnDenialDropped registers a callback invoked whenever a denial audit
+// (ActionAuthzDenied) is COALESCED by the per-(actor,action) bound in
+// RecordOutOfBand (security review #5). Wire it to a metric counter so the
+// dropped-denial rate is observable. Keep it non-blocking.
+func WithOnDenialDropped(fn func()) Option {
+	return func(s *PgStore) { s.onDenialDropped = fn }
+}
+
 // NewPgStore returns a PgStore backed by pool. Pass WithChainKey to key the
 // hash chain with an HMAC secret (forgery-resistance against the app role);
 // without it the chain falls back to keyless sha256 (edit/delete detection
 // only — see WithChainKey).
 func NewPgStore(pool *pg.Pool, opts ...Option) *PgStore {
-	s := &PgStore{pool: pool}
+	s := &PgStore{pool: pool, denialLimiter: newDenialLimiter()}
 	for _, o := range opts {
 		o(s)
 	}
@@ -201,6 +216,22 @@ func (s *PgStore) RecordOutOfBand(ctx context.Context, e Entry) error {
 	if s.pool == nil {
 		// No audit backend wired (demo/unit context). Best-effort: drop.
 		return nil
+	}
+	// Denial-storm bound (security review #5): denial audits are attacker-
+	// triggerable (any authenticated principal can spam a forbidden endpoint),
+	// and each one takes the global chain FOR UPDATE lock. Coalesce them per
+	// (actor,action) so a flood becomes a trickle. The first burst is still
+	// recorded — legitimate denials remain auditable — and a coalesced write
+	// fires onDenialDropped (metric) instead of contending on the lock. Other
+	// out-of-band actions (admin reads, attachment access) are NOT bounded:
+	// they are not attacker-amplifiable in the same way.
+	if e.Action == ActionAuthzDenied && s.denialLimiter != nil {
+		if !s.denialLimiter.allow(e.Actor + "\x00" + e.Action) {
+			if s.onDenialDropped != nil {
+				s.onDenialDropped()
+			}
+			return nil
+		}
 	}
 	auditCtx := context.WithoutCancel(ctx)
 	return pg.RunInTx(auditCtx, s.pool, func(ctx context.Context) error {
