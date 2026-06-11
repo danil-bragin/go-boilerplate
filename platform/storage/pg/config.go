@@ -87,7 +87,17 @@ type Config struct {
 	// MigrateURL, when set, is the DSN Migrate dials instead of DSN. REQUIRED
 	// when DSN points at PgBouncer in transaction pooling mode: migrations
 	// need a direct-Postgres session for the advisory lock (see Migrate docs).
-	MigrateURL        config.Secret `env:"PG_MIGRATE_URL" envDefault:""`
+	MigrateURL config.Secret `env:"PG_MIGRATE_URL" envDefault:""`
+
+	// AuditAdminURL, when set, is the PRIVILEGED DSN the audit retention
+	// cleaner dials for its DELETE. The append-only migration revokes
+	// UPDATE/DELETE on audit_log from the app role (see
+	// platform/security/audit migration 00003 + deploy/postgres/init.sql), so
+	// pruning must run as a separate role (audit_admin) that retains DELETE.
+	// Unset (the default) means retention is disabled and rows accumulate
+	// until an admin path is wired — the append-only guarantee always holds.
+	AuditAdminURL config.Secret `env:"PG_AUDIT_ADMIN_URL" envDefault:""`
+
 	MaxConns          int32         `env:"PG_MAX_CONNS" envDefault:"25"`
 	MinConns          int32         `env:"PG_MIN_CONNS" envDefault:"5"`
 	MaxConnLifetime   time.Duration `env:"PG_MAX_CONN_LIFETIME" envDefault:"30m"`

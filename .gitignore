@@ -26,3 +26,6 @@ coverage.html
 /payments
 /notifications
 .claude/worktrees/
+
+# Stray service binaries from `go build ./cmd/...` at repo root
+/redrive

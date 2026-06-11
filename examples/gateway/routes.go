@@ -13,6 +13,7 @@ import (
 	"go-boilerplate/platform/featureflags"
 	"go-boilerplate/platform/i18n"
 	"go-boilerplate/platform/observability/log"
+	"go-boilerplate/platform/security/audit"
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/storage/blob"
 	"go-boilerplate/platform/storage/pg"
@@ -224,7 +225,13 @@ func mountAttachmentRoutes(
 	// attachments. Backed by the gateway read model (orders_read.customer_id).
 	opts := []attachments.Option{}
 	if pool != nil {
-		opts = append(opts, attachments.WithOwnerLookup(attachments.StoreOwnerLookup(pool)))
+		opts = append(
+			opts,
+			attachments.WithOwnerLookup(attachments.StoreOwnerLookup(pool)),
+			// Audit attachment access (upload/download success) and denials
+			// out-of-band on the same pool the gateway audits commands through.
+			attachments.WithAuditor(audit.NewPgStore(pool)),
+		)
 	}
 	attachments.New(objStore, flags.Bool, opts...).Mount(attachRouter)
 }

@@ -300,6 +300,45 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /v1/audit/verify:
+    get:
+      summary: Verify the audit hash-chain (admin only)
+      description: >
+        Walks the audit hash-chain in insertion order, recomputing each entry
+        hash and checking the prev_hash links, and reports whether the chain is
+        intact. An in-place edit, deletion, or reordering of any historical row
+        breaks the chain and is surfaced here (with the id of the first broken
+        row).
+
+        ADMIN ONLY: same authorization as GET /v1/audit (403 AUTH_FORBIDDEN for
+        non-admins). The verification read is itself audited.
+      operationId: verifyAudit
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: >
+            Inclusive lower bound (RFC 3339) on the rows walked. Omit to verify
+            the whole chain.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Chain verification result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditChainStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /healthz:
     get:
       summary: Health check
@@ -560,6 +599,29 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AuditEntry"
+
+    AuditChainStatus:
+      type: object
+      description: Result of an audit hash-chain verification walk.
+      required:
+        - ok
+        - verified
+      properties:
+        ok:
+          type: boolean
+          description: True when the chain verified with no break.
+        verified:
+          type: integer
+          description: Number of rows walked.
+        break_id:
+          type: integer
+          format: int64
+          description: Id of the first broken row (absent when ok).
+        reason:
+          type: string
+          description: >
+            Why the chain broke ("entry_hash mismatch" or "prev_hash link
+            broken"); absent when ok.
 
     OrderList:
       type: object

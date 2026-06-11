@@ -125,3 +125,43 @@ func TestChainAndPrincipalHeaders_SurviveRoundtrip(t *testing.T) {
 	assert.Equal(t, principal, got.principal,
 		"principal subject + roles must round-trip losslessly (incl. comma-in-role)")
 }
+
+// TestStampChainHeaders_PropagatesPrincipalAcrossHops proves B4: a mid-chain
+// handler that emits via outbox.StampChainHeaders WITHOUT manually calling
+// auth.InjectHeaders still propagates the originating principal — the outbox
+// stamps it from ctx. This is the multi-hop attribution: an event produced N
+// hops from the edge still carries the real actor, so a downstream consumer's
+// audit (which reads auth.From(ctx)) records the originating actor, not
+// "anonymous".
+func TestStampChainHeaders_PropagatesPrincipalAcrossHops(t *testing.T) {
+	t.Parallel()
+
+	// A service consuming a command for user-9 then emitting a follow-on event.
+	// It does NOT call auth.InjectHeaders — only outbox.StampChainHeaders.
+	prodCtx := auth.Into(context.Background(), auth.Principal{Subject: "user-9", Roles: []string{"user"}})
+
+	msg := contract.OrderCreated(t, "2f0c30f4-9f7a-4a4a-8b3e-2d1a5c6e7f81", "cust-2", 700, "USD")
+	msg = outbox.StampChainHeaders(prodCtx, msg) // the ONLY producer-side metadata call
+
+	rec := contract.WireRecord(t, msg)
+	assert.Equal(t, "user-9", rec.Headers[auth.HeaderPrincipalSub],
+		"outbox stamping alone must carry the principal — no manual InjectHeaders")
+
+	// Downstream consumer: the audit actor (auth.From) must be the original user.
+	var auditActor string
+	var haveActor bool
+	handler := consume.New(nil, "multihop-audit", consume.WithoutInbox()).Handler(
+		consume.TypedFor(1, func(ctx context.Context, _ *ordersv1.OrderCreated) error {
+			p, ok := auth.From(ctx)
+			auditActor, haveActor = p.Subject, ok
+			return nil
+		}),
+	)
+	broker := fakes.NewBroker()
+	broker.Subscribe(msg.Topic, handler)
+	require.NoError(t, broker.Produce(context.Background(), rec))
+
+	require.True(t, haveActor, "downstream consumer must see the propagated principal")
+	assert.Equal(t, "user-9", auditActor,
+		"downstream audit actor must be the originating user, propagated by outbox stamping")
+}

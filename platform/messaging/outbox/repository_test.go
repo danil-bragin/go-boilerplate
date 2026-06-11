@@ -9,6 +9,7 @@ import (
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/msgctx"
 	"go-boilerplate/platform/messaging/outbox"
+	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/storage/pg/pgtest"
 
@@ -134,5 +135,49 @@ func TestEnqueue_StampsCorrelationCausationFromContext(t *testing.T) {
 		require.Equal(t, "explicit-corr", h["correlation-id"])
 		require.Equal(t, "explicit-parent", h["causation-id"])
 		require.Equal(t, "v", h["custom"], "pre-existing custom headers must survive stamping")
+	})
+
+	t.Run("stamps principal from ctx (multi-hop attribution)", func(t *testing.T) {
+		id := uuid.New()
+		principalCtx := auth.Into(ctx, auth.Principal{Subject: "user-42", Roles: []string{"user", "admin"}})
+		require.NoError(t, pg.RunInTx(principalCtx, pool, func(ctx context.Context) error {
+			return repo.Enqueue(ctx, outbox.Message{
+				ID: id, Topic: "orders.events", AggregateType: "order",
+				AggregateID: "4", EventType: "X", Payload: []byte(`{}`),
+			})
+		}))
+		h := readHeaders(id)
+		require.Equal(t, "user-42", h[auth.HeaderPrincipalSub],
+			"principal-sub must be stamped from ctx so downstream audit attributes the real actor")
+		require.Equal(t, `["user","admin"]`, h[auth.HeaderPrincipalRoles],
+			"principal-roles must be JSON-encoded from ctx")
+	})
+
+	t.Run("no principal in ctx: no principal headers", func(t *testing.T) {
+		id := uuid.New()
+		require.NoError(t, pg.RunInTx(ctx, pool, func(ctx context.Context) error {
+			return repo.Enqueue(ctx, outbox.Message{
+				ID: id, Topic: "orders.events", AggregateType: "order",
+				AggregateID: "5", EventType: "X", Payload: []byte(`{}`),
+			})
+		}))
+		h := readHeaders(id)
+		_, hasSub := h[auth.HeaderPrincipalSub]
+		require.False(t, hasSub, "no principal in ctx → no principal-sub header")
+	})
+
+	t.Run("explicit principal header wins over ctx", func(t *testing.T) {
+		id := uuid.New()
+		principalCtx := auth.Into(ctx, auth.Principal{Subject: "ctx-user", Roles: []string{"user"}})
+		require.NoError(t, pg.RunInTx(principalCtx, pool, func(ctx context.Context) error {
+			return repo.Enqueue(ctx, outbox.Message{
+				ID: id, Topic: "orders.events", AggregateType: "order",
+				AggregateID: "6", EventType: "X", Payload: []byte(`{}`),
+				Headers: []byte(`{"principal-sub":"explicit-user"}`),
+			})
+		}))
+		h := readHeaders(id)
+		require.Equal(t, "explicit-user", h[auth.HeaderPrincipalSub],
+			"an explicit principal-sub must not be overwritten by the ctx principal")
 	})
 }

@@ -8,6 +8,15 @@
 // with neither aborts the run — by design, nothing is guessed and nothing is
 // committed past an unreadable record.
 //
+// # Destination allowlist
+//
+// The destination topic comes from that header, which is UNTRUSTED: anyone who
+// can write to the DLT could forge x-original-topic to redirect a payload onto
+// an arbitrary topic. --allow-topics (Config.AllowTopics) is therefore
+// REQUIRED — a record whose destination is not in the allowlist is refused and
+// the run aborts (nothing past the previous record is committed). An empty
+// allowlist refuses every record (refuse-unknown by default).
+//
 // Retry/diagnostic headers (x-error, x-attempts, x-original-topic,
 // retry-attempt, retry-orig-topic, retry-due-at, retry-last-error) are
 // stripped before republishing so the record re-enters the pipeline as a
@@ -55,6 +64,19 @@ type Config struct {
 	FreshIDs bool      // mint new message-id headers (bypass inbox dedup)
 	Group    string    // consumer group for progress; default "redrive"
 	Out      io.Writer // listing/summary output; default io.Discard when nil
+
+	// AllowTopics is the allowlist of destination topics a record may be
+	// republished to. The destination comes from the record's own
+	// x-original-topic / retry-orig-topic header — UNTRUSTED data that an
+	// attacker who can write to the DLT could forge to redirect a payload onto
+	// an arbitrary topic. A record whose destination is not in this set is
+	// REFUSED (the run aborts; nothing past the previous record is committed).
+	//
+	// Empty (the default) means refuse-unknown: with no allowlist, EVERY
+	// record is refused — the operator must pass the topics they expect, so a
+	// forged destination can never be republished by omission. Always include
+	// the DLT's true origin topic(s).
+	AllowTopics []string
 }
 
 // Stats summarises a redrive run.
@@ -103,6 +125,16 @@ func Run(ctx context.Context, cfg Config) (Stats, error) {
 		out = io.Discard
 	}
 
+	// Destination allowlist. The destination of each record is read from its
+	// (untrusted) x-original-topic header, so it MUST be constrained — see
+	// Config.AllowTopics. An empty allowlist refuses everything.
+	allow := make(map[string]bool, len(cfg.AllowTopics))
+	for _, tpc := range cfg.AllowTopics {
+		if tpc != "" {
+			allow[tpc] = true
+		}
+	}
+
 	cl, err := kafka.NewClient(
 		kafka.Config{Brokers: cfg.Brokers, ClientID: "redrive"},
 		kgo.ConsumeTopics(cfg.DLT),
@@ -147,7 +179,7 @@ func Run(ctx context.Context, cfg Config) (Stats, error) {
 				break
 			}
 			stats.Read++
-			if err := redriveRecord(ctx, cl, cfg, out, rec, &stats); err != nil {
+			if err := redriveRecord(ctx, cl, cfg, allow, out, rec, &stats); err != nil {
 				return stats, err
 			}
 			if !cfg.DryRun {
@@ -168,7 +200,7 @@ func Run(ctx context.Context, cfg Config) (Stats, error) {
 // redriveRecord republishes one DLT record to its original topic and commits
 // its offset; in dry-run mode it only prints what would happen. Records
 // lacking a message-id header are warned about and counted on stats.
-func redriveRecord(ctx context.Context, cl *kgo.Client, cfg Config, out io.Writer, rec *kgo.Record, stats *Stats) error {
+func redriveRecord(ctx context.Context, cl *kgo.Client, cfg Config, allow map[string]bool, out io.Writer, rec *kgo.Record, stats *Stats) error {
 	headers := make(map[string]string, len(rec.Headers))
 	for _, h := range rec.Headers {
 		headers[h.Key] = string(h.Value)
@@ -182,6 +214,17 @@ func redriveRecord(ctx context.Context, cl *kgo.Client, cfg Config, out io.Write
 		return fmt.Errorf(
 			"redrive: record %s[%d]@%d has neither x-original-topic nor retry-orig-topic header — cannot determine destination (aborting; nothing committed past the previous record)",
 			rec.Topic, rec.Partition, rec.Offset,
+		)
+	}
+
+	// Allowlist gate: the destination came from an UNTRUSTED header. Refuse to
+	// republish to a topic that is not explicitly allowed — a forged
+	// x-original-topic must never redirect a payload onto an arbitrary topic.
+	// The run aborts so nothing past the previous record is committed.
+	if !allow[origTopic] {
+		return fmt.Errorf(
+			"redrive: record %s[%d]@%d targets %q which is not in the --allow-topics allowlist — refusing to republish (a forged x-original-topic must not redirect onto an arbitrary topic; pass --allow-topics with the expected destination)",
+			rec.Topic, rec.Partition, rec.Offset, origTopic,
 		)
 	}
 

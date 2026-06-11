@@ -27,15 +27,20 @@ package audit
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	"go-boilerplate/platform/security/audit/gen"
 	"go-boilerplate/platform/storage/pg"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Entry is a single audit-log record.
@@ -55,8 +60,9 @@ type Store interface {
 // PgStore writes audit entries to the audit_log table via pg.FromContext so
 // that the INSERT participates in the ambient command transaction (if any).
 type PgStore struct {
-	pool    *pg.Pool
-	onError func(error)
+	pool      *pg.Pool
+	onError   func(error)
+	adminPool *pgxpool.Pool // privileged DELETE pool for retention (SetAdminPool)
 }
 
 // NewPgStore returns a PgStore backed by pool.
@@ -70,23 +76,235 @@ func (s *PgStore) SetOnError(fn func(error)) {
 	s.onError = fn
 }
 
-// Record inserts an audit entry. It uses pg.FromContext so the write joins
-// any transaction that is active on ctx (set by pg.RunInTx / cqrs.Transaction).
+// Record inserts an audit entry into the GLOBAL hash chain. It uses
+// pg.FromContext so the write joins any transaction active on ctx (set by
+// pg.RunInTx / cqrs.Transaction).
+//
+// Chaining: the single audit_chain_head row is locked FOR UPDATE, its
+// last_hash becomes the new row's prev_hash, entry_hash =
+// sha256(prev_hash || canonical(entry)) is computed, the row is inserted, and
+// the head is advanced to entry_hash — all under the lock and inside the
+// command transaction. Holding the lock until the command commits serializes
+// the chain across concurrent writers: the order is total and gap-free, so
+// VerifyChain can recompute it deterministically. The cost is that audit
+// writes are serialized globally — see BenchmarkRecord for the contention
+// ceiling this imposes (the documented trade-off of a single global chain;
+// per-actor chains are the escape hatch when this becomes the bottleneck).
 func (s *PgStore) Record(ctx context.Context, e Entry) error {
 	metaJSON, err := marshalMetadata(e.Metadata)
 	if err != nil {
 		return fmt.Errorf("audit: marshal metadata: %w", err)
 	}
-	_, err = pg.FromContext(ctx, s.pool).Exec(
+	db := pg.FromContext(ctx, s.pool)
+
+	// Lock + read the chain head. FOR UPDATE serializes concurrent Records:
+	// the next writer blocks here until this command's tx commits/rolls back.
+	var prevHash []byte
+	if err := db.QueryRow(
 		ctx,
-		`insert into audit_log (actor, action, subject, metadata) values ($1, $2, $3, $4)`,
-		e.Actor, e.Action, e.Subject, metaJSON,
-	)
-	if err != nil {
+		`select last_hash from audit_chain_head where id = 1 for update`,
+	).Scan(&prevHash); err != nil {
+		return fmt.Errorf("audit: lock chain head: %w", err)
+	}
+
+	at := e.At
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	entryHash := computeEntryHash(prevHash, e.Actor, e.Action, e.Subject, at, e.Metadata)
+
+	if _, err := db.Exec(
+		ctx,
+		`insert into audit_log (actor, action, subject, metadata, created_at, prev_hash, entry_hash)
+		 values ($1, $2, $3, $4, $5, $6, $7)`,
+		e.Actor, e.Action, e.Subject, metaJSON, at, prevHash, entryHash,
+	); err != nil {
 		return fmt.Errorf("audit: record: %w", err)
+	}
+
+	if _, err := db.Exec(
+		ctx,
+		`update audit_chain_head set last_hash = $1, updated_at = now() where id = 1`,
+		entryHash,
+	); err != nil {
+		return fmt.Errorf("audit: advance chain head: %w", err)
 	}
 	return nil
 }
+
+// RecordOutOfBand records an audit entry in its OWN fresh transaction, separate
+// from any ambient command tx. Use it for events that have no command tx to
+// join: access denials (authz/ownership 403), admin DSAR reads, attachment
+// access. The dedicated tx is essential — the hash chain's FOR UPDATE lock +
+// insert + head-advance must run on ONE connection, which a bare pool call
+// (no ambient tx) would NOT guarantee.
+//
+// It is BEST-EFFORT from the caller's perspective: the returned error should be
+// logged and swallowed (a denial must still return 403 even if its audit row
+// could not be written). It deliberately uses context.WithoutCancel so the
+// audit write survives a request whose own context is being cancelled by the
+// denial/response path.
+func (s *PgStore) RecordOutOfBand(ctx context.Context, e Entry) error {
+	auditCtx := context.WithoutCancel(ctx)
+	return pg.RunInTx(auditCtx, s.pool, func(ctx context.Context) error {
+		return s.Record(ctx, e)
+	})
+}
+
+// computeEntryHash returns sha256(prevHash || canonical(entry)). The canonical
+// serialization is deterministic and unambiguous: every field is
+// length-prefixed (8-byte big-endian length + bytes) so no concatenation of
+// adjacent fields can be confused with a different split, and metadata keys are
+// emitted in sorted order. The occurred-at timestamp is encoded as UTC
+// UnixNano so a row's hash does not depend on the connection time zone.
+func computeEntryHash(prevHash []byte, actor, action, subject string, at time.Time, metadata map[string]string) []byte {
+	h := sha256.New()
+	h.Write(prevHash)
+	writeField(h, []byte(actor))
+	writeField(h, []byte(action))
+	writeField(h, []byte(subject))
+	var ts [8]byte
+	binary.BigEndian.PutUint64(ts[:], uint64(at.UTC().UnixNano())) //nolint:gosec // wall-clock ns fits int64 for any realistic timestamp; the cast is a fixed-width encoding
+	h.Write(ts[:])
+	keys := make([]string, 0, len(metadata))
+	for k := range metadata {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var cnt [8]byte
+	binary.BigEndian.PutUint64(cnt[:], uint64(len(keys)))
+	h.Write(cnt[:])
+	for _, k := range keys {
+		writeField(h, []byte(k))
+		writeField(h, []byte(metadata[k]))
+	}
+	return h.Sum(nil)
+}
+
+// writeField writes an 8-byte big-endian length prefix followed by b, so the
+// concatenation of fields is unambiguous (no field boundary can be forged by
+// shifting bytes between adjacent fields).
+func writeField(h interface{ Write([]byte) (int, error) }, b []byte) {
+	var n [8]byte
+	binary.BigEndian.PutUint64(n[:], uint64(len(b)))
+	_, _ = h.Write(n[:])
+	_, _ = h.Write(b)
+}
+
+// ChainResult is the outcome of a VerifyChain walk.
+type ChainResult struct {
+	// OK is true when every row's stored entry_hash matches the recomputed
+	// hash AND each row's prev_hash links to the previous row's entry_hash.
+	OK bool
+	// Verified is the number of rows walked.
+	Verified int
+	// BreakID is the id of the first row whose hash failed to verify, or 0
+	// when OK. ExpectedHash/GotHash are that row's recomputed vs stored
+	// entry_hash (hex-encoded) for forensic reporting.
+	BreakID      int64
+	ExpectedHash string
+	GotHash      string
+	// Reason describes the break ("entry_hash mismatch" or "prev_hash link
+	// broken"); empty when OK.
+	Reason string
+}
+
+// VerifyChain walks the audit chain in insertion order (id ascending), starting
+// at the first row with created_at >= since (pass the zero time to walk the
+// whole table), recomputing each entry_hash and checking the prev_hash links.
+// It returns the first break it finds, or OK=true when the walk is clean.
+//
+// Tamper detection: an attacker who edits a historical row in place (e.g. a
+// superuser UPDATE that bypasses the append-only REVOKE) changes that row's
+// recomputed entry_hash, so VerifyChain flags it at its id. Because each
+// row's prev_hash also pins the previous row's entry_hash, deleting or
+// reordering rows is detected too.
+//
+// NOTE: when since is non-zero the walk starts mid-chain, so prev_hash linkage
+// is checked from the first walked row's stored prev_hash forward — a tamper
+// strictly before `since` that does not touch any walked row is out of scope
+// for that partial walk (use the zero time for a full audit).
+func (s *PgStore) VerifyChain(ctx context.Context, since time.Time) (ChainResult, error) {
+	rows, err := pg.FromContextRead(ctx, s.pool).Query(
+		ctx,
+		`select id, actor, action, subject, metadata, created_at, prev_hash, entry_hash
+		 from audit_log
+		 where created_at >= $1
+		 order by id asc`,
+		since.UTC(),
+	)
+	if err != nil {
+		return ChainResult{}, fmt.Errorf("audit: verify chain: %w", err)
+	}
+	defer rows.Close()
+
+	var (
+		res      ChainResult
+		expPrev  []byte
+		havePrev bool
+	)
+	for rows.Next() {
+		var (
+			id        int64
+			actor     string
+			action    string
+			subject   string
+			metaRaw   []byte
+			createdAt pgtype.Timestamptz
+			prevHash  []byte
+			entryHash []byte
+		)
+		if err := rows.Scan(&id, &actor, &action, &subject, &metaRaw, &createdAt, &prevHash, &entryHash); err != nil {
+			return ChainResult{}, fmt.Errorf("audit: verify chain scan: %w", err)
+		}
+
+		// Link check: this row's prev_hash must equal the previous walked
+		// row's entry_hash (skipped for the first walked row).
+		if havePrev && !bytesEqual(prevHash, expPrev) {
+			res.BreakID = id
+			res.Reason = "prev_hash link broken"
+			res.ExpectedHash = hexOf(expPrev)
+			res.GotHash = hexOf(prevHash)
+			return res, nil
+		}
+
+		var meta map[string]string
+		if len(metaRaw) > 0 {
+			_ = json.Unmarshal(metaRaw, &meta)
+		}
+		want := computeEntryHash(prevHash, actor, action, subject, createdAt.Time, meta)
+		if !bytesEqual(want, entryHash) {
+			res.BreakID = id
+			res.Reason = "entry_hash mismatch"
+			res.ExpectedHash = hexOf(want)
+			res.GotHash = hexOf(entryHash)
+			return res, nil
+		}
+
+		res.Verified++
+		expPrev = entryHash
+		havePrev = true
+	}
+	if err := rows.Err(); err != nil {
+		return ChainResult{}, fmt.Errorf("audit: verify chain rows: %w", err)
+	}
+	res.OK = true
+	return res, nil
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func hexOf(b []byte) string { return hex.EncodeToString(b) }
 
 // Query returns actor's audit entries whose created_at >= since (INCLUSIVE;
 // pass the zero time for "everything"), newest first, capped at limit rows.
