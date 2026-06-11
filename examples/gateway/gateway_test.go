@@ -390,10 +390,17 @@ func TestGateway_AuthEnabledNoVerifierFailsClosed(t *testing.T) {
 	t.Setenv("ADMIN_HTTP_ADDR", "127.0.0.1:0")
 	t.Setenv("LOG_LEVEL", "error")
 
-	ctx := context.Background()
+	// A sub-second deadline keeps this fast-lane test fast: NewJWKSVerifier
+	// bounds its initial fetch by min(caller deadline, jwksInitTimeout), so
+	// the unreachable-IdP retry loop gives up in ~500ms instead of the full
+	// 10s production bound (which stays untouched).
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
 	// Do NOT pass WithVerifier — rely on the JWKS builder path.
+	start := time.Now()
 	_, err := gateway.NewApp(ctx)
 	require.Error(t, err, "NewApp must return an error when JWKS is unreachable (fail closed)")
+	require.Less(t, time.Since(start), time.Second, "fail-closed must surface fast under a short caller deadline")
 }
 
 // TestGateway_ProjectionPaidBeforeCreatedStillPaid verifies that the projection
