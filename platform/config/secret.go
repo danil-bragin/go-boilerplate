@@ -35,5 +35,18 @@ func (s *Secret) UnmarshalText(text []byte) error {
 	return nil
 }
 
+// MarshalText implements encoding.TextMarshaler so that serializing a config
+// struct — to YAML (yaml.v3), or to JSON when MarshalJSON is somehow bypassed
+// — emits [REDACTED] instead of the credential. This closes the gap the
+// fmt/slog redaction left open: encoders never call String()/LogValue(), they
+// call the marshaler. Returns the same redacted constant String() uses.
+func (Secret) MarshalText() ([]byte, error) { return []byte(redacted), nil }
+
+// MarshalJSON implements json.Marshaler. encoding/json prefers MarshalJSON
+// over MarshalText, so this is the belt-and-suspenders guarantee that
+// json.Marshal of a struct containing a Secret never leaks the value — even
+// if a future refactor drops MarshalText.
+func (Secret) MarshalJSON() ([]byte, error) { return []byte(`"` + redacted + `"`), nil }
+
 // Reveal returns the raw secret value.
 func (s Secret) Reveal() string { return string(s) }
