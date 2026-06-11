@@ -28,12 +28,13 @@ func defaultBrokers() string {
 // out of the deferring function so cleanup (signal stop) always runs.
 func realMain() int {
 	var (
-		brokers  = flag.String("brokers", defaultBrokers(), "comma-separated Kafka bootstrap brokers (default: KAFKA_BROKERS env, then localhost:9092)")
-		dlt      = flag.String("dlt", "", "dead-letter topic to drain (required), e.g. orders.commands.DLT")
-		limit    = flag.Int("limit", 0, "max records to process (0 = all pending)")
-		dryRun   = flag.Bool("dry-run", false, "list pending records without republishing or committing")
-		freshIDs = flag.Bool("fresh-ids", false, "mint new message-id headers (bypass inbox dedup — projection rebuild mode)")
-		group    = flag.String("group", "redrive", "consumer group used to track redrive progress")
+		brokers     = flag.String("brokers", defaultBrokers(), "comma-separated Kafka bootstrap brokers (default: KAFKA_BROKERS env, then localhost:9092)")
+		dlt         = flag.String("dlt", "", "dead-letter topic to drain (required), e.g. orders.commands.DLT")
+		limit       = flag.Int("limit", 0, "max records to process (0 = all pending)")
+		dryRun      = flag.Bool("dry-run", false, "list pending records without republishing or committing")
+		freshIDs    = flag.Bool("fresh-ids", false, "mint new message-id headers (bypass inbox dedup — projection rebuild mode)")
+		group       = flag.String("group", "redrive", "consumer group used to track redrive progress")
+		allowTopics = flag.String("allow-topics", "", "comma-separated allowlist of destination topics a record may be republished to (required; the destination comes from the record's untrusted x-original-topic header, so an unlisted destination is refused). Pass the DLT's true origin topic(s).")
 	)
 	flag.Parse()
 
@@ -42,18 +43,24 @@ func realMain() int {
 		flag.Usage()
 		return 2
 	}
+	if *allowTopics == "" {
+		fmt.Fprintln(os.Stderr, "redrive: --allow-topics is required (refuse-unknown: an empty allowlist rejects every record so a forged x-original-topic cannot redirect a payload)")
+		flag.Usage()
+		return 2
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	stats, err := Run(ctx, Config{
-		Brokers:  strings.Split(*brokers, ","),
-		DLT:      *dlt,
-		Limit:    *limit,
-		DryRun:   *dryRun,
-		FreshIDs: *freshIDs,
-		Group:    *group,
-		Out:      os.Stdout,
+		Brokers:     strings.Split(*brokers, ","),
+		DLT:         *dlt,
+		Limit:       *limit,
+		DryRun:      *dryRun,
+		FreshIDs:    *freshIDs,
+		Group:       *group,
+		Out:         os.Stdout,
+		AllowTopics: strings.Split(*allowTopics, ","),
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "redrive: %v (read %d, republished %d)\n", err, stats.Read, stats.Republished)

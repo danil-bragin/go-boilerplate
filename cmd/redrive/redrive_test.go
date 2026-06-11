@@ -115,10 +115,11 @@ func TestRedrive_RepublishesToOriginalTopic(t *testing.T) {
 	})
 
 	stats, err := Run(context.Background(), Config{
-		Brokers: []string{broker},
-		DLT:     dlt,
-		Group:   "redrive-test-" + uuid.New().String(),
-		Out:     io.Discard,
+		Brokers:     []string{broker},
+		DLT:         dlt,
+		Group:       "redrive-test-" + uuid.New().String(),
+		Out:         io.Discard,
+		AllowTopics: []string{orig},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 2, stats.Republished)
@@ -170,11 +171,12 @@ func TestRedrive_FreshIDsAndDryRun(t *testing.T) {
 
 	// Dry run: nothing republished, nothing committed.
 	stats, err := Run(context.Background(), Config{
-		Brokers: []string{broker},
-		DLT:     dlt,
-		DryRun:  true,
-		Group:   "redrive-dry-" + uuid.New().String(),
-		Out:     io.Discard,
+		Brokers:     []string{broker},
+		DLT:         dlt,
+		DryRun:      true,
+		Group:       "redrive-dry-" + uuid.New().String(),
+		Out:         io.Discard,
+		AllowTopics: []string{orig},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 1, stats.Read)
@@ -182,11 +184,12 @@ func TestRedrive_FreshIDsAndDryRun(t *testing.T) {
 
 	// Fresh-ids replay: republished with a NEW message-id.
 	stats, err = Run(context.Background(), Config{
-		Brokers:  []string{broker},
-		DLT:      dlt,
-		FreshIDs: true,
-		Group:    "redrive-fresh-" + uuid.New().String(),
-		Out:      io.Discard,
+		Brokers:     []string{broker},
+		DLT:         dlt,
+		FreshIDs:    true,
+		Group:       "redrive-fresh-" + uuid.New().String(),
+		Out:         io.Discard,
+		AllowTopics: []string{orig},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 1, stats.Republished)
@@ -246,10 +249,11 @@ func TestRedrive_WarnsOnMissingMessageID(t *testing.T) {
 
 	var out strings.Builder
 	stats, err := Run(context.Background(), Config{
-		Brokers: []string{broker},
-		DLT:     dlt,
-		Group:   "redrive-noid-" + uuid.New().String(),
-		Out:     &out,
+		Brokers:     []string{broker},
+		DLT:         dlt,
+		Group:       "redrive-noid-" + uuid.New().String(),
+		Out:         &out,
+		AllowTopics: []string{orig},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, 2, stats.Republished)
@@ -260,4 +264,93 @@ func TestRedrive_WarnsOnMissingMessageID(t *testing.T) {
 		"each record without a message-id must be flagged (inbox dedup will NOT collapse the replay)")
 	assert.Contains(t, out.String(), "1 record(s) without message-id",
 		"the summary must total the non-dedupable records")
+}
+
+// TestRedrive_ForgedOriginalTopicRefused: a DLT record whose x-original-topic
+// points at a topic NOT in the allowlist is refused — the run aborts and the
+// forged destination is never produced to. This is the B5 control: an attacker
+// who can write to the DLT cannot redirect a payload onto an arbitrary topic.
+func TestRedrive_ForgedOriginalTopicRefused(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	const legit = "orders.commands"
+	const forged = "attacker.controlled.topic"
+	const dlt = "orders.commands.DLT"
+	ensure(t, broker, legit, forged, dlt)
+
+	// A record forged to redirect onto a topic the operator never allowed.
+	seedDLT(t, broker, dlt, "k1", "payload", map[string]string{
+		"x-original-topic": forged,
+		"message-id":       uuid.New().String(),
+	})
+
+	_, err := Run(context.Background(), Config{
+		Brokers:     []string{broker},
+		DLT:         dlt,
+		Group:       "redrive-forged-" + uuid.New().String(),
+		Out:         io.Discard,
+		AllowTopics: []string{legit}, // forged topic is NOT allowed
+	})
+	require.Error(t, err, "a record targeting a non-allowlisted topic must be refused")
+	require.Contains(t, err.Error(), "allow-topics",
+		"the refusal must cite the allowlist")
+
+	// Nothing was produced to the forged destination.
+	cfg := kafka.Config{
+		Brokers:  []string{broker},
+		ClientID: "redrive-forged-check",
+		GroupID:  "redrive-forged-check-" + uuid.New().String(),
+	}
+	consumer, err := kafka.NewConsumer(cfg, []string{forged})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = consumer.Close(context.Background()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	got := make(chan struct{}, 1)
+	go func() {
+		_ = consumer.Run(ctx, func(_ context.Context, _ kafka.Record) error {
+			select {
+			case got <- struct{}{}:
+			default:
+			}
+			return nil
+		})
+	}()
+	select {
+	case <-got:
+		t.Fatal("a record was produced to the forged topic — allowlist did not block the republish")
+	case <-ctx.Done():
+		// No record arrived within the window: the forged republish was blocked.
+	}
+}
+
+// TestRedrive_EmptyAllowlistRefusesAll: with no allowlist, even a legitimate
+// destination is refused (refuse-unknown default).
+func TestRedrive_EmptyAllowlistRefusesAll(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	broker, _ := kafkatest.NewRedpanda(t)
+	const orig = "orders.commands"
+	const dlt = "orders.commands.DLT"
+	ensure(t, broker, orig, dlt)
+
+	seedDLT(t, broker, dlt, "k1", "v1", map[string]string{
+		"x-original-topic": orig,
+		"message-id":       uuid.New().String(),
+	})
+
+	_, err := Run(context.Background(), Config{
+		Brokers: []string{broker},
+		DLT:     dlt,
+		Group:   "redrive-emptyallow-" + uuid.New().String(),
+		Out:     io.Discard,
+		// AllowTopics empty → refuse everything.
+	})
+	require.Error(t, err, "an empty allowlist must refuse every record")
 }
