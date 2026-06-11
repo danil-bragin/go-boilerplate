@@ -1,0 +1,58 @@
+# =============================================================================
+# SECURE OVERLAY — transport security for the compose dev stack.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.secure.yml \
+#     --profile apps up -d
+#
+# This overlay turns ON the transport-security knobs that the base compose
+# stack leaves OFF (the base stack is plaintext-by-design for a frictionless
+# local dev loop — see the docker-compose.yml header and ADR-0014 Transport
+# security). It demonstrates the SASL/TLS env the services read in production.
+#
+# DEPENDENCY: the app-side env vars below (KAFKA_SASL_*, REDIS_PASSWORD/TLS,
+# AUTH_ALLOW_INSECURE_JWKS) are introduced by lane A (W2-A: kafka.Config SASL/
+# TLS, cache.Config Password/TLS, JWKS https-enforce) and ADR-0014. Until lane A
+# is merged these env vars are simply ignored by the services; once merged this
+# overlay activates SASL/SCRAM to Redpanda + Redis auth without editing the base
+# file. Redpanda must also be started with a SASL-enabled listener (see the
+# redpanda command override below) for the handshake to succeed.
+#
+# Production note: terminate TLS at the ingress/service-mesh OR set the *_TLS
+# knobs here against brokers/Redis that present real certs — the dev overlay
+# keeps TLSInsecureSkipVerify semantics OFF; only SASL is exercised locally.
+# =============================================================================
+
+services:
+  redpanda:
+    # Enable a SASL/SCRAM-SHA-256 superuser and require auth on the Kafka API.
+    # (rpk bootstraps the superuser declared via --set redpanda.superusers.)
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092,OUTSIDE://localhost:19092
+      - --pandaproxy-addr=0.0.0.0:8082
+      - --advertise-pandaproxy-addr=localhost:8082
+      - --schema-registry-addr=0.0.0.0:8081
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=redpanda:33145
+      - --set=redpanda.enable_sasl=true
+      - --set=redpanda.superusers=["app"]
+
+  # Each app service reads SASL/SCRAM from env (lane A: kafka.Config). Mirror the
+  # block under orders/payments/notifications too in a real secure run.
+  gateway:
+    environment:
+      KAFKA_SASL_MECHANISM: SCRAM-SHA-256
+      KAFKA_SASL_USER: app
+      KAFKA_SASL_PASSWORD: app-dev-secret
+      # Redis auth already on in the base file (--requirepass); password env set
+      # there. TLS to Redis/Kafka would add KAFKA_TLS_ENABLED / REDIS_TLS_ENABLED.
+      # JWKS over plain http keycloak stays allowed in dev via lane A's flag:
+      AUTH_ALLOW_INSECURE_JWKS: "true"
