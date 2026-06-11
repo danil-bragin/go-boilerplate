@@ -421,7 +421,12 @@ func (p *pack) streamEvents(ctx context.Context, orderID string, lastEventID int
 	if err != nil {
 		return lastEventID, "", err
 	}
-	defer func() { drain(resp.Body); _ = resp.Body.Close() }()
+	// NEVER drain an event-stream body: it is a live, open stream — a
+	// "polite" drain-before-close would block until the server closes it
+	// (i.e. until the request context expires). Closing without draining
+	// tears the connection down immediately; SSE connections are not
+	// reusable anyway.
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return lastEventID, "", fmt.Errorf("stream status %d", resp.StatusCode)
 	}

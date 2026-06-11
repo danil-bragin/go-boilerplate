@@ -248,17 +248,26 @@ func TestSSEScenario_ReadsToTerminal(t *testing.T) {
 		}
 		fmt.Fprintf(w, "id: 2\ndata: {\"status\":\"paid\"}\n\n")
 		fl.Flush()
+		// Hold the stream OPEN after the terminal event, like the real
+		// gateway (which keeps heartbeating): the client must return as
+		// soon as it has seen a terminal status / its first event, never
+		// wait for the server to close (regression guard for the
+		// drain-blocks-on-live-stream bug).
+		<-r.Context().Done()
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	sse := scenarioByName(t, Pack(srv.URL, srv.Client(), ""), "sse")
 	ledger := kit.NewLedger()
+	start := time.Now()
 	// Several seeds cover both the early-drop and the read-to-terminal
 	// (+ Last-Event-ID resume) paths.
 	for seed := uint64(1); seed <= 6; seed++ {
 		require.NoError(t, sse.Run(context.Background(), newRng(seed), ledger), "seed %d", seed)
 	}
+	require.Less(t, time.Since(start), 10*time.Second,
+		"sse scenario must finish at terminal/first event, not wait for server close")
 	assert.Empty(t, ledger.Verify(context.Background(), stubProbes("paid")))
 }
 
