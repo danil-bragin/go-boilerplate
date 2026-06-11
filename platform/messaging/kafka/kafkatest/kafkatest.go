@@ -107,3 +107,51 @@ func TerminateShared() {
 		sharedContainer = nil
 	}
 }
+
+// SASLCreds are the SCRAM-SHA-256 superuser credentials provisioned on a
+// SASL-enabled Redpanda started by NewRedpandaSASL.
+type SASLCreds struct {
+	User string
+	Pass string
+}
+
+// NewRedpandaSASL starts a Redpanda container with SASL/SCRAM-SHA-256
+// authentication enabled and a single superuser service account, returning the
+// seed-broker address and the provisioned credentials.
+//
+// The container is dedicated to the calling test (terminated via t.Cleanup) —
+// SASL changes the broker's auth surface, so it is intentionally NOT folded
+// into the package-shared plaintext container. Use it to prove the franz-go
+// SASL handshake end-to-end.
+func NewRedpandaSASL(t *testing.T) (broker string, creds SASLCreds) {
+	t.Helper()
+
+	ctx := context.Background()
+
+	creds = SASLCreds{User: "superuser", Pass: "superuser-secret"}
+
+	container, err := redpanda.Run(
+		ctx,
+		"redpandadata/redpanda:v24.2.7",
+		redpanda.WithEnableSASL(),
+		redpanda.WithEnableKafkaAuthorization(),
+		redpanda.WithNewServiceAccount(creds.User, creds.Pass),
+		redpanda.WithSuperusers(creds.User),
+	)
+	if err != nil {
+		t.Fatalf("kafkatest: start SASL redpanda: %v", err)
+	}
+
+	t.Cleanup(func() {
+		if err := container.Terminate(context.Background()); err != nil {
+			t.Logf("kafkatest: terminate SASL redpanda: %v", err)
+		}
+	})
+
+	broker, err = container.KafkaSeedBroker(ctx)
+	if err != nil {
+		t.Fatalf("kafkatest: get kafka seed broker (SASL): %v", err)
+	}
+
+	return broker, creds
+}
