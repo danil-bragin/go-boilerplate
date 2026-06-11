@@ -227,8 +227,8 @@ func (p *pack) invalid(ctx context.Context, rng *rand.Rand, ledger *kit.Ledger) 
 		// the request may never have reached validation at all.
 		return kit.CodedError("TRANSPORT", err)
 	}
-	switch {
-	case res.status == http.StatusBadRequest, res.status == http.StatusAccepted:
+	switch res.status {
+	case http.StatusBadRequest, http.StatusAccepted:
 		// Definitive outcomes only: 400 must carry VALIDATION_FAILED; an
 		// (incorrect) 202 must surface as a rejected-violation. Throttling
 		// (429) and server errors stay scenario failures — per the ops doc,
