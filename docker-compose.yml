@@ -344,11 +344,14 @@ services:
       ORDERS_COMMANDS_TOPIC: orders.commands
       ORDERS_EVENTS_TOPIC: orders.events
       PAYMENTS_EVENTS_TOPIC: payments.events
-      # Per-IP rate limiting. Adjust for your traffic profile.
-      # RATELIMIT_REDIS=true uses Redis-backed distributed limiter (requires REDIS_ADDRS).
+      # Rate limiting (per-IP tier + authed per-principal tier). Adjust for
+      # your traffic profile; RATELIMIT_AUTHED_RPS=0 disables the authed tier.
+      # RATELIMIT_REDIS=true uses Redis-backed distributed limiters (requires REDIS_ADDRS).
       # TRUSTED_PROXIES: comma-separated CIDRs for trusted reverse proxies (e.g. "10.0.0.0/8").
       RATELIMIT_RPS: "50"
       RATELIMIT_BURST: "100"
+      RATELIMIT_AUTHED_RPS: "200"
+      RATELIMIT_AUTHED_BURST: "400"
       RATELIMIT_REDIS: "false"
       # TRUSTED_PROXIES: ""
       # Go runtime memory limit: ~90% of the container memory limit above.
