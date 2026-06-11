@@ -7,6 +7,7 @@ import (
 
 	"go-boilerplate/platform/messaging/msgctx"
 	"go-boilerplate/platform/messaging/outbox/gen"
+	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/storage/pg"
 )
 
@@ -53,11 +54,23 @@ func (r *Repository) Enqueue(ctx context.Context, msg Message) error {
 	return nil
 }
 
-// StampChainHeaders returns msg with the correlation/causation ids from ctx
-// merged into its JSON Headers — exactly the stamping Enqueue persists.
+// StampChainHeaders returns msg with the correlation/causation ids AND the
+// authenticated principal (principal-sub / principal-roles) from ctx merged
+// into its JSON Headers — exactly the stamping Enqueue persists. Stamping the
+// principal lets downstream consumers (consume.Typed → auth.ExtractToContext)
+// attribute their audit trails to the ORIGINATING actor across an arbitrary
+// number of event hops, not just the first edge→service hop.
+//
+// Existing header values always win — stamping never overwrites — so an
+// explicit principal-sub/principal-roles in Message.Headers is preserved.
+//
 // Malformed Message.Headers are passed through untouched (the kafka publisher
 // already tolerates and drops them — a poison row must not fail the enqueue
 // path either).
+//
+// SECURITY NOTE: principal-sub/principal-roles are transport metadata, not
+// authentication — see auth.InjectHeaders. The trust boundary is the broker
+// ACL/mTLS perimeter (round-8 A1 adds real SASL/TLS controls).
 //
 // Exported as a seam for fast-lane contract tests (examples/e2e/contract)
 // that exercise the producer→consumer chain-lineage roundtrip without a
@@ -82,6 +95,13 @@ func StampChainHeaders(ctx context.Context, msg Message) Message {
 		if parent := msgctx.ParentMessageID(ctx); parent != "" {
 			h[msgctx.HeaderCausationID] = parent
 		}
+	}
+	// Principal propagation: InjectHeaders is a no-op when ctx carries no
+	// principal and (per its contract) sets principal-sub/principal-roles only
+	// when absent is not its concern — it always overwrites — so guard the
+	// keys ourselves to honour the "explicit headers win" rule.
+	if _, ok := h[auth.HeaderPrincipalSub]; !ok {
+		auth.InjectHeaders(ctx, h)
 	}
 	out, err := json.Marshal(h)
 	if err != nil {
