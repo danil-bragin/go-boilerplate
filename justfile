@@ -89,8 +89,9 @@ lint:
     golangci-lint run ./...
 
 # Lint migration SQL with squawk (config: .squawk.toml) — same gate as CI
+# Pinned to 2.57.0 to match the squawk binary CI downloads (.github/workflows/ci.yml).
 lint-sql:
-    npx -y squawk-cli@latest $(git ls-files '*/migrations/*.sql' '*/migrations/sql/*.sql')
+    npx -y squawk-cli@2.57.0 $(git ls-files '*/migrations/*.sql' '*/migrations/sql/*.sql')
 
 # Validate Prometheus rules + config and run the rule unit tests via the
 # dockerized promtool (same image the compose stack pins) — same gate as CI.
@@ -117,9 +118,9 @@ lint-fix:
 fmt:
     golangci-lint fmt ./...
 
-# Vulnerability scan (govulncheck)
+# Vulnerability scan (govulncheck) — version pinned to match CI (.github/workflows/ci.yml)
 vuln:
-    go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+    go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./...
 
 # Full audit: fmt + lint + vuln + unit tests
 audit:
