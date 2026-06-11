@@ -496,7 +496,22 @@ series never carry exemplars — query the raw series for exemplar overlays.
 
 ---
 
-## Load testing (k6)
+## Load testing
+
+Two complementary tools, different questions:
+
+| Tool | Question it answers | Traffic | Pass/fail signal |
+|---|---|---|---|
+| **k6** (`just load`) | "Does the stack hold the external SLO under volume?" | Happy-path only, VU-driven | SLO thresholds (p99 latency, check rate) |
+| **trafficgen** (`just traffic`) | "Does the system stay CORRECT under load?" | Seeded adversarial mix (idempotency races, invalid payloads, SSE drops) | Invariant violations (exit 1) |
+
+Use k6 for capacity/SLO work and performance regressions; use trafficgen
+when you change anything on the correctness path (idempotency, projection,
+outbox/inbox, SSE) and want a reproducible storm to prove invariants still
+hold. The e2e variant of the same mix runs in CI
+(`examples/e2e/traffic_test.go` — see docs/testing.md §Traffic emulation).
+
+### k6 (external SLO/perf)
 
 `scripts/k6/order-flow.js` exercises the full asynchronous order flow:
 `POST /v1/orders` with a unique `Idempotency-Key` per iteration (amount below
@@ -534,6 +549,39 @@ is the harness working, not a script bug. A failing
 `order reached created/paid within poll budget` check with passing POSTs means
 the projection lags: check consumer lag and outbox backlog (see the dashboards
 and `rpk group describe`).
+
+### trafficgen (correctness under load)
+
+`cmd/trafficgen` runs the gateway scenario pack (`examples/gateway/traffic`)
+against a live stack through the seeded generator
+(`platform/testkit/traffic`): weighted Poisson traffic across rate phases,
+including the adversarial scenarios k6 deliberately avoids — concurrent
+idempotency-key mismatch races, edge-validation rejects, SSE subscribers
+that drop mid-stream. Every accepted order is tracked in a ledger; after
+generation the CLI polls the read API and reports invariant violations
+(every order terminal, exactly one order id per idempotency key, documented
+rejection codes). Exit 1 on any violation.
+
+```bash
+just up-apps                                        # gateway + services + infra
+just traffic                                        # 20 rps for 30s against localhost:8080
+just traffic --rate 50 --duration 1m
+just traffic --phases "10rps:5s,40rps:20s,80rps:5s" # ramp → plateau → spike
+just traffic --mix happy=80,sse=0                   # reweight/drop scenarios
+just traffic --seed 1718041200000000000             # replay a previous run exactly
+TOKEN=$(just token) just traffic --token "$TOKEN"   # auth-enabled stack
+```
+
+The resolved seed is always printed: generation decisions (scenario
+sequence, payloads, arrival gaps) replay exactly under the same seed, so a
+violation found at 3am is reproducible at 9am (wall-clock interleaving is
+not reproducible — invariants must hold under any interleaving, which is
+the point). Note the per-IP rate limiter (`RATELIMIT_RPS`, default 50 rps)
+WILL throttle high-rate runs from one machine — raise it on the gateway or
+keep `--rate` below the limit; a throttled run shows up as `HTTP_429`
+scenario failures, not as invariant violations. Unlike the e2e traffic
+test, the CLI has no orders-DB access, so the row-count cross-check is
+HTTP-only (terminal-status polling).
 
 ---
 
