@@ -98,7 +98,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	domainSvc := payment.NewService(payment.NewPgRepository(svc.Pool()), outboxRepo, clock.System{}, cfg.OutTopic)
 
 	// Build the command handler (thin adapter over the domain service).
-	auditStore := audit.NewPgStore(svc.Pool())
+	auditStore := audit.NewPgStore(svc.Pool(), audit.WithChainKey(cfg.AuditChainKey))
 	rawHandler := app.ProcessPaymentHandler(domainSvc)
 	decoratedHandler := app.DecorateProcessPaymentHandler(rawHandler, auditStore)
 	var consumeOpts []consume.Option

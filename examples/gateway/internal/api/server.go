@@ -13,6 +13,7 @@ import (
 	"go-boilerplate/examples/gateway/internal/apperrs"
 	"go-boilerplate/examples/gateway/internal/attachments"
 	"go-boilerplate/platform/apperr"
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/kafka"
@@ -78,6 +79,15 @@ func (s *Server) SetPendingBatcher(b *PendingBatcher) { s.pendingBatcher = b }
 // payloads (SERDE_SR_URL). Must be called before the server starts handling
 // requests.
 func (s *Server) SetEncoder(enc Encoder) { s.encoder = enc }
+
+// SetAuditChainKey rebuilds the audit store with an HMAC chain key
+// (AUDIT_CHAIN_KEY) so the audit hash chain is forgery-resistant against the
+// app role, not merely edit/delete tamper-evident. An empty key is a no-op
+// (keyless sha256 fallback). Must be called before the server starts handling
+// requests.
+func (s *Server) SetAuditChainKey(key config.Secret) {
+	s.auditStore = audit.NewPgStore(s.pool, audit.WithChainKey(key))
+}
 
 // NewServer creates a new Server wired with the given dependencies.
 //

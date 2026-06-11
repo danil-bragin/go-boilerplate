@@ -3,6 +3,7 @@ package servicekit
 import (
 	"time"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/observability/log"
 	"go-boilerplate/platform/observability/telemetry"
@@ -99,6 +100,28 @@ type Config struct {
 	// generous. Review your compliance obligations before lowering it.
 	AuditRetention       time.Duration `env:"AUDIT_RETENTION"         envDefault:"2160h"`
 	AuditCleanupInterval time.Duration `env:"AUDIT_CLEANUP_INTERVAL"  envDefault:"6h"`
+
+	// AuditChainKey keys the audit hash chain with HMAC-SHA256 instead of plain
+	// sha256 (audit.WithChainKey). It is the difference between two security
+	// guarantees:
+	//
+	//   - UNSET (default): the chain is keyless sha256. It detects EDIT and
+	//     DELETE of existing rows (tamper-EVIDENCE), but does NOT resist FORGERY
+	//     by the app role — the app owns audit_log and can INSERT, and sha256 is
+	//     keyless, so a compromised app connection can append a row with a valid
+	//     hash. Tamper-evidence here means "history cannot be silently
+	//     rewritten", not "the app cannot fabricate history".
+	//
+	//   - SET (ideally injected from a secret manager and NOT readable by the
+	//     app's DB role): the chain is HMAC-SHA256 keyed. An attacker holding
+	//     only an app connection cannot compute a valid entry_hash for an
+	//     appended row without the key, so forgery-by-append is caught by
+	//     VerifyChain. This is the configuration required for forgery-resistance
+	//     against a compromised application.
+	//
+	// Wire it into the store with audit.NewPgStore(pool,
+	// audit.WithChainKey(cfg.AuditChainKey)).
+	AuditChainKey config.Secret `env:"AUDIT_CHAIN_KEY" envDefault:""`
 }
 
 // RetentionInvariantViolated reports whether the inbox dedup window is shorter

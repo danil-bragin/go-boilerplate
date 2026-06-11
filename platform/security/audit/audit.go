@@ -27,15 +27,18 @@ package audit
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"math"
 	"sort"
 	"time"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/security/audit/gen"
 	"go-boilerplate/platform/storage/pg"
 
@@ -63,11 +66,54 @@ type PgStore struct {
 	pool      *pg.Pool
 	onError   func(error)
 	adminPool *pgxpool.Pool // privileged DELETE pool for retention (SetAdminPool)
+	// chainKey, when non-empty, makes the chain HMAC-SHA256 keyed instead of
+	// plain sha256 (see computeEntryHash / Option WithChainKey). The key MUST
+	// be kept out of the application's reach in a hardened deployment — that is
+	// what makes the chain forgery-resistant against the app role itself.
+	chainKey []byte
 }
 
-// NewPgStore returns a PgStore backed by pool.
-func NewPgStore(pool *pg.Pool) *PgStore {
-	return &PgStore{pool: pool}
+// Option configures a PgStore at construction.
+type Option func(*PgStore)
+
+// WithChainKey keys the hash chain with an HMAC secret (AUDIT_CHAIN_KEY). See
+// the security model on computeEntryHash:
+//
+//   - WITHOUT a key (default): entry_hash = sha256(prev_hash || canonical).
+//     This detects EDIT and DELETE of existing rows (any in-place mutation or
+//     removal breaks the recomputed chain), but does NOT resist FORGERY by the
+//     app role — sha256 is keyless, so anyone who can INSERT (the app owns the
+//     table) can compute valid prev_hash/entry_hash for a fabricated row and
+//     append it. Tamper-evidence here is "you cannot silently rewrite history",
+//     not "the app cannot forge history".
+//
+//   - WITH a key (AUDIT_CHAIN_KEY set, ideally injected from a secret manager
+//     and NOT readable by the app's own DB role): entry_hash =
+//     HMAC-SHA256(key, prev_hash || canonical). Now an attacker holding only an
+//     app connection cannot compute a valid entry_hash for an appended row
+//     without the key, so forgery-by-append is detected by VerifyChain when it
+//     is run with the same key. This is the configuration required for
+//     forgery-resistance against a compromised application.
+//
+// An empty key (the zero value) keeps the plain-sha256 fallback.
+func WithChainKey(key config.Secret) Option {
+	return func(s *PgStore) {
+		if k := key.Reveal(); k != "" {
+			s.chainKey = []byte(k)
+		}
+	}
+}
+
+// NewPgStore returns a PgStore backed by pool. Pass WithChainKey to key the
+// hash chain with an HMAC secret (forgery-resistance against the app role);
+// without it the chain falls back to keyless sha256 (edit/delete detection
+// only — see WithChainKey).
+func NewPgStore(pool *pg.Pool, opts ...Option) *PgStore {
+	s := &PgStore{pool: pool}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // SetOnError registers a callback invoked for each Cleanup error inside
@@ -118,7 +164,7 @@ func (s *PgStore) Record(ctx context.Context, e Entry) error {
 	// on EVERY clean row. Truncate to microsecond up front so the value we hash
 	// is byte-identical to the value the row will round-trip back as.
 	at = at.Truncate(time.Microsecond)
-	entryHash := computeEntryHash(prevHash, e.Actor, e.Action, e.Subject, at, e.Metadata)
+	entryHash := computeEntryHash(s.chainKey, prevHash, e.Actor, e.Action, e.Subject, at, e.Metadata)
 
 	if _, err := db.Exec(
 		ctx,
@@ -162,14 +208,26 @@ func (s *PgStore) RecordOutOfBand(ctx context.Context, e Entry) error {
 	})
 }
 
-// computeEntryHash returns sha256(prevHash || canonical(entry)). The canonical
-// serialization is deterministic and unambiguous: every field is
+// computeEntryHash returns the chain hash over prevHash || canonical(entry).
+//
+// When key is empty it is plain sha256(prevHash || canonical); when key is set
+// it is HMAC-SHA256(key, prevHash || canonical). The keyed variant is what
+// makes the chain forgery-resistant against an attacker who can INSERT rows but
+// does not hold the key (see WithChainKey for the full security model). The
+// keyless variant only gives edit/delete tamper-EVIDENCE.
+//
+// The canonical serialization is deterministic and unambiguous: every field is
 // length-prefixed (8-byte big-endian length + bytes) so no concatenation of
 // adjacent fields can be confused with a different split, and metadata keys are
 // emitted in sorted order. The occurred-at timestamp is encoded as UTC
 // UnixNano so a row's hash does not depend on the connection time zone.
-func computeEntryHash(prevHash []byte, actor, action, subject string, at time.Time, metadata map[string]string) []byte {
-	h := sha256.New()
+func computeEntryHash(key, prevHash []byte, actor, action, subject string, at time.Time, metadata map[string]string) []byte {
+	var h hash.Hash
+	if len(key) > 0 {
+		h = hmac.New(sha256.New, key)
+	} else {
+		h = sha256.New()
+	}
 	h.Write(prevHash)
 	writeField(h, []byte(actor))
 	writeField(h, []byte(action))
@@ -202,21 +260,33 @@ func writeField(h interface{ Write([]byte) (int, error) }, b []byte) {
 	_, _ = h.Write(b)
 }
 
+// genesisRoot is the prev_hash of the very first chain row: an all-zero
+// 32-byte anchor that matches the seed value inserted into audit_chain_head by
+// migration 00004. A full VerifyChain walk asserts the first walked row links
+// to this root, so deleting the genesis row (tail/head truncation from the
+// start) is detected rather than silently re-anchoring the chain.
+var genesisRoot = make([]byte, 32)
+
 // ChainResult is the outcome of a VerifyChain walk.
 type ChainResult struct {
 	// OK is true when every row's stored entry_hash matches the recomputed
-	// hash AND each row's prev_hash links to the previous row's entry_hash.
+	// hash AND each row's prev_hash links to the previous row's entry_hash AND
+	// (for a full walk) the first row anchors to the genesis root and the last
+	// row's entry_hash equals the recorded chain head.
 	OK bool
 	// Verified is the number of rows walked.
 	Verified int
 	// BreakID is the id of the first row whose hash failed to verify, or 0
 	// when OK. ExpectedHash/GotHash are that row's recomputed vs stored
-	// entry_hash (hex-encoded) for forensic reporting.
+	// entry_hash (hex-encoded) for forensic reporting. For a head/genesis
+	// truncation BreakID is 0 (no specific row is at fault — a row is MISSING):
+	// see Reason.
 	BreakID      int64
 	ExpectedHash string
 	GotHash      string
-	// Reason describes the break ("entry_hash mismatch" or "prev_hash link
-	// broken"); empty when OK.
+	// Reason describes the break ("entry_hash mismatch", "prev_hash link
+	// broken", "genesis anchor mismatch", or "chain head mismatch"); empty when
+	// OK.
 	Reason string
 }
 
@@ -231,11 +301,24 @@ type ChainResult struct {
 // row's prev_hash also pins the previous row's entry_hash, deleting or
 // reordering rows is detected too.
 //
+// Truncation detection: a retention/superuser role that DELETEs from the ends
+// of the chain (rather than the middle) would otherwise leave a self-consistent
+// walk. VerifyChain closes both ends:
+//   - GENESIS (full walk only): the first walked row's prev_hash must equal the
+//     all-zero genesis root, so deleting the original first row is detected.
+//   - HEAD (always): the last walked row's entry_hash must equal
+//     audit_chain_head.last_hash, so deleting the most recent row(s) — the tip
+//     the head still points at — is detected.
+//
 // NOTE: when since is non-zero the walk starts mid-chain, so prev_hash linkage
-// is checked from the first walked row's stored prev_hash forward — a tamper
-// strictly before `since` that does not touch any walked row is out of scope
-// for that partial walk (use the zero time for a full audit).
+// is checked from the first walked row's stored prev_hash forward and the
+// genesis anchor is NOT asserted (the first walked row is not the chain's
+// genesis) — a tamper strictly before `since` that does not touch any walked
+// row is out of scope for that partial walk (use the zero time for a full
+// audit). The head check still applies: the partial walk must end at the
+// recorded tip.
 func (s *PgStore) VerifyChain(ctx context.Context, since time.Time) (ChainResult, error) {
+	fullWalk := since.IsZero()
 	rows, err := pg.FromContextRead(ctx, s.pool).Query(
 		ctx,
 		`select id, actor, action, subject, metadata, created_at, prev_hash, entry_hash
@@ -269,6 +352,18 @@ func (s *PgStore) VerifyChain(ctx context.Context, since time.Time) (ChainResult
 			return ChainResult{}, fmt.Errorf("audit: verify chain scan: %w", err)
 		}
 
+		// Genesis check (full walk only): the FIRST walked row must anchor to
+		// the all-zero genesis root. If the original first row was deleted, the
+		// new first row's prev_hash is some real entry_hash, not the root, so a
+		// head/genesis truncation is caught here.
+		if fullWalk && !havePrev && !bytesEqual(prevHash, genesisRoot) {
+			res.BreakID = id
+			res.Reason = "genesis anchor mismatch"
+			res.ExpectedHash = hexOf(genesisRoot)
+			res.GotHash = hexOf(prevHash)
+			return res, nil
+		}
+
 		// Link check: this row's prev_hash must equal the previous walked
 		// row's entry_hash (skipped for the first walked row).
 		if havePrev && !bytesEqual(prevHash, expPrev) {
@@ -283,7 +378,7 @@ func (s *PgStore) VerifyChain(ctx context.Context, since time.Time) (ChainResult
 		if len(metaRaw) > 0 {
 			_ = json.Unmarshal(metaRaw, &meta)
 		}
-		want := computeEntryHash(prevHash, actor, action, subject, createdAt.Time, meta)
+		want := computeEntryHash(s.chainKey, prevHash, actor, action, subject, createdAt.Time, meta)
 		if !bytesEqual(want, entryHash) {
 			res.BreakID = id
 			res.Reason = "entry_hash mismatch"
@@ -299,6 +394,31 @@ func (s *PgStore) VerifyChain(ctx context.Context, since time.Time) (ChainResult
 	if err := rows.Err(); err != nil {
 		return ChainResult{}, fmt.Errorf("audit: verify chain rows: %w", err)
 	}
+	rows.Close()
+
+	// Head check: the last walked row's entry_hash must equal the recorded
+	// chain head. If the most recent row(s) were deleted, the head still points
+	// at the (now missing) tip, so expPrev (the surviving last row's hash) no
+	// longer matches — head/tail truncation from the end is detected. Skipped
+	// when no rows were walked: an empty result set against a fresh table is
+	// genuinely clean, and a partial walk (since>now) that selects nothing is
+	// not assertable.
+	if havePrev {
+		var headHash []byte
+		if err := pg.FromContextRead(ctx, s.pool).QueryRow(
+			ctx,
+			`select last_hash from audit_chain_head where id = 1`,
+		).Scan(&headHash); err != nil {
+			return ChainResult{}, fmt.Errorf("audit: verify chain head: %w", err)
+		}
+		if !bytesEqual(expPrev, headHash) {
+			res.Reason = "chain head mismatch"
+			res.ExpectedHash = hexOf(headHash)
+			res.GotHash = hexOf(expPrev)
+			return res, nil
+		}
+	}
+
 	res.OK = true
 	return res, nil
 }
