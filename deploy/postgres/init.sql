@@ -1,26 +1,37 @@
 -- Initialisation script executed once when the postgres container is first created.
 -- Creates one database per service and a shared application role.
 --
--- Audit append-only model (round-8 B1):
---   * `app`         — the application role services connect as. Owns the
---                     service tables. On audit_log it may INSERT + SELECT but
---                     NOT UPDATE/DELETE (see migration 00003_audit_append_only,
---                     which REVOKEs those from the app role per database).
---   * `audit_admin` — a dedicated privileged role that retains DELETE on
---                     audit_log. The retention cleaner connects as this role
---                     via PG_AUDIT_ADMIN_URL so age-based pruning works while
---                     the app's own connection cannot rewrite history.
+-- Audit append-only model (round-8 B1, round-8 security review #2):
+--   * `audit_admin` — a dedicated privileged role that OWNS audit_log (after
+--                     the append-only migration transfers ownership to it) and
+--                     retains UPDATE/DELETE. The retention cleaner connects as
+--                     this role via PG_AUDIT_ADMIN_URL so age-based pruning
+--                     works while the app's own connection cannot.
+--   * `app`         — the application role services connect as. Owns the OTHER
+--                     service tables, but on audit_log it is a NON-OWNER granted
+--                     only INSERT + SELECT; UPDATE/DELETE are REVOKEd (see the
+--                     append-only migration). Because it does not OWN audit_log,
+--                     the REVOKE actually bites (a table owner keeps full rights
+--                     implicitly — the gap this change closes).
 --
--- NOTE: `app` owns the audit_log table, and a table OWNER keeps full rights
--- implicitly (REVOKE cannot strip owner privileges). For the REVOKE to bite in
--- a hardened deployment, run migrations as a bootstrap/owner role and connect
--- the application as a SEPARATE non-owner role granted only INSERT+SELECT. The
--- boilerplate keeps a single `app` role for simplicity; the migration + this
--- file document the split and the append_only_test proves the boundary from a
--- non-owner role.
+-- OWNERSHIP TRANSFER MECHANICS: the append-only migration runs as `app` and
+-- does `ALTER TABLE audit_log OWNER TO audit_admin`. ALTER ... OWNER requires
+-- the executing role to be a MEMBER of the new owner, so we grant audit_admin
+-- to app — but WITH INHERIT FALSE so app does NOT automatically inherit
+-- audit_admin's UPDATE/DELETE in normal queries (the append-only boundary holds
+-- for ordinary app traffic). RESIDUAL CAVEAT: a compromised app could still
+-- `SET ROLE audit_admin` to escalate; the HARDENED deployment eliminates even
+-- that by running migrations as audit_admin/a bootstrap role and NOT granting
+-- audit_admin to app at all. The hash chain (audit.WithChainKey / AUDIT_CHAIN_KEY)
+-- is the defence-in-depth that makes such an escalation tamper-EVIDENT.
+-- append_only_test proves the INSERT/SELECT-only boundary from a non-owner role.
 
 CREATE USER app WITH PASSWORD 'app';
 CREATE USER audit_admin WITH PASSWORD 'audit_admin';
+
+-- Let `app` hand audit_log ownership to audit_admin during migration without
+-- inheriting its privileges in day-to-day queries (INHERIT FALSE).
+GRANT audit_admin TO app WITH INHERIT FALSE;
 
 CREATE DATABASE gateway    WITH OWNER app;
 CREATE DATABASE orders     WITH OWNER app;

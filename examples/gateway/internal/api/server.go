@@ -13,6 +13,7 @@ import (
 	"go-boilerplate/examples/gateway/internal/apperrs"
 	"go-boilerplate/examples/gateway/internal/attachments"
 	"go-boilerplate/platform/apperr"
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/kafka"
@@ -25,6 +26,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 	"google.golang.org/protobuf/proto"
 
 	storegen "go-boilerplate/examples/gateway/internal/store/gen"
@@ -78,6 +81,26 @@ func (s *Server) SetPendingBatcher(b *PendingBatcher) { s.pendingBatcher = b }
 // payloads (SERDE_SR_URL). Must be called before the server starts handling
 // requests.
 func (s *Server) SetEncoder(enc Encoder) { s.encoder = enc }
+
+// SetAuditChainKey rebuilds the audit store with an HMAC chain key
+// (AUDIT_CHAIN_KEY) so the audit hash chain is forgery-resistant against the
+// app role, not merely edit/delete tamper-evident. An empty key is a no-op
+// (keyless sha256 fallback). It also wires the denial-coalesced counter so the
+// bounded-denial-storm rate (security review #5) is observable. Must be called
+// before the server starts handling requests.
+func (s *Server) SetAuditChainKey(key config.Secret) {
+	opts := []audit.Option{audit.WithChainKey(key)}
+	// Best-effort metric: a denial audit coalesced by the per-(actor,action)
+	// bound increments this. Global-meter instrument, nil-degrading like the
+	// pending-batch counter.
+	if c, err := otel.Meter("gateway.api").Int64Counter(
+		"gateway.audit.denial_coalesced",
+		metric.WithDescription("Denial audit writes coalesced by the per-principal storm bound (security review #5)"),
+	); err == nil {
+		opts = append(opts, audit.WithOnDenialDropped(func() { c.Add(context.Background(), 1) }))
+	}
+	s.auditStore = audit.NewPgStore(s.pool, opts...)
+}
 
 // NewServer creates a new Server wired with the given dependencies.
 //

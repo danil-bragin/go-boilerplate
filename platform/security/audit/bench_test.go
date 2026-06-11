@@ -95,3 +95,21 @@ func newBenchPool(b *testing.B) *pg.Pool {
 	b.Cleanup(func() { _ = pool.Close(ctx) })
 	return pool
 }
+
+// BenchmarkRecord_HashChainKeyed mirrors BenchmarkRecord_HashChain but with an
+// HMAC chain key, confirming the keyed (HMAC-SHA256) chain costs essentially
+// the same as the keyless (sha256) chain — the per-op time is dominated by the
+// DB round trips and the global chain lock, not the hash primitive.
+func BenchmarkRecord_HashChainKeyed(b *testing.B) {
+	pool := newBenchPool(b)
+	store := audit.NewPgStore(pool, audit.WithChainKey(config.Secret("bench-hmac-key-bench-hmac-key!!!")))
+	ctx := context.Background()
+	b.ResetTimer()
+	for i := 0; b.Loop(); i++ {
+		if err := pg.RunInTx(ctx, pool, func(ctx context.Context) error {
+			return store.Record(ctx, benchEntry(i))
+		}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

@@ -18,15 +18,23 @@ insert into audit_chain_head (id, last_hash)
 values (1, '\x0000000000000000000000000000000000000000000000000000000000000000'::bytea);
 
 -- Append-only: the app role may INSERT + SELECT audit_log but never
--- UPDATE/DELETE. Retention runs through the privileged audit_admin role
--- (PG_AUDIT_ADMIN_URL); see deploy/postgres/init.sql.
+-- UPDATE/DELETE. OWNERSHIP IS LOAD-BEARING — an OWNER keeps UPDATE/DELETE
+-- implicitly, so unless audit_log is owned by a NON-app role the REVOKE is a
+-- no-op. When audit_admin exists (deploy/postgres/init.sql) transfer ownership
+-- of the table + its bigserial sequence to it and re-grant the app role only
+-- INSERT + SELECT; the REVOKE then actually denies the app's UPDATE/DELETE.
+-- Retention runs through audit_admin (PG_AUDIT_ADMIN_URL). See the platform
+-- audit migration 00003 for the full rationale and trade-off.
 -- +goose StatementBegin
 do $$
 begin
-    execute format('revoke update, delete on audit_log from %I', current_user);
     if exists (select 1 from pg_roles where rolname = 'audit_admin') then
+        execute 'alter table audit_log owner to audit_admin';
+        execute 'grant select, insert on audit_log to ' || quote_ident(current_user);
+        execute 'grant usage, select on sequence audit_log_id_seq to ' || quote_ident(current_user);
         execute 'grant select, delete on audit_log to audit_admin';
     end if;
+    execute format('revoke update, delete on audit_log from %I', current_user);
 end
 $$;
 -- +goose StatementEnd
@@ -35,6 +43,9 @@ $$;
 -- +goose StatementBegin
 do $$
 begin
+    if exists (select 1 from pg_roles where rolname = 'audit_admin') then
+        execute 'alter table audit_log owner to ' || quote_ident(current_user);
+    end if;
     execute format('grant update, delete on audit_log to %I', current_user);
 end
 $$;

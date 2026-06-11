@@ -232,7 +232,8 @@ func mountAttachmentRoutes(
 			attachments.WithOwnerLookup(attachments.StoreOwnerLookup(pool)),
 			// Audit attachment access (upload/download success) and denials
 			// out-of-band on the same pool the gateway audits commands through.
-			attachments.WithAuditor(audit.NewPgStore(pool)),
+			// Same HMAC chain key as the command audit store (AUDIT_CHAIN_KEY).
+			attachments.WithAuditor(audit.NewPgStore(pool, audit.WithChainKey(cfg.AuditChainKey))),
 		)
 	}
 	attachments.New(objStore, flags.Bool, opts...).Mount(attachRouter)

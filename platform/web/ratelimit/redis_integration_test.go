@@ -135,8 +135,17 @@ func TestRedis_DistributedSharedBudget(t *testing.T) {
 	client1 := newRedisClient(t, addr)
 	client2 := newRedisClient(t, addr)
 
-	limiter1 := ratelimit.NewRedis(client1, 100, 10)
-	limiter2 := ratelimit.NewRedis(client2, 100, 10)
+	// rps=1 (not 100): the refill math is what makes this deterministic. The 10
+	// Allow calls + the 2 trailing calls span a few ms to a few hundred ms of
+	// real time against the Redis container. At rps=100 the bucket refills 1
+	// token per 10ms, so ≈1+ token regenerates mid-test and the 11th call races
+	// the refill (the original flake). At rps=1 the bucket refills 1 token/sec,
+	// i.e. <0.5 token over any realistic test window — never enough to cross the
+	// integer-token threshold the bucket needs to admit a request, so once the
+	// 10-token burst is spent the next call is deterministically denied. burst
+	// (10) is what the test exercises; rps only governs refill rate.
+	limiter1 := ratelimit.NewRedis(client1, 1, 10)
+	limiter2 := ratelimit.NewRedis(client2, 1, 10)
 	ctx := context.Background()
 
 	const key = "distributed-key"
