@@ -24,6 +24,14 @@ var migrations embed.FS
 // ready-to-use pool. The pool is closed when t finishes.
 func newPool(t *testing.T) *pg.Pool {
 	t.Helper()
+	pool, _ := newPoolDSN(t)
+	return pool
+}
+
+// newPoolDSN is newPool but also returns the DSN, so tests that need a second
+// (privileged) connection — e.g. the cleanup admin pool — can dial it.
+func newPoolDSN(t *testing.T) (*pg.Pool, string) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("integration test requires Docker (postgres container)")
 	}
@@ -33,7 +41,7 @@ func newPool(t *testing.T) *pg.Pool {
 	pool, err := pg.New(ctx, pg.Config{DSN: config.Secret(dsn)})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pool.Close(ctx) })
-	return pool
+	return pool, dsn
 }
 
 // auditRow represents one audit_log row as read back in tests.

@@ -2,10 +2,13 @@ package servicekit
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"go-boilerplate/platform/messaging/inbox"
 	"go-boilerplate/platform/security/audit"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // AddAuditCleanup registers a periodic worker that deletes old audit_log rows
@@ -24,15 +27,40 @@ import (
 // obligations before lowering it — consider archiving rows to cold storage
 // before deletion.
 //
+// APPEND-ONLY NOTE: migration 00003_audit_append_only revokes UPDATE/DELETE on
+// audit_log from the app role, so the retention DELETE must run through a
+// PRIVILEGED pool. When PG_AUDIT_ADMIN_URL is set this method dials it and
+// registers it on the store via SetAdminPool; otherwise Cleanup is a no-op
+// (audit.ErrCleanupDisabled) and the worker simply logs once-per-tick — the
+// append-only guarantee always holds, rows just accumulate until an admin path
+// (PG_AUDIT_ADMIN_URL or partition-drop) is wired.
+//
 // Must be called before Start.
 func (s *Service) AddAuditCleanup(store *audit.PgStore, interval, retention time.Duration) {
 	if interval <= 0 {
 		return
 	}
+	if url := s.cfg.PG.AuditAdminURL.Reveal(); url != "" {
+		if adminPool, err := pgxpool.New(context.Background(), url); err != nil {
+			s.logger.Warn("servicekit: audit retention disabled — PG_AUDIT_ADMIN_URL pool failed", "error", err)
+		} else {
+			store.SetAdminPool(adminPool)
+			s.closer.Add("audit-admin-pool", func(context.Context) error {
+				adminPool.Close()
+				return nil
+			})
+		}
+	}
 	// AddPeriodicWorker only errors on a non-positive interval (guarded
 	// above) or singleActive without Postgres (singleActive is false here).
 	_ = s.AddPeriodicWorker("audit-cleanup", interval, 0, false, func(ctx context.Context) error {
 		_, err := store.Cleanup(ctx, retention)
+		// Disabled cleanup (no admin pool) is the configured steady state, not
+		// a worker failure — swallow it so the periodic worker doesn't error
+		// every tick.
+		if errors.Is(err, audit.ErrCleanupDisabled) {
+			return nil
+		}
 		return err
 	})
 }

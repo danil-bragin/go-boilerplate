@@ -36,6 +36,7 @@ import (
 	"go-boilerplate/platform/storage/pg"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Entry is a single audit-log record.
@@ -55,8 +56,9 @@ type Store interface {
 // PgStore writes audit entries to the audit_log table via pg.FromContext so
 // that the INSERT participates in the ambient command transaction (if any).
 type PgStore struct {
-	pool    *pg.Pool
-	onError func(error)
+	pool      *pg.Pool
+	onError   func(error)
+	adminPool *pgxpool.Pool // privileged DELETE pool for retention (SetAdminPool)
 }
 
 // NewPgStore returns a PgStore backed by pool.
