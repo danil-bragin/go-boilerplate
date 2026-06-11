@@ -64,6 +64,10 @@ func New(code string) *Error {
 // Newf is New with an ad-hoc, immediately rendered (fmt-style) message that
 // replaces the registered default. Use it for developer detail that has no
 // stable parameter schema; structured values belong in WithParam instead.
+//
+// Public API by intent: the boilerplate itself currently has no caller (the
+// example services prefer registered templates + WithParam), but Newf is part
+// of the error-model surface offered to downstream services — keep it.
 func Newf(code, format string, args ...any) *Error {
 	e := New(code)
 	e.msg = fmt.Sprintf(format, args...)
@@ -260,17 +264,4 @@ func Registered() []RegisteredCode {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
 	return out
-}
-
-// Codes returns all registered codes, sorted — the registry snapshot used by
-// the template invariant test and the docs generator.
-func Codes() []string {
-	regMu.RLock()
-	defer regMu.RUnlock()
-	codes := make([]string, 0, len(registry))
-	for c := range registry {
-		codes = append(codes, c)
-	}
-	sort.Strings(codes)
-	return codes
 }

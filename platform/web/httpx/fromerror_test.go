@@ -206,3 +206,45 @@ func TestWriteError_UsesProblemLocalizer(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec2.Body.Bytes(), &body2))
 	assert.Equal(t, "order 42 not found", body2["detail"])
 }
+
+// TestWriteError_LocalizesValidationFieldErrors pins the per-field half of
+// the seam: for VALIDATION_FAILED problems the localizer is also consulted
+// per field with the "validation.<rule>" key (params: field/rule/param) and
+// translated messages replace the entries of the legacy `errors` map.
+// Untranslated rules keep the English developer string.
+func TestWriteError_LocalizesValidationFieldErrors(t *testing.T) {
+	loc := httpx.ProblemLocalizer(func(code string, params map[string]any) (string, string, bool) {
+		if code == "validation.min" {
+			return "", fmt.Sprintf("LOCALIZED %v >= %v", params["field"], params["param"]), true
+		}
+		return "", "", false // VALIDATION_FAILED itself + other rules: no translation
+	})
+
+	verr := &httpx.ValidationError{
+		Fields: map[string]string{
+			"amount_cents": "failed on 'min'",
+			"name":         "failed on 'required'",
+		},
+		Details: []httpx.FieldError{
+			{Field: "amount_cents", Rule: "min", Param: "1"},
+			{Field: "name", Rule: "required", Param: ""},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders", http.NoBody)
+	req = req.WithContext(httpx.WithProblemLocalizer(req.Context(), loc))
+	rec := httptest.NewRecorder()
+	httpx.WriteError(rec, req, verr)
+
+	var body struct {
+		Status int               `json:"status"`
+		Errors map[string]string `json:"errors"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, http.StatusBadRequest, body.Status)
+	assert.Equal(t, "LOCALIZED amount_cents >= 1", body.Errors["amount_cents"])
+	assert.Equal(t, "failed on 'required'", body.Errors["name"], "untranslated rule keeps the developer string")
+
+	// The shared source map must not be mutated (copy-on-localize).
+	assert.Equal(t, "failed on 'min'", verr.Fields["amount_cents"])
+}

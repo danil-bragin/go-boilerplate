@@ -130,6 +130,70 @@ func TestMiddleware_LocalizesProblems(t *testing.T) {
 	}
 }
 
+// TestMiddleware_LocalizesValidationFields: a decode-stage *ValidationError
+// written through the seam renders per-field messages from the
+// "validation.<rule>" catalog keys into the problem `errors` map — localized
+// per Accept-Language — while a rule missing from the catalog keeps the
+// English developer string. code/params stay locale-independent.
+func TestMiddleware_LocalizesValidationFields(t *testing.T) {
+	b, err := i18n.Default()
+	require.NoError(t, err)
+
+	verr := &httpx.ValidationError{
+		Fields: map[string]string{
+			"amount_cents": "failed on 'min'",
+			"customer_id":  "failed on 'required'",
+			"weird":        "failed on 'unknownrule'",
+		},
+		Details: []httpx.FieldError{
+			{Field: "amount_cents", Rule: "min", Param: "1"},
+			{Field: "customer_id", Rule: "required", Param: ""},
+			{Field: "weird", Rule: "unknownrule", Param: ""},
+		},
+	}
+
+	h := i18n.Middleware(b)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpx.WriteError(w, r, verr)
+	}))
+
+	for _, tt := range []struct {
+		lang         string
+		wantMin      string
+		wantRequired string
+	}{
+		{"en", "amount_cents must be at least 1.", "customer_id is required."},
+		{"ru", "Поле amount_cents должно быть не меньше 1.", "Поле customer_id обязательно."},
+	} {
+		t.Run(tt.lang, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/v1/orders", http.NoBody)
+			req.Header.Set("Accept-Language", tt.lang)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			var body struct {
+				Code   string            `json:"code"`
+				Errors map[string]string `json:"errors"`
+				Params map[string]any    `json:"params"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+			assert.Equal(t, "VALIDATION_FAILED", body.Code)
+			assert.Equal(t, tt.wantMin, body.Errors["amount_cents"])
+			assert.Equal(t, tt.wantRequired, body.Errors["customer_id"])
+			// Rule missing from the catalog → English developer string kept.
+			assert.Equal(t, "failed on 'unknownrule'", body.Errors["weird"])
+			// Machine-readable params stay locale-independent.
+			fields, ok := body.Params["fields"].([]any)
+			require.True(t, ok)
+			assert.Len(t, fields, 3)
+		})
+	}
+
+	// The source error's Fields map must never be mutated by localization
+	// (FromError aliases it into the problem).
+	assert.Equal(t, "failed on 'min'", verr.Fields["amount_cents"])
+}
+
 // TestDefault_CoversPlatformCodes: the shipped en catalog must localize
 // every code the platform itself registers, plus the common validation rules.
 func TestDefault_CoversPlatformCodes(t *testing.T) {

@@ -155,11 +155,14 @@ func TestPlatformCodes_Registered(t *testing.T) {
 // Lookup returns for that code.
 func TestRegistered_SortedSnapshot(t *testing.T) {
 	snap := apperr.Registered()
-	require.Len(t, snap, len(apperr.Codes()))
+	require.NotEmpty(t, snap)
 	require.True(t, sort.SliceIsSorted(snap, func(i, j int) bool {
 		return snap[i].Code < snap[j].Code
 	}), "Registered() must be sorted by code")
+	seen := make(map[string]bool, len(snap))
 	for _, e := range snap {
+		require.False(t, seen[e.Code], "duplicate snapshot entry for %s", e.Code)
+		seen[e.Code] = true
 		reg, ok := apperr.Lookup(e.Code)
 		require.True(t, ok, "snapshot code %s must be in the registry", e.Code)
 		assert.Equal(t, reg, e.Registration, "snapshot entry for %s", e.Code)
@@ -172,17 +175,15 @@ func TestRegistered_SortedSnapshot(t *testing.T) {
 // Service packages registering codes in init() get this check for free as
 // long as their test binary (or this one, via import) registers them.
 func TestRegistry_MessageTemplateInvariant(t *testing.T) {
-	for _, code := range apperr.Codes() {
-		reg, ok := apperr.Lookup(code)
-		require.True(t, ok)
-		declared := make(map[string]bool, len(reg.Params))
-		for _, p := range reg.Params {
+	for _, e := range apperr.Registered() {
+		declared := make(map[string]bool, len(e.Params))
+		for _, p := range e.Params {
 			declared[p] = true
 		}
-		for _, v := range apperr.TemplateVars(reg.Message) {
+		for _, v := range apperr.TemplateVars(e.Message) {
 			assert.True(t, declared[v],
 				"code %s: template variable {%s} not declared in Params %v",
-				code, v, reg.Params)
+				e.Code, v, e.Params)
 		}
 	}
 }

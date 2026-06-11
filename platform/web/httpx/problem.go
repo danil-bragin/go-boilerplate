@@ -127,6 +127,9 @@ func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 					p.Detail = detail
 				}
 			}
+			if p.Code == apperr.CodeValidationFailed {
+				p.Errors = localizeFieldErrors(loc, p.Errors, p.Params)
+			}
 		}
 	}
 	WriteProblem(w, p)
