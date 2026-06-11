@@ -3,6 +3,7 @@ package audit_test
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -28,7 +29,7 @@ func recordN(t *testing.T, pool *pg.Pool, store *audit.PgStore, n int) {
 				Actor:    fmt.Sprintf("actor-%d", i%3),
 				Action:   "order:create",
 				Subject:  fmt.Sprintf("order-%d", i),
-				Metadata: map[string]string{"seq": fmt.Sprintf("%d", i), "ip": "10.0.0.1"},
+				Metadata: map[string]string{"seq": strconv.Itoa(i), "ip": "10.0.0.1"},
 			})
 		})
 		require.NoError(t, err)

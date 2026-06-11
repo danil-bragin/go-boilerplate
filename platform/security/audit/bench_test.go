@@ -3,6 +3,7 @@ package audit_test
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"testing"
 
 	"go-boilerplate/platform/config"
@@ -20,7 +21,7 @@ func benchEntry(i int) audit.Entry {
 		Actor:    "bench-actor",
 		Action:   "order:create",
 		Subject:  fmt.Sprintf("order-%d", i),
-		Metadata: map[string]string{"ip": "10.0.0.1", "seq": fmt.Sprintf("%d", i)},
+		Metadata: map[string]string{"ip": "10.0.0.1", "seq": strconv.Itoa(i)},
 	}
 }
 

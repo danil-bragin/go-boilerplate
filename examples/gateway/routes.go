@@ -225,10 +225,13 @@ func mountAttachmentRoutes(
 	// attachments. Backed by the gateway read model (orders_read.customer_id).
 	opts := []attachments.Option{}
 	if pool != nil {
-		opts = append(opts, attachments.WithOwnerLookup(attachments.StoreOwnerLookup(pool)))
-		// Audit attachment access (upload/download success) and denials
-		// out-of-band on the same pool the gateway audits commands through.
-		opts = append(opts, attachments.WithAuditor(audit.NewPgStore(pool)))
+		opts = append(
+			opts,
+			attachments.WithOwnerLookup(attachments.StoreOwnerLookup(pool)),
+			// Audit attachment access (upload/download success) and denials
+			// out-of-band on the same pool the gateway audits commands through.
+			attachments.WithAuditor(audit.NewPgStore(pool)),
+		)
 	}
 	attachments.New(objStore, flags.Bool, opts...).Mount(attachRouter)
 }

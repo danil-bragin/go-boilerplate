@@ -29,6 +29,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -303,7 +304,7 @@ func bytesEqual(a, b []byte) bool {
 	return true
 }
 
-func hexOf(b []byte) string { return fmt.Sprintf("%x", b) }
+func hexOf(b []byte) string { return hex.EncodeToString(b) }
 
 // Query returns actor's audit entries whose created_at >= since (INCLUSIVE;
 // pass the zero time for "everything"), newest first, capped at limit rows.
