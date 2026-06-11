@@ -71,14 +71,15 @@ All domain state transitions are driven by Kafka events. The gateway owns a **re
 
 ### Compose profiles
 
-The stack is split into three profiles so you only run what you need:
+The stack is split into four profiles so you only run what you need:
 
 | Profile | Services started | Command |
 |---|---|---|
 | _(none — core)_ | postgres, redpanda, redpanda-console, redis, seaweedfs, seaweedfs-setup, keycloak | `just up` |
 | `observability` | core + otel-collector, jaeger, prometheus, grafana, pyroscope | `just up-obs` |
 | `apps` | core + gateway, orders, payments, notifications | `just up-apps` |
-| both | Everything | `just up-full` |
+| `pgbouncer` | core + PgBouncer (transaction pooling on :6432; see `.env.example` for the DSN/cache-mode switches) | `docker compose --profile pgbouncer up -d postgres pgbouncer` |
+| `observability` + `apps` | Everything | `just up-full` |
 
 ```bash
 # Start everything (core infra + observability + apps)

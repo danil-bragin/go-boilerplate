@@ -7,7 +7,7 @@ backup/DR), scaling guidance, and the Kubernetes reference manifests.
 
 ## Compose profiles
 
-The `docker-compose.yml` is split into three profiles so every developer runs
+The `docker-compose.yml` is split into four profiles so every developer runs
 only the services they actually need.
 
 ### Profile matrix
@@ -17,6 +17,7 @@ only the services they actually need.
 | _(none — core)_ | postgres, redpanda, redpanda-console, redis, seaweedfs, seaweedfs-setup, keycloak | `just up` |
 | `observability` | core + otel-collector, jaeger, prometheus, grafana, pyroscope | `just up-obs` |
 | `apps` | core + gateway, orders, payments, notifications | `just up-apps` |
+| `pgbouncer` | core + pgbouncer (transaction pooling, host port 6432, wildcard-routed to all four service DBs; DSN/cache-mode switches in `.env.example`) | `docker compose --profile pgbouncer up -d postgres pgbouncer` |
 | `observability` + `apps` | Everything | `just up-full` |
 
 ### Notes
@@ -34,9 +35,9 @@ only the services they actually need.
   > because the `otel-collector` hostname is not resolvable. These errors are
   > non-fatal and can be ignored in local development. Run `just up-full`
   > (`--profile observability --profile apps`) to get collected telemetry.
-- **`just down` stops everything** (`--profile observability --profile apps`)
-  regardless of which profiles were originally used to start the stack, and
-  removes volumes (`-v`).
+- **`just down` stops everything** (`--profile observability --profile apps
+  --profile pgbouncer`) regardless of which profiles were originally used to
+  start the stack, and removes volumes (`-v`).
 
 ### Dev workflow
 
