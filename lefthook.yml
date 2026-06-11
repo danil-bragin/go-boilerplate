@@ -4,7 +4,9 @@ pre-commit:
   commands:
     fmt:
       glob: "*.go"
-      run: go run mvdan.cc/gofumpt@latest -w {staged_files} && go run golang.org/x/tools/cmd/goimports@latest -w -local go-boilerplate {staged_files}
+      # Tool versions pinned to match CI's format gate (gofumpt v0.10.0) and
+      # the gen lane — keeps local pre-commit formatting identical to CI.
+      run: go run mvdan.cc/gofumpt@v0.10.0 -w {staged_files} && go run golang.org/x/tools/cmd/goimports@v0.46.0 -w -local go-boilerplate {staged_files}
       stage_fixed: true
     lint:
       glob: "*.go"

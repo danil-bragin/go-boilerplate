@@ -31,7 +31,9 @@ spec:
       restartPolicy: Never
       containers:
         - name: migrate
-          image: ghcr.io/yourorg/migrate:latest # CHANGEME: see image note above
+          # CHANGEME — pin tag@sha256 digest (see gateway-deployment.yaml for
+          # how to resolve the digest with `docker buildx imagetools inspect`).
+          image: ghcr.io/yourorg/migrate:latest # CHANGEME: pin tag@sha256 digest
           args: ["-service", "orders"] # or "all" on the shared dev topology
           env:
             # cmd/migrate loads pg.Config from the environment.

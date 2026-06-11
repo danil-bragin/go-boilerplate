@@ -6,7 +6,9 @@
 ARG SERVICE=gateway
 
 # ── builder ──────────────────────────────────────────────────────────────────
-FROM golang:1.26-alpine AS builder
+# Digest-pinned tag golang:1.26-alpine (tag in comment for readability). Bump
+# the digest via the Renovate/Dependabot docker lane (.github/dependabot.yml).
+FROM golang:1.26-alpine@sha256:7a3e50096189ad57c9f9f865e7e4aa8585ed1585248513dc5cda498e2f41812c AS builder
 
 ARG SERVICE
 
@@ -36,7 +38,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     ./cmd/probe
 
 # ── runtime ──────────────────────────────────────────────────────────────────
-FROM gcr.io/distroless/static:nonroot
+# Digest-pinned tag gcr.io/distroless/static:nonroot (tag in comment).
+# distroless/static:nonroot is a rolling tag — pinning the digest makes the
+# runtime base reproducible; bump via the Renovate/Dependabot docker lane.
+FROM gcr.io/distroless/static:nonroot@sha256:963fa6c544fe5ce420f1f54fb88b6fb01479f054c8056d0f74cc2c6000df5240
 
 COPY --from=builder /bin/app /bin/app
 COPY --from=builder /bin/probe /probe

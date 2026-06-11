@@ -35,7 +35,13 @@ spec:
         - name: gateway
           # Built by the parametric Dockerfile:
           #   docker build --build-arg SERVICE=gateway -t <registry>/gateway:<tag> .
-          image: ghcr.io/yourorg/gateway:latest # CHANGEME: pin a digest
+          # CHANGEME — pin by immutable digest before production. Resolve the
+          # digest after pushing your build:
+          #   docker buildx imagetools inspect ghcr.io/yourorg/gateway:<tag> \
+          #     --format '{{.Manifest.Digest}}'
+          # then use the tag@sha256 form (tag kept for readability), e.g.:
+          #   image: ghcr.io/yourorg/gateway:v1.0.0@sha256:<64-hex-digest>
+          image: ghcr.io/yourorg/gateway:latest # CHANGEME: pin tag@sha256 digest
           ports:
             - name: http
               containerPort: 8080

@@ -89,8 +89,9 @@ lint:
     golangci-lint run ./...
 
 # Lint migration SQL with squawk (config: .squawk.toml) — same gate as CI
+# Pinned to 2.57.0 to match the squawk binary CI downloads (.github/workflows/ci.yml).
 lint-sql:
-    npx -y squawk-cli@latest $(git ls-files '*/migrations/*.sql' '*/migrations/sql/*.sql')
+    npx -y squawk-cli@2.57.0 $(git ls-files '*/migrations/*.sql' '*/migrations/sql/*.sql')
 
 # Validate Prometheus rules + config and run the rule unit tests via the
 # dockerized promtool (same image the compose stack pins) — same gate as CI.
@@ -117,9 +118,9 @@ lint-fix:
 fmt:
     golangci-lint fmt ./...
 
-# Vulnerability scan (govulncheck)
+# Vulnerability scan (govulncheck) — version pinned to match CI (.github/workflows/ci.yml)
 vuln:
-    go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+    go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./...
 
 # Full audit: fmt + lint + vuln + unit tests
 audit:
@@ -270,7 +271,8 @@ load vus='10' duration='30s':
     docker run --rm -i --add-host=host.docker.internal:host-gateway \
       -e BASE_URL="${BASE_URL:-http://host.docker.internal:8080}" \
       -e TOKEN="${TOKEN:-}" \
-      grafana/k6 run --vus {{vus}} --duration {{duration}} - < scripts/k6/order-flow.js
+      grafana/k6:2.0.0@sha256:a33a0cfdc4d2483d6b7a3a22e726a499ff2831a671a49239104cd34a9937523c \
+      run --vus {{vus}} --duration {{duration}} - < scripts/k6/order-flow.js
 
 # Correctness-under-load: seeded adversarial traffic against a running gateway (see docs/operations.md §Load testing)
 # Usage: just traffic [--rate 50 --duration 1m | --phases "10rps:5s,40rps:20s"] [--seed N] [--mix happy=70,sse=0] [--token "$TOKEN"]

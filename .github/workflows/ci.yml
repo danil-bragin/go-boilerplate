@@ -15,9 +15,9 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: "1.26"
           cache: true
@@ -37,11 +37,11 @@ jobs:
     name: Buf lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
           fetch-depth: 0   # needed for buf breaking --against
 
-      - uses: bufbuild/buf-action@v1
+      - uses: bufbuild/buf-action@fd21066df7214747548607aaa45548ba2b9bc1ff # v1.4.0
         with:
           setup_only: true
 
@@ -72,7 +72,7 @@ jobs:
     name: SQL lint (squawk)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
       # The pinned sha256 was computed from the v2.57.0 release asset (the
       # release publishes no checksum file); bump it together with the URL.
@@ -96,7 +96,7 @@ jobs:
     name: Promtool (rules + config + rule tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
       - name: promtool check rules
         run: |
@@ -125,15 +125,18 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: "1.26"
           cache: true
 
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        # Pinned (was @latest). govulncheck's exit code propagates: a known
+        # vulnerability in reachable code fails this step, which fails the job
+        # (no continue-on-error) — the gate is blocking.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
 
       - name: Run govulncheck
         run: govulncheck ./...
@@ -149,7 +152,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
           fetch-depth: 0   # full history, not just the checked-out tip
 
@@ -174,7 +177,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
       - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
 
@@ -185,9 +188,9 @@ jobs:
     name: Unit tests (fast lane)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: "1.26"
           cache: true
@@ -221,9 +224,9 @@ jobs:
     runs-on: ubuntu-latest   # ubuntu-latest ships with Docker; testcontainers work out of the box
     timeout-minutes: 30      # serial (-p 1) integration suite needs headroom; see the go test note below
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: "1.26"
           cache: true          # caches both the module download cache and the build cache
@@ -257,9 +260,9 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: "1.26"
           cache: true
@@ -284,9 +287,9 @@ jobs:
     name: Format (gofumpt)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: "1.26"
           cache: true
@@ -295,13 +298,16 @@ jobs:
         run: |
           # Exclude generated files by their standard "// Code generated ... DO NOT EDIT." header
           # (covers gen/*.pb.go, *_mock.go, oapi gen.go, sqlc output) rather than fragile path globs.
+          # gofumpt pinned to v0.10.0 (was @latest) so the format gate is
+          # reproducible — a gofumpt release that changes formatting rules
+          # can't silently turn this gate red on an unrelated PR.
           src=$(git ls-files '*.go' | xargs grep -L '^// Code generated')
-          unformatted=$(go run mvdan.cc/gofumpt@latest -l $src)
+          unformatted=$(go run mvdan.cc/gofumpt@v0.10.0 -l $src)
           if [ -n "$unformatted" ]; then
             echo "The following files are not formatted with gofumpt:"
             echo "$unformatted"
             echo ""
-            echo "Run: go run mvdan.cc/gofumpt@latest -w <files>"
+            echo "Run: go run mvdan.cc/gofumpt@v0.10.0 -w <files>"
             exit 1
           fi
 
@@ -321,7 +327,7 @@ jobs:
         service: [gateway, orders, payments, notifications]
       fail-fast: false  # build all images even if one fails
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
 
       # Build without pushing — confirms the parametric Dockerfile resolves for
       # every service.  No registry credentials needed.
@@ -337,7 +343,7 @@ jobs:
       # BLOCKING on HIGH/CRITICAL fixable findings (ignore-unfixed: true keeps
       # unfixable base-image CVEs from wedging CI).
       - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@0.31.0
+        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # v0.31.0
         with:
           image-ref: "${{ matrix.service }}:ci"
           format: sarif
@@ -347,7 +353,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Upload Trivy SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@dd903d2e4f5405488e5ef1422510ee31c8b32357 # v3.36.2
         if: always()
         with:
           sarif_file: trivy-results-${{ matrix.service }}.sarif
@@ -356,14 +362,14 @@ jobs:
       # ── Trivy: SBOM generation ────────────────────────────────────────────
       # Generates a CycloneDX SBOM for the image and uploads it as an artifact.
       - name: Generate SBOM (Trivy CycloneDX)
-        uses: aquasecurity/trivy-action@0.31.0
+        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # v0.31.0
         with:
           image-ref: "${{ matrix.service }}:ci"
           format: cyclonedx
           output: sbom-${{ matrix.service }}.cdx.json
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sbom-${{ matrix.service }}
           path: sbom-${{ matrix.service }}.cdx.json
@@ -378,7 +384,7 @@ jobs:
       #
       # - name: Install cosign
       #   if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
-      #   uses: sigstore/cosign-installer@v3.9.2
+      #   uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
       # - name: cosign sign (keyless/OIDC)
       #   if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
       #   run: |

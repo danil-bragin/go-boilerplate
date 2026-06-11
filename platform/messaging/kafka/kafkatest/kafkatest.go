@@ -11,6 +11,10 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/redpanda"
 )
 
+// redpandaImage pins the Redpanda test-container image; keep it in lockstep
+// with the redpanda service tag in docker-compose.yml.
+const redpandaImage = "redpandadata/redpanda:v25.3.15"
+
 // NewRedpanda starts a Redpanda container and returns:
 //   - broker: the Kafka seed-broker address ("host:port")
 //   - srURL:  the Schema Registry HTTP base URL ("http://host:port")
@@ -22,7 +26,7 @@ func NewRedpanda(t *testing.T) (broker string, srURL string) {
 
 	ctx := context.Background()
 
-	container, err := redpanda.Run(ctx, "redpandadata/redpanda:v24.2.7")
+	container, err := redpanda.Run(ctx, redpandaImage)
 	if err != nil {
 		t.Fatalf("kafkatest: start redpanda: %v", err)
 	}
@@ -77,7 +81,7 @@ func Shared(t *testing.T) (broker string, srURL string) {
 	sharedOnce.Do(func() {
 		ctx := context.Background()
 
-		container, err := redpanda.Run(ctx, "redpandadata/redpanda:v24.2.7")
+		container, err := redpanda.Run(ctx, redpandaImage)
 		if err != nil {
 			errShared = fmt.Errorf("start redpanda: %w", err)
 			return
