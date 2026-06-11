@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -299,6 +300,74 @@ func TestStreamer_SharedSubscription_1500Streams(t *testing.T) {
 	e.setStatus(t, orderID, "created")
 	e.streamer.Notify(ctx, orderID)
 	require.NoError(t, g.Wait(), "every stream must receive the broadcast update")
+}
+
+// TestStreamer_MaxStreamsSaturation: the concurrent-stream bulkhead
+// (WithMaxStreams) rejects the stream that exceeds the cap with 503
+// GATEWAY_SSE_SATURATED + a Retry-After, while the held stream stays open. A
+// cap of 1 proves the (cap+1)th rejection mechanism that the 4096 default
+// relies on; the permit is acquired FIRST (before any DB read), an O(1)
+// TryAcquirePermit, so a saturated replica sheds load at the door with no
+// hot-path regression.
+func TestStreamer_MaxStreamsSaturation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	dsn := pgtest.SharedDSN(t)
+	// Poll mode (no Redis), cap = 1.
+	e := newEnv(t, dsn, "", sse.WithMaxStreams(1))
+
+	orderID := uuid.NewString()
+	e.seedOrder(t, orderID, "pending")
+
+	tr := &http.Transport{}
+	defer tr.CloseIdleConnections()
+	httpc := &http.Client{Transport: tr}
+
+	// Hold the single permit with one long-lived stream.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		e.base+"/v1/orders/"+orderID+"/events", http.NoBody)
+	require.NoError(t, err)
+	held, err := httpc.Do(req) //nolint:bodyclose // closed via cancel + defer below
+	require.NoError(t, err)
+	defer held.Body.Close()
+	require.Equal(t, http.StatusOK, held.StatusCode)
+
+	// Drain at least the first event so the handler is past acquire and holding
+	// the permit for the bulkhead's whole lifetime.
+	require.Eventually(t, func() bool {
+		sc := bufio.NewScanner(held.Body)
+		for sc.Scan() {
+			if strings.HasPrefix(sc.Text(), "data:") {
+				return true
+			}
+		}
+		return false
+	}, 10*time.Second, 50*time.Millisecond, "held stream never produced its snapshot")
+
+	// The next stream exceeds the cap → 503 GATEWAY_SSE_SATURATED + Retry-After.
+	require.Eventually(t, func() bool {
+		req2, err := http.NewRequest(http.MethodGet, //nolint:noctx
+			e.base+"/v1/orders/"+orderID+"/events", http.NoBody)
+		if err != nil {
+			return false
+		}
+		resp, err := httpc.Do(req2)
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			return false
+		}
+		body, _ := io.ReadAll(resp.Body)
+		require.NotEmpty(t, resp.Header.Get("Retry-After"), "saturated 503 must carry Retry-After")
+		require.Contains(t, string(body), "GATEWAY_SSE_SATURATED")
+		return true
+	}, 10*time.Second, 100*time.Millisecond, "second stream must be rejected 503 while the cap is held")
 }
 
 // TestStreamer_GapRefresh_NoSilentStall: when the shared subscriber's

@@ -207,6 +207,26 @@ func TestJWKSVerifier_WrongAudience(t *testing.T) {
 	assert.True(t, errors.Is(err, auth.ErrInvalidToken))
 }
 
+// TestJWKSVerifier_EmptySubject_Rejected: a token whose subject claim is empty
+// (or absent) is rejected with ErrInvalidToken. The subject is the identity
+// the whole authz + idempotency keyspace is keyed on; admitting an empty one
+// would let a token collapse every actor into the same global namespace (an
+// idempotency-key cross-actor collision and an authz-ownership hole).
+func TestJWKSVerifier_EmptySubject_Rejected(t *testing.T) {
+	keys := generateTestKeys(t)
+	srv := startJWKSServer(t, keys)
+	v := newVerifier(t, srv.URL, testIssuer, testAudience)
+
+	// Empty subject — otherwise a fully valid token (right issuer, audience,
+	// signature, not expired).
+	signed := signToken(t, keys, testIssuer, testAudience, "", testUsername,
+		time.Now().Add(time.Hour), nil)
+
+	_, err := v.Verify(context.Background(), string(signed))
+	require.Error(t, err, "a token with an empty subject must be rejected")
+	assert.True(t, errors.Is(err, auth.ErrInvalidToken), "expected ErrInvalidToken, got: %v", err)
+}
+
 func TestJWKSVerifier_BadSignature(t *testing.T) {
 	keys := generateTestKeys(t)
 	srv := startJWKSServer(t, keys)

@@ -3,12 +3,32 @@ package gateway
 import (
 	"testing"
 
+	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/storage/blob"
 	"go-boilerplate/platform/storage/pg"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestConfigDefaults pins the env defaults that the round-8 hardening changed:
+// the SSE bulkhead now defaults to a positive cap (4096) — a safe per-replica
+// guard — while 0 stays the explicit opt-out for unlimited. The attachment
+// content-type allowlist defaults to a conservative doc/image set.
+func TestConfigDefaults(t *testing.T) {
+	// config.Load runs Validate(); outside production it is a no-op, so the
+	// shipped insecure-but-convenient defaults load cleanly.
+	t.Setenv("APP_ENV", "development")
+
+	cfg, err := config.Load[Config]()
+	require.NoError(t, err)
+
+	assert.Equal(t, 4096, cfg.SSEMaxStreams, "SSE bulkhead must default to a positive cap")
+	assert.False(t, cfg.RatelimitFailClosed, "fail-open is the documented default")
+	assert.Contains(t, cfg.AttachmentContentTypes, "application/pdf")
+	assert.Contains(t, cfg.AttachmentContentTypes, "image/png")
+	assert.NotContains(t, cfg.AttachmentContentTypes, "text/html", "renderable types must not be in the default allowlist")
+}
 
 // safeProdConfig returns a Config that passes every production preflight check,
 // so each table case can mutate exactly one field to the insecure value and

@@ -146,7 +146,14 @@ func (v *JWKSVerifier) Verify(ctx context.Context, rawToken string) (Principal, 
 		}
 	}
 
+	// The subject is the identity the authz + idempotency keyspace is keyed on.
+	// Reject an empty/absent sub: admitting it would collapse every actor into a
+	// shared global namespace (cross-actor idempotency-key collisions, an
+	// ownership-check hole). Fail closed.
 	sub, _ := tok.Subject()
+	if sub == "" {
+		return Principal{}, fmt.Errorf("%w: token has empty subject claim", ErrInvalidToken)
+	}
 	p := Principal{
 		Subject: sub,
 		Claims:  privateClaims(tok),

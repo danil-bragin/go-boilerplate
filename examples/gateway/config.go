@@ -74,8 +74,9 @@ type Config struct {
 	// SSEMaxStreams caps concurrently open SSE streams per replica (bulkhead
 	// guarding the per-stream memory/FD surface). When the cap is reached a
 	// NEW stream gets 503 GATEWAY_SSE_SATURATED (+ small Retry-After); the
-	// permit frees as soon as any stream ends. 0 (default) = no cap.
-	SSEMaxStreams int `env:"GATEWAY_SSE_MAX_STREAMS" envDefault:"0"`
+	// permit frees as soon as any stream ends. Default 4096 is a safe bulkhead
+	// for a typical replica; set 0 to explicitly opt OUT of the cap (unlimited).
+	SSEMaxStreams int `env:"GATEWAY_SSE_MAX_STREAMS" envDefault:"4096"`
 	// EmbeddedProjection controls whether this gateway process runs the
 	// read-model projection consumer (default true — single-binary demo
 	// topology). Set false when the projection runs as its own deployment
