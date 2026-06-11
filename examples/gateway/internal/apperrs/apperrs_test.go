@@ -28,6 +28,8 @@ func TestRegistry_GatewayCodes(t *testing.T) {
 		{apperrs.CodeAttachmentInvalidOrderID, http.StatusBadRequest},
 		{apperrs.CodeAttachmentInvalidFilename, http.StatusBadRequest},
 		{apperrs.CodeAttachmentNotFound, http.StatusNotFound},
+		{apperrs.CodeAttachmentTypeRejected, http.StatusUnsupportedMediaType},
+		{apperrs.CodeAttachmentTooLarge, http.StatusRequestEntityTooLarge},
 	}
 	for _, tc := range cases {
 		t.Run(tc.code, func(t *testing.T) {

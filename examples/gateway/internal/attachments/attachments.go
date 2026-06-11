@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"path"
 	"slices"
@@ -49,6 +50,21 @@ const (
 	maxFilenameLen    = 128
 )
 
+// DefaultAllowedContentTypes is the upload content-type allowlist applied when
+// none is configured: a conservative set of document/image types plus the
+// generic binary fallback. Renderable types (text/html, image/svg+xml,
+// application/xml, …) are deliberately ABSENT — even though Download forces an
+// attachment disposition, refusing them on upload is defence-in-depth against
+// stored XSS. Override per service with WithAllowedContentTypes.
+var DefaultAllowedContentTypes = []string{
+	"application/pdf",
+	"image/png",
+	"image/jpeg",
+	"image/gif",
+	"text/plain",
+	"application/octet-stream",
+}
+
 // AdminRole is the role that bypasses ownership checks across the gateway:
 // both the attachments handler and the orders read path (api.Server) use
 // this same constant, so "admin" means the same thing everywhere.
@@ -71,6 +87,45 @@ type Option func(*Handler)
 // must own the order (Subject == customer_id) unless it holds the admin role.
 func WithOwnerLookup(lookup OwnerLookup) Option {
 	return func(h *Handler) { h.ownerLookup = lookup }
+}
+
+// WithAllowedContentTypes overrides the upload content-type allowlist
+// (default DefaultAllowedContentTypes). Matching is on the media type only —
+// parameters such as "; charset=utf-8" are ignored. An empty or nil list
+// resets to the default rather than allowing everything (fail-closed).
+func WithAllowedContentTypes(types []string) Option {
+	return func(h *Handler) {
+		if len(types) == 0 {
+			h.allowedTypes = defaultAllowedTypeSet()
+			return
+		}
+		set := make(map[string]struct{}, len(types))
+		for _, t := range types {
+			if mt := normalizeMediaType(t); mt != "" {
+				set[mt] = struct{}{}
+			}
+		}
+		h.allowedTypes = set
+	}
+}
+
+// normalizeMediaType lowercases a Content-Type and strips parameters, so
+// "text/plain; charset=utf-8" and "TEXT/PLAIN" both reduce to "text/plain".
+// On a parse error it falls back to the trimmed, lowercased raw value.
+func normalizeMediaType(ct string) string {
+	if mt, _, err := mime.ParseMediaType(ct); err == nil {
+		return mt
+	}
+	return strings.ToLower(strings.TrimSpace(ct))
+}
+
+// defaultAllowedTypeSet builds the lookup set from DefaultAllowedContentTypes.
+func defaultAllowedTypeSet() map[string]struct{} {
+	set := make(map[string]struct{}, len(DefaultAllowedContentTypes))
+	for _, t := range DefaultAllowedContentTypes {
+		set[t] = struct{}{}
+	}
+	return set
 }
 
 // ownerPolicy is the resource-aware authz.Policy used for the ownership
@@ -101,6 +156,8 @@ type Handler struct {
 	requiredRole string
 	ownerLookup  OwnerLookup
 	ownership    authz.Policy
+	// allowedTypes is the upload content-type allowlist (media type → present).
+	allowedTypes map[string]struct{}
 }
 
 // New creates a Handler with the given ObjectStore and flag evaluation function.
@@ -115,6 +172,7 @@ func New(store blob.ObjectStore, flagBool func(context.Context, string, bool) bo
 		presignTTL:   defaultPresignTTL,
 		requiredRole: defaultRole,
 		ownership:    ownerPolicy{bypassRole: AdminRole},
+		allowedTypes: defaultAllowedTypeSet(),
 	}
 	for _, o := range opts {
 		o(h)
@@ -232,15 +290,19 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate {id}: must be a valid UUID.
+	// Validate {id}: must be a valid UUID. Build the key from the CANONICAL
+	// (parsed) form, never the raw path value — otherwise two spellings of one
+	// id (case, braces) would map to two distinct object keys.
 	rawID := chi.URLParam(r, "id")
-	if _, err := uuid.Parse(rawID); err != nil {
+	id, err := uuid.Parse(rawID)
+	if err != nil {
 		httpx.WriteError(w, r, apperr.Wrap(err, apperrs.CodeAttachmentInvalidOrderID))
 		return
 	}
+	canonicalID := id.String()
 
 	// Ownership: the order must belong to the principal (admin bypasses).
-	if !h.checkOwnership(w, r, p, rawID) {
+	if !h.checkOwnership(w, r, p, canonicalID) {
 		return
 	}
 
@@ -254,20 +316,38 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Content-Type allowlist (stored-XSS defence-in-depth). An absent header
+	// defaults to the generic binary type, which is in the default allowlist.
 	contentType := r.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
+	mediaType := normalizeMediaType(contentType)
+	if _, ok := h.allowedTypes[mediaType]; !ok {
+		httpx.WriteError(w, r, apperr.New(apperrs.CodeAttachmentTypeRejected).WithParam("content_type", mediaType))
+		return
+	}
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		// An oversized body trips the MaxBytes middleware's MaxBytesReader,
+		// surfacing as *http.MaxBytesError — map it to 413 instead of a generic
+		// 500 (the failure is the client's request size, not the server).
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			httpx.WriteError(w, r, apperr.New(apperrs.CodeAttachmentTooLarge))
+			return
+		}
 		httpx.WriteError(w, r, err)
 		return
 	}
 
-	key := "orders/" + rawID + "/" + filename
+	key := "orders/" + canonicalID + "/" + filename
 
-	if err := h.store.Put(ctx, key, bytes.NewReader(body), int64(len(body)), contentType); err != nil {
+	// Stream to the store with the known content length (len(body)); the
+	// normalized media type is stored so the object's own metadata matches the
+	// validated allowlist entry.
+	if err := h.store.Put(ctx, key, bytes.NewReader(body), int64(len(body)), mediaType); err != nil {
 		httpx.WriteError(w, r, err)
 		return
 	}
@@ -296,15 +376,18 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate {id}: must be a valid UUID.
+	// Validate {id}: must be a valid UUID. Use the CANONICAL (parsed) form for
+	// the key, matching how Upload stored it.
 	rawID := chi.URLParam(r, "id")
-	if _, err := uuid.Parse(rawID); err != nil {
+	id, err := uuid.Parse(rawID)
+	if err != nil {
 		httpx.WriteError(w, r, apperr.Wrap(err, apperrs.CodeAttachmentInvalidOrderID))
 		return
 	}
+	canonicalID := id.String()
 
 	// Ownership: the order must belong to the principal (admin bypasses).
-	if !h.checkOwnership(w, r, p, rawID) {
+	if !h.checkOwnership(w, r, p, canonicalID) {
 		return
 	}
 
@@ -315,7 +398,7 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key := "orders/" + rawID + "/" + name
+	key := "orders/" + canonicalID + "/" + name
 
 	exists, err := h.store.Exists(ctx, key)
 	if err != nil {
@@ -323,11 +406,15 @@ func (h *Handler) Download(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !exists {
-		httpx.WriteError(w, r, apperr.New(apperrs.CodeAttachmentNotFound).WithParams(map[string]any{"order_id": rawID, "filename": name}))
+		httpx.WriteError(w, r, apperr.New(apperrs.CodeAttachmentNotFound).WithParams(map[string]any{"order_id": canonicalID, "filename": name}))
 		return
 	}
 
-	u, err := h.store.PresignGet(ctx, key, h.presignTTL)
+	// PresignAttachment forces Content-Disposition: attachment +
+	// application/octet-stream on the signed response: a browser saves the
+	// blob instead of rendering an uploaded HTML/SVG payload inline in the
+	// store's origin (stored-XSS defence).
+	u, err := h.store.PresignGet(ctx, key, h.presignTTL, blob.PresignAttachment())
 	if err != nil {
 		httpx.WriteError(w, r, err)
 		return

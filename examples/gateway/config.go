@@ -98,6 +98,13 @@ type Config struct {
 	// batch INSERTs — the projection creates the row when OrderCreated
 	// arrives regardless).
 	PendingAsync bool `env:"GATEWAY_PENDING_ASYNC" envDefault:"false"`
+	// AttachmentContentTypes is the upload Content-Type allowlist for order
+	// attachments. An upload whose media type is not listed is rejected with
+	// 415 GATEWAY_ATTACHMENT_TYPE_REJECTED — defence-in-depth against stored
+	// XSS (renderable types such as text/html and image/svg+xml are absent by
+	// default; Download additionally forces an attachment disposition).
+	// Empty falls back to attachments.DefaultAllowedContentTypes.
+	AttachmentContentTypes []string `env:"GATEWAY_ATTACHMENT_CONTENT_TYPES" envSeparator:"," envDefault:"application/pdf,image/png,image/jpeg,image/gif,text/plain,application/octet-stream"`
 }
 
 // defaultDevPGDSN is the shipped development PG_DSN (see pg.Config). Booting

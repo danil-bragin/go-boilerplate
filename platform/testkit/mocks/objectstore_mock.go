@@ -34,7 +34,7 @@ var _ blob.ObjectStore = &ObjectStoreMock{}
 //			ListFunc: func(ctx context.Context, prefix string) ([]string, error) {
 //				panic("mock out the List method")
 //			},
-//			PresignGetFunc: func(ctx context.Context, key string, ttl time.Duration) (string, error) {
+//			PresignGetFunc: func(ctx context.Context, key string, ttl time.Duration, opts ...blob.PresignOption) (string, error) {
 //				panic("mock out the PresignGet method")
 //			},
 //			PutFunc: func(ctx context.Context, key string, r io.Reader, size int64, contentType string) error {
@@ -60,7 +60,7 @@ type ObjectStoreMock struct {
 	ListFunc func(ctx context.Context, prefix string) ([]string, error)
 
 	// PresignGetFunc mocks the PresignGet method.
-	PresignGetFunc func(ctx context.Context, key string, ttl time.Duration) (string, error)
+	PresignGetFunc func(ctx context.Context, key string, ttl time.Duration, opts ...blob.PresignOption) (string, error)
 
 	// PutFunc mocks the Put method.
 	PutFunc func(ctx context.Context, key string, r io.Reader, size int64, contentType string) error
@@ -103,6 +103,8 @@ type ObjectStoreMock struct {
 			Key string
 			// TTL is the ttl argument value.
 			TTL time.Duration
+			// Opts is the opts argument value.
+			Opts []blob.PresignOption
 		}
 		// Put holds details about calls to the Put method.
 		Put []struct {
@@ -271,23 +273,25 @@ func (mock *ObjectStoreMock) ListCalls() []struct {
 }
 
 // PresignGet calls PresignGetFunc.
-func (mock *ObjectStoreMock) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
+func (mock *ObjectStoreMock) PresignGet(ctx context.Context, key string, ttl time.Duration, opts ...blob.PresignOption) (string, error) {
 	if mock.PresignGetFunc == nil {
 		panic("ObjectStoreMock.PresignGetFunc: method is nil but ObjectStore.PresignGet was just called")
 	}
 	callInfo := struct {
-		Ctx context.Context
-		Key string
-		TTL time.Duration
+		Ctx  context.Context
+		Key  string
+		TTL  time.Duration
+		Opts []blob.PresignOption
 	}{
-		Ctx: ctx,
-		Key: key,
-		TTL: ttl,
+		Ctx:  ctx,
+		Key:  key,
+		TTL:  ttl,
+		Opts: opts,
 	}
 	mock.lockPresignGet.Lock()
 	mock.calls.PresignGet = append(mock.calls.PresignGet, callInfo)
 	mock.lockPresignGet.Unlock()
-	return mock.PresignGetFunc(ctx, key, ttl)
+	return mock.PresignGetFunc(ctx, key, ttl, opts...)
 }
 
 // PresignGetCalls gets all the calls that were made to PresignGet.
@@ -295,14 +299,16 @@ func (mock *ObjectStoreMock) PresignGet(ctx context.Context, key string, ttl tim
 //
 //	len(mockedObjectStore.PresignGetCalls())
 func (mock *ObjectStoreMock) PresignGetCalls() []struct {
-	Ctx context.Context
-	Key string
-	TTL time.Duration
+	Ctx  context.Context
+	Key  string
+	TTL  time.Duration
+	Opts []blob.PresignOption
 } {
 	var calls []struct {
-		Ctx context.Context
-		Key string
-		TTL time.Duration
+		Ctx  context.Context
+		Key  string
+		TTL  time.Duration
+		Opts []blob.PresignOption
 	}
 	mock.lockPresignGet.RLock()
 	calls = mock.calls.PresignGet

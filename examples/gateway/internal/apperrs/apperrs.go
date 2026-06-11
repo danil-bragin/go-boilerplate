@@ -72,6 +72,20 @@ const (
 	// CodeAttachmentNotFound: no such attachment object for the order. 404.
 	CodeAttachmentNotFound = "GATEWAY_ATTACHMENT_NOT_FOUND"
 
+	// CodeAttachmentTypeRejected: the upload's Content-Type is not in the
+	// configured allowlist (GATEWAY_ATTACHMENT_CONTENT_TYPES). Stored-XSS
+	// defence-in-depth: a renderable type (text/html, image/svg+xml, …) is
+	// refused at the door even though Download already forces an attachment
+	// disposition. The rejected type is echoed in params.content_type — it is
+	// the client's own header, safe to return. 415.
+	CodeAttachmentTypeRejected = "GATEWAY_ATTACHMENT_TYPE_REJECTED"
+
+	// CodeAttachmentTooLarge: the upload body exceeded the server-wide request
+	// body cap (HTTP_MAX_BODY_BYTES, enforced by the MaxBytes middleware).
+	// Mapped here so an oversized upload returns 413 instead of a generic 500.
+	// 413.
+	CodeAttachmentTooLarge = "GATEWAY_ATTACHMENT_TOO_LARGE"
+
 	// CodeSSESaturated: this replica's concurrent SSE stream cap
 	// (GATEWAY_SSE_MAX_STREAMS) is reached — a protective bulkhead, not a
 	// client error. Transient: retry (another replica, or after Retry-After)
@@ -91,5 +105,8 @@ func init() {
 	apperr.Register(CodeAttachmentInvalidOrderID, 400, true, "invalid order id")
 	apperr.Register(CodeAttachmentInvalidFilename, 400, true, "invalid filename")
 	apperr.Register(CodeAttachmentNotFound, 404, true, "attachment not found")
+	apperr.Register(CodeAttachmentTypeRejected, 415, true,
+		"attachment content type {content_type} is not allowed", "content_type")
+	apperr.Register(CodeAttachmentTooLarge, 413, true, "attachment exceeds the maximum allowed size")
 	apperr.Register(CodeSSESaturated, 503, false, "order event stream capacity reached; retry shortly")
 }

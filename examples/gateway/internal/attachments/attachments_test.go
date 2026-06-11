@@ -95,7 +95,137 @@ func TestDownload_RedirectsWhenFlagOn(t *testing.T) {
 
 	require.Equal(t, http.StatusFound, rw.Code)
 	loc := rw.Header().Get("Location")
-	assert.Equal(t, "https://fake-blob.local/orders/"+validOrderID+"/doc.txt", loc)
+	// The presigned URL forces an attachment download disposition (stored-XSS
+	// defence): the response-content-disposition / response-content-type query
+	// params instruct the store to answer Content-Disposition: attachment +
+	// application/octet-stream, so a browser saves the file instead of
+	// rendering uploaded HTML/SVG inline.
+	assert.Contains(t, loc, "https://fake-blob.local/orders/"+validOrderID+"/doc.txt")
+	assert.Contains(t, loc, "response-content-disposition=attachment")
+	assert.Contains(t, loc, "response-content-type=application%2Foctet-stream")
+}
+
+// TestUpload_RejectsDisallowedContentType: an upload whose Content-Type is not
+// in the allowlist (text/html — a stored-XSS vector) is refused with 415
+// GATEWAY_ATTACHMENT_TYPE_REJECTED and never reaches the store.
+func TestUpload_RejectsDisallowedContentType(t *testing.T) {
+	t.Parallel()
+
+	store := fakes.NewObjectStore()
+	h := attachments.New(store, flagOn)
+	r := newRouter(h)
+
+	body := strings.NewReader("<script>alert(1)</script>")
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+validOrderID+"/attachment", body)
+	req.Header.Set("Content-Type", "text/html")
+	req.Header.Set("X-Filename", "evil.html")
+	req = withUserPrincipal(req)
+
+	rw := httptest.NewRecorder()
+	r.ServeHTTP(rw, req)
+
+	require.Equal(t, http.StatusUnsupportedMediaType, rw.Code)
+
+	ok, err := store.Exists(context.Background(), "orders/"+validOrderID+"/evil.html")
+	require.NoError(t, err)
+	require.False(t, ok, "a disallowed content type must never be stored")
+}
+
+// TestUpload_AllowsConfiguredContentType: a content type added via
+// WithAllowedContentTypes is accepted (the allowlist is configurable).
+func TestUpload_AllowsConfiguredContentType(t *testing.T) {
+	t.Parallel()
+
+	store := fakes.NewObjectStore()
+	h := attachments.New(store, flagOn, attachments.WithAllowedContentTypes([]string{"image/webp"}))
+	r := newRouter(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+validOrderID+"/attachment", strings.NewReader("data"))
+	req.Header.Set("Content-Type", "image/webp")
+	req.Header.Set("X-Filename", "pic.webp")
+	req = withUserPrincipal(req)
+
+	rw := httptest.NewRecorder()
+	r.ServeHTTP(rw, req)
+
+	require.Equal(t, http.StatusCreated, rw.Code)
+}
+
+// TestUpload_ContentTypeWithParamsAllowed: the allowlist matches the media
+// type only, ignoring parameters — "text/plain; charset=utf-8" is allowed when
+// "text/plain" is.
+func TestUpload_ContentTypeWithParamsAllowed(t *testing.T) {
+	t.Parallel()
+
+	store := fakes.NewObjectStore()
+	h := attachments.New(store, flagOn)
+	r := newRouter(h)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+validOrderID+"/attachment", strings.NewReader("hi"))
+	req.Header.Set("Content-Type", "text/plain; charset=utf-8")
+	req.Header.Set("X-Filename", "doc.txt")
+	req = withUserPrincipal(req)
+
+	rw := httptest.NewRecorder()
+	r.ServeHTTP(rw, req)
+
+	require.Equal(t, http.StatusCreated, rw.Code)
+}
+
+// TestUpload_CanonicalKeyFromParsedUUID: the object key is built from the
+// CANONICAL (parsed) UUID, not the raw URL parameter. An uppercase / braced
+// UUID variant in the path is normalised so two spellings of one id cannot map
+// to two distinct keys.
+func TestUpload_CanonicalKeyFromParsedUUID(t *testing.T) {
+	t.Parallel()
+
+	store := fakes.NewObjectStore()
+	h := attachments.New(store, flagOn)
+	r := newRouter(h)
+
+	// Uppercase spelling of validOrderID — uuid.Parse normalises to lowercase.
+	rawID := strings.ToUpper(validOrderID)
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+rawID+"/attachment", strings.NewReader("data"))
+	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("X-Filename", "doc.txt")
+	req = withUserPrincipal(req)
+
+	rw := httptest.NewRecorder()
+	r.ServeHTTP(rw, req)
+
+	require.Equal(t, http.StatusCreated, rw.Code)
+
+	var resp map[string]string
+	require.NoError(t, json.NewDecoder(rw.Body).Decode(&resp))
+	// Canonical (lowercase) key, never the raw uppercase path value.
+	assert.Equal(t, "orders/"+validOrderID+"/doc.txt", resp["key"])
+
+	ok, err := store.Exists(context.Background(), "orders/"+validOrderID+"/doc.txt")
+	require.NoError(t, err)
+	require.True(t, ok, "object must be stored under the canonical key")
+}
+
+// TestUpload_OversizedBodyReturns413: a request body that trips the MaxBytes
+// middleware surfaces as 413 GATEWAY_ATTACHMENT_TOO_LARGE, not a generic 500.
+func TestUpload_OversizedBodyReturns413(t *testing.T) {
+	t.Parallel()
+
+	store := fakes.NewObjectStore()
+	h := attachments.New(store, flagOn)
+	r := newRouter(h)
+
+	// 8 bytes of payload behind a 4-byte MaxBytes cap → ReadAll returns a
+	// *http.MaxBytesError.
+	req := httptest.NewRequest(http.MethodPost, "/v1/orders/"+validOrderID+"/attachment", strings.NewReader("12345678"))
+	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("X-Filename", "doc.txt")
+	req = withUserPrincipal(req)
+	req.Body = http.MaxBytesReader(httptest.NewRecorder(), req.Body, 4)
+
+	rw := httptest.NewRecorder()
+	r.ServeHTTP(rw, req)
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, rw.Code)
 }
 
 // TestUpload_404WhenFlagOff: flag→false → 404.

@@ -74,16 +74,24 @@ func (s *ObjectStore) Exists(_ context.Context, key string) (bool, error) {
 	return ok, nil
 }
 
-// PresignGet returns "https://fake-blob.local/<key>" regardless of TTL.
-// It returns an error if the key does not exist.
-func (s *ObjectStore) PresignGet(_ context.Context, key string, _ time.Duration) (string, error) {
+// PresignGet returns "https://fake-blob.local/<key>" regardless of TTL. When
+// the PresignAttachment option is supplied it appends the same
+// response-content-disposition / response-content-type query parameters the
+// real S3 presigner emits, so handler tests can assert the stored-XSS
+// download-disposition defence end to end. Returns an error if the key does
+// not exist.
+func (s *ObjectStore) PresignGet(_ context.Context, key string, _ time.Duration, opts ...blob.PresignOption) (string, error) {
 	s.mu.RLock()
 	_, ok := s.objects[key]
 	s.mu.RUnlock()
 	if !ok {
 		return "", fmt.Errorf("fakes: ObjectStore.PresignGet: key %q not found", key)
 	}
-	return "https://fake-blob.local/" + key, nil
+	u := "https://fake-blob.local/" + key
+	if blob.PresignWantsAttachment(opts) {
+		u += "?response-content-disposition=attachment&response-content-type=application%2Foctet-stream"
+	}
+	return u, nil
 }
 
 // List returns all keys whose names start with prefix.

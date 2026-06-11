@@ -130,16 +130,39 @@ func (s *S3Store) Exists(ctx context.Context, key string) (bool, error) {
 	return true, nil
 }
 
-// PresignGet returns a time-limited pre-signed GET URL for key.
-func (s *S3Store) PresignGet(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	req, err := s.presign.PresignGetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(s.bucket),
-		Key:    aws.String(key),
-	}, s3.WithPresignExpires(ttl))
+// PresignGet returns a time-limited pre-signed GET URL for key. Options adjust
+// the response the store serves; PresignAttachment forces a download
+// disposition (the stored-XSS defence for user-uploaded blobs).
+func (s *S3Store) PresignGet(ctx context.Context, key string, ttl time.Duration, opts ...PresignOption) (string, error) {
+	req, err := s.presign.PresignGetObject(ctx, getObjectInput(s.bucket, key, opts...), s3.WithPresignExpires(ttl))
 	if err != nil {
 		return "", err
 	}
 	return req.URL, nil
+}
+
+// getObjectInput builds the GetObjectInput for a presigned GET, applying any
+// PresignOption response overrides. The presigner serialises
+// ResponseContentDisposition / ResponseContentType into the
+// response-content-disposition / response-content-type query parameters, so a
+// fetch of the signed URL makes the store answer with those headers — that is
+// how PresignAttachment forces a download instead of inline rendering.
+func getObjectInput(bucket, key string, opts ...PresignOption) *s3.GetObjectInput {
+	var cfg presignConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	in := &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}
+	if cfg.contentDisposition != "" {
+		in.ResponseContentDisposition = aws.String(cfg.contentDisposition)
+	}
+	if cfg.contentType != "" {
+		in.ResponseContentType = aws.String(cfg.contentType)
+	}
+	return in
 }
 
 // List returns all object keys under the given prefix (recursive).
