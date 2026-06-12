@@ -33,6 +33,12 @@ type RelayConfig struct {
 	RetentionAge    time.Duration `env:"OUTBOX_RETENTION_AGE"    envDefault:"24h"`
 	CleanupInterval time.Duration `env:"OUTBOX_CLEANUP_INTERVAL" envDefault:"1h"`
 	SingleActive    bool          `env:"OUTBOX_SINGLE_ACTIVE"    envDefault:"true"`
+	// Shards > 1 splits publishing across N independently leader-elected relays,
+	// each owning the aggregate_ids that hash into its shard (ADR-0017). This
+	// scales publish throughput ~N× while preserving per-aggregate order (a key
+	// always maps to one shard). 1 (default) = a single relay, behaviour
+	// unchanged. servicekit.AddOutboxRelay reads this to spawn the shard fleet.
+	Shards int `env:"OUTBOX_RELAY_SHARDS" envDefault:"1"`
 }
 
 // Relay polls unpublished outbox rows and publishes them via a Publisher,
@@ -81,6 +87,17 @@ type Relay struct {
 	leaderPool *pgxpool.Pool
 	leaderConn *pgxpool.Conn
 
+	// Sharding (see WithShard). shardCount <= 1 means unsharded: the relay
+	// fetches every unpublished row and uses the bare leader lock key. When
+	// shardCount > 1 the relay fetches only its shard's rows and contends a
+	// shard-scoped lock key, so N shard-leaders run concurrently.
+	shardCount int
+	shardIndex int
+	// lockSQL/unlockSQL are the advisory-lock acquire/release statements for
+	// this relay's leader key (bare for unsharded, shard-scoped otherwise).
+	lockSQL   string
+	unlockSQL string
+
 	metrics relayMetrics
 }
 
@@ -117,6 +134,20 @@ func WithSingleActive(pool *pgxpool.Pool) RelayOption {
 	return func(r *Relay) { r.leaderPool = pool }
 }
 
+// WithShard restricts this relay to the aggregate_ids that hash into shard
+// index of count (ADR-0017), and scopes its leader lock to that shard so N
+// shard-relays can each be leader at once. count <= 1 is a no-op (unsharded).
+// Use together with WithSingleActive so each shard has exactly one active
+// publisher — that is what preserves per-aggregate order under sharding.
+func WithShard(index, count int) RelayOption {
+	return func(r *Relay) {
+		if count > 1 {
+			r.shardCount = count
+			r.shardIndex = index
+		}
+	}
+}
+
 // NewRelay creates a Relay.
 func NewRelay(pool *pg.Pool, pub Publisher, cfg RelayConfig, opts ...RelayOption) *Relay {
 	if cfg.BatchSize <= 0 {
@@ -126,8 +157,20 @@ func NewRelay(pool *pg.Pool, pub Publisher, cfg RelayConfig, opts ...RelayOption
 		cfg.PollInterval = time.Second
 	}
 	r := &Relay{pool: pool, pub: pub, cfg: cfg, metrics: newRelayMetrics()}
+	// Default to the bare (unsharded) leader-lock statements; WithShard may
+	// switch them to shard-scoped keys below.
+	r.lockSQL = advisoryLockSQL
+	r.unlockSQL = advisoryUnlockSQL
 	for _, o := range opts {
 		o(r)
+	}
+	if r.shardCount > 1 {
+		r.lockSQL = fmt.Sprintf(
+			`select pg_try_advisory_lock(hashtext('outbox_relay:'||current_schema()||':shard:%d'))`, r.shardIndex,
+		)
+		r.unlockSQL = fmt.Sprintf(
+			`select pg_advisory_unlock(hashtext('outbox_relay:'||current_schema()||':shard:%d'))`, r.shardIndex,
+		)
 	}
 	return r
 }
@@ -137,6 +180,56 @@ func NewRelay(pool *pg.Pool, pub Publisher, cfg RelayConfig, opts ...RelayOption
 // stops on a batch error — it backs off and retries regardless.
 func (r *Relay) SetOnError(fn func(error)) {
 	r.onError = fn
+}
+
+// fetchUnpublished claims up to BatchSize unpublished rows (FOR UPDATE SKIP
+// LOCKED) within the caller's transaction. Unsharded relays fetch every row;
+// sharded relays fetch only the rows whose aggregate_id hashes into their
+// shard. Both queries return identical columns, mapped to Message.
+func (r *Relay) fetchUnpublished(txCtx context.Context) ([]Message, error) {
+	q := gen.New(pg.FromContext(txCtx, r.pool))
+	if r.shardCount > 1 {
+		rows, err := q.FetchUnpublishedShard(txCtx, gen.FetchUnpublishedShardParams{
+			ShardCount: int64(r.shardCount),
+			ShardIndex: int64(r.shardIndex),
+			BatchSize:  r.cfg.BatchSize,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("outbox: fetch shard %d/%d: %w", r.shardIndex, r.shardCount, err)
+		}
+		msgs := make([]Message, len(rows))
+		for i, row := range rows {
+			msgs[i] = Message{
+				ID:            row.ID,
+				Topic:         row.Topic,
+				AggregateType: row.AggregateType,
+				AggregateID:   row.AggregateID,
+				EventType:     row.EventType,
+				Payload:       row.Payload,
+				Headers:       []byte(row.Headers),
+				CreatedAt:     row.CreatedAt.Time,
+			}
+		}
+		return msgs, nil
+	}
+	rows, err := q.FetchUnpublished(txCtx, r.cfg.BatchSize)
+	if err != nil {
+		return nil, fmt.Errorf("outbox: fetch: %w", err)
+	}
+	msgs := make([]Message, len(rows))
+	for i, row := range rows {
+		msgs[i] = Message{
+			ID:            row.ID,
+			Topic:         row.Topic,
+			AggregateType: row.AggregateType,
+			AggregateID:   row.AggregateID,
+			EventType:     row.EventType,
+			Payload:       row.Payload,
+			Headers:       []byte(row.Headers),
+			CreatedAt:     row.CreatedAt.Time,
+		}
+	}
+	return msgs, nil
 }
 
 // ProcessBatch runs the three-phase A/B/C cycle once:
@@ -156,25 +249,9 @@ func (r *Relay) ProcessBatch(ctx context.Context) (int, error) {
 	// marks them → duplicate publish → inbox deduplicates by Message.ID.
 	var msgs []Message
 	if err := pg.RunInTx(ctx, r.pool, func(txCtx context.Context) error {
-		q := gen.New(pg.FromContext(txCtx, r.pool))
-		rows, err := q.FetchUnpublished(txCtx, r.cfg.BatchSize)
-		if err != nil {
-			return fmt.Errorf("outbox: fetch: %w", err)
-		}
-		msgs = make([]Message, len(rows))
-		for i, row := range rows {
-			msgs[i] = Message{
-				ID:            row.ID,
-				Topic:         row.Topic,
-				AggregateType: row.AggregateType,
-				AggregateID:   row.AggregateID,
-				EventType:     row.EventType,
-				Payload:       row.Payload,
-				Headers:       []byte(row.Headers),
-				CreatedAt:     row.CreatedAt.Time,
-			}
-		}
-		return nil
+		var err error
+		msgs, err = r.fetchUnpublished(txCtx)
+		return err
 	}); err != nil {
 		return 0, fmt.Errorf("outbox: claim phase: %w", err)
 	}
@@ -275,7 +352,7 @@ func (r *Relay) ensureLeader(ctx context.Context) bool {
 		return false
 	}
 	var acquired bool
-	if err := conn.QueryRow(ctx, advisoryLockSQL).Scan(&acquired); err != nil || !acquired {
+	if err := conn.QueryRow(ctx, r.lockSQL).Scan(&acquired); err != nil || !acquired {
 		conn.Release()
 		return false
 	}
@@ -295,7 +372,7 @@ func (r *Relay) dropLeadership(ctx context.Context, unlock bool) {
 	}
 	r.leaderConn = nil
 	if unlock {
-		if _, err := conn.Exec(ctx, advisoryUnlockSQL); err == nil {
+		if _, err := conn.Exec(ctx, r.unlockSQL); err == nil {
 			conn.Release()
 			return
 		}

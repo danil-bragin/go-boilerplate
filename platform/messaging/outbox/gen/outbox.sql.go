@@ -74,6 +74,67 @@ func (q *Queries) FetchUnpublished(ctx context.Context, limit int32) ([]FetchUnp
 	return items, nil
 }
 
+const fetchUnpublishedShard = `-- name: FetchUnpublishedShard :many
+select id, topic, aggregate_type, aggregate_id, event_type, payload, headers, created_at
+from outbox
+where published_at is null
+  and mod(mod(hashtextextended(aggregate_id, 0), $1::bigint) + $1::bigint, $1::bigint) = $2::bigint
+order by created_at
+limit $3
+for update skip locked
+`
+
+type FetchUnpublishedShardParams struct {
+	ShardCount int64
+	ShardIndex int64
+	BatchSize  int32
+}
+
+type FetchUnpublishedShardRow struct {
+	ID            uuid.UUID
+	Topic         string
+	AggregateType string
+	AggregateID   string
+	EventType     string
+	Payload       []byte
+	Headers       json.RawMessage
+	CreatedAt     pgtype.Timestamptz
+}
+
+// Sharded fetch: only rows whose aggregate_id hashes into this shard. Uses
+// hashtextextended (the hash family Postgres hash-partitioning also uses) so a
+// given aggregate_id maps to exactly one shard — preserving per-aggregate order
+// while N shard-leaders publish concurrently. The double mod normalizes the
+// signed hash into [0, shard_count).
+func (q *Queries) FetchUnpublishedShard(ctx context.Context, arg FetchUnpublishedShardParams) ([]FetchUnpublishedShardRow, error) {
+	rows, err := q.db.Query(ctx, fetchUnpublishedShard, arg.ShardCount, arg.ShardIndex, arg.BatchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FetchUnpublishedShardRow
+	for rows.Next() {
+		var i FetchUnpublishedShardRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Topic,
+			&i.AggregateType,
+			&i.AggregateID,
+			&i.EventType,
+			&i.Payload,
+			&i.Headers,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertOutbox = `-- name: InsertOutbox :exec
 insert into outbox (id, topic, aggregate_type, aggregate_id, event_type, payload, headers)
 values ($1, $2, $3, $4, $5, $6, $7)
@@ -90,7 +151,8 @@ type InsertOutboxParams struct {
 }
 
 func (q *Queries) InsertOutbox(ctx context.Context, arg InsertOutboxParams) error {
-	_, err := q.db.Exec(ctx, insertOutbox,
+	_, err := q.db.Exec(
+		ctx, insertOutbox,
 		arg.ID,
 		arg.Topic,
 		arg.AggregateType,

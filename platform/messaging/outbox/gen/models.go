@@ -22,3 +22,14 @@ type Outbox struct {
 	PublishedAt   pgtype.Timestamptz
 	Topic         string
 }
+
+type OutboxDefault struct {
+	ID            uuid.UUID
+	AggregateType string
+	AggregateID   string
+	EventType     string
+	Payload       []byte
+	Headers       json.RawMessage
+	CreatedAt     pgtype.Timestamptz
+	PublishedAt   pgtype.Timestamptz
+}

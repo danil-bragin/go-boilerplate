@@ -50,9 +50,11 @@ services:
       OUTBOX_PARTITION_INTERVAL: 24h
       OUTBOX_PARTITION_RETENTION: 72h
       OUTBOX_PARTITION_LOOKAHEAD: "2"
-      # 4: relay throughput.
+      # 4: relay throughput — bigger batches + tighter poll + sharded publish
+      # (ADR-0017: ordered parallel publish across N shard-leaders).
       OUTBOX_BATCH_SIZE: "500"
       OUTBOX_POLL_INTERVAL: 100ms
+      OUTBOX_RELAY_SHARDS: "4"
 
   payments:
     environment:

@@ -21,20 +21,45 @@ import (
 // publishes at a time, preserving per-aggregate event order across replicas.
 // Set OUTBOX_SINGLE_ACTIVE=false only when consumers are reorder-safe.
 //
+// When cfg.Shards > 1 (OUTBOX_RELAY_SHARDS) it instead wires a FLEET of N
+// leader-elected shard relays (ADR-0017): each owns the aggregate_ids that hash
+// into its shard and holds its own advisory lock, so up to N instances publish
+// concurrently while per-aggregate order is preserved (a key maps to one
+// shard, whose single leader publishes it in order). Sharding implies
+// per-shard leader election regardless of SingleActive. The publisher is shared
+// across shards (the franz-go producer is goroutine-safe). One cleaner runs per
+// instance regardless of shard count (age-based DELETE is shard-agnostic).
+//
 // Returns an error when the service was built with WithoutPG — the outbox
 // lives in Postgres.
 func (s *Service) AddOutboxRelay(publisher outbox.Publisher, cfg outbox.RelayConfig) error {
 	if s.pool == nil {
 		return errors.New("servicekit: AddOutboxRelay requires postgres, but the service was built with WithoutPG()")
 	}
-	var opts []outbox.RelayOption
-	if cfg.SingleActive {
-		opts = append(opts, outbox.WithSingleActive(s.pool.Writer()))
+
+	shards := cfg.Shards
+	if shards < 1 {
+		shards = 1
 	}
-	relay := outbox.NewRelay(s.pool, publisher, cfg, opts...)
-	relay.SetOnError(func(err error) {
-		s.logger.Error("outbox relay error", "error", err)
-	})
+	for i := range shards {
+		var opts []outbox.RelayOption
+		if shards > 1 {
+			// Sharded: each shard is its own leader (ordered parallel publish).
+			opts = append(opts, outbox.WithSingleActive(s.pool.Writer()), outbox.WithShard(i, shards))
+		} else if cfg.SingleActive {
+			opts = append(opts, outbox.WithSingleActive(s.pool.Writer()))
+		}
+		shardIdx := i
+		relay := outbox.NewRelay(s.pool, publisher, cfg, opts...)
+		relay.SetOnError(func(err error) {
+			s.logger.Error("outbox relay error", "shard", shardIdx, "shards", shards, "error", err)
+		})
+		s.goroutines = append(s.goroutines, func(ctx context.Context) {
+			if err := relay.Run(ctx); err != nil && ctx.Err() == nil {
+				s.logger.Error("relay stopped unexpectedly", "shard", shardIdx, "error", err)
+			}
+		})
+	}
 
 	cleaner := outbox.NewCleaner(s.pool)
 	cleaner.SetOnError(func(err error) {
@@ -50,19 +75,11 @@ func (s *Service) AddOutboxRelay(publisher outbox.Publisher, cfg outbox.RelayCon
 		interval = time.Hour
 	}
 
-	s.goroutines = append(
-		s.goroutines,
-		func(ctx context.Context) {
-			if err := relay.Run(ctx); err != nil && ctx.Err() == nil {
-				s.logger.Error("relay stopped unexpectedly", "error", err)
-			}
-		},
-		func(ctx context.Context) {
-			if err := cleaner.RunCleanup(ctx, interval, retention); err != nil && ctx.Err() == nil {
-				s.logger.Error("cleaner stopped unexpectedly", "error", err)
-			}
-		},
-	)
+	s.goroutines = append(s.goroutines, func(ctx context.Context) {
+		if err := cleaner.RunCleanup(ctx, interval, retention); err != nil && ctx.Err() == nil {
+			s.logger.Error("cleaner stopped unexpectedly", "error", err)
+		}
+	})
 	return nil
 }
 
