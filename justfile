@@ -49,6 +49,16 @@ errgen:
 oapi:
     cd examples/gateway && oapi-codegen --config oapi.gen.yaml openapi.yaml
 
+# Render the public API docs into ./site (Redoc HTML + raw contracts) — same
+# bundle the Docs workflow publishes. Open site/index.html in a browser.
+docs:
+    mkdir -p site/proto
+    npx --yes @redocly/cli@1 build-docs examples/gateway/openapi.yaml --output site/index.html
+    cp examples/gateway/openapi.yaml site/openapi.yaml
+    cp docs/errors.md site/errors.md
+    find proto -name '*.proto' -exec cp {} site/proto/ \;
+    @echo "docs → site/index.html"
+
 # Regenerate moq mocks for platform interfaces (goimports normalizes moq's import grouping)
 gen-mocks:
     go generate ./platform/testkit/mocks/...

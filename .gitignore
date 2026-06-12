@@ -29,3 +29,6 @@ coverage.html
 
 # Stray service binaries from `go build ./cmd/...` at repo root
 /redrive
+
+# Locally-built API docs (just docs)
+site/

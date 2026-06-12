@@ -1,0 +1,80 @@
+# Renders the public API contracts into a static docs bundle on every push to
+# main that touches a spec. By default the bundle is uploaded as a workflow
+# artifact (always succeeds, downloadable from the run page). To serve it from
+# GitHub Pages instead, enable Pages (repo Settings → Pages → Source: "GitHub
+# Actions") and uncomment the `deploy` job below — the actions are already
+# SHA-pinned.
+name: Docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "examples/gateway/openapi.yaml"
+      - "proto/**"
+      - "docs/errors.md"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build API docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - name: Render OpenAPI → Redoc HTML + collect contracts
+        run: |
+          set -euo pipefail
+          mkdir -p site/proto
+          # Redoc static bundle of the REST edge contract (self-contained HTML).
+          npx --yes @redocly/cli@1 build-docs examples/gateway/openapi.yaml \
+            --output site/index.html
+          # Ship the raw machine-readable contracts alongside the rendered docs.
+          cp examples/gateway/openapi.yaml site/openapi.yaml
+          cp docs/errors.md site/errors.md
+          find proto -name '*.proto' -exec cp {} site/proto/ \;
+
+      - name: Upload docs artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: api-docs
+          path: site
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # GitHub Pages deployment (opt-in). Enable Pages with "GitHub Actions" as the
+  # source, then uncomment this job and the two permission lines it needs.
+  # ---------------------------------------------------------------------------
+  # deploy:
+  #   name: Deploy to GitHub Pages
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     pages: write       # deploy to Pages
+  #     id-token: write    # OIDC token for the deployment
+  #   environment:
+  #     name: github-pages
+  #     url: ${{ steps.deployment.outputs.page_url }}
+  #   concurrency:
+  #     group: pages
+  #     cancel-in-progress: false
+  #   steps:
+  #     - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+  #     - name: Render docs
+  #       run: |
+  #         set -euo pipefail
+  #         mkdir -p site/proto
+  #         npx --yes @redocly/cli@1 build-docs examples/gateway/openapi.yaml --output site/index.html
+  #         cp examples/gateway/openapi.yaml site/openapi.yaml
+  #         cp docs/errors.md site/errors.md
+  #         find proto -name '*.proto' -exec cp {} site/proto/ \;
+  #     - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+  #     - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+  #       with:
+  #         path: site
+  #     - id: deployment
+  #       uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
