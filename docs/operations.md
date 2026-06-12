@@ -852,6 +852,15 @@ truth, ADR-0011). Two distinct situations:
 > here means a **code or schema bug, not bad external input** — the
 > `GatewayProjectionDLT` alert fires on any `orders.events.DLT` /
 > `payments.events.DLT` write; investigate the handler, do not just redrive.
+>
+> *Throughput note.* The win is **fewer commits per poll** (one tx instead of N);
+> end-to-end committed-projection throughput only rises when the projection is the
+> bottleneck. In the `TestE2E_BatchThroughput` benchmark (opt-in,
+> `BATCH_THROUGHPUT=1`; full four-service stack at 60→90 rps in-process) the
+> projection keeps up in both modes, so committed terminal orders/s is equivalent
+> (~58 orders/s, per-event vs batch within ±2%, i.e. noise) while batch mode does
+> the same work in far fewer transactions. Under a projection-bound load (many
+> records per partition per poll) the commit-count reduction is where batch mode pays off.
 
 ### A. Reconverge / repair (preferred — no data loss window)
 
