@@ -47,3 +47,44 @@ func ProcessOnce(ctx context.Context, pool *pg.Pool, consumer, messageID string,
 	}
 	return processed, nil
 }
+
+// BatchItem is one message's dedup id and its side effect, for ProcessBatchOnce.
+type BatchItem struct {
+	MessageID string
+	Fn        func(context.Context) error
+}
+
+// ProcessBatchOnce runs a slice of items in ONE transaction: for each item it
+// inserts the (consumer, message_id) dedup row (ON CONFLICT DO NOTHING) and, if
+// the row was newly inserted, runs Fn — all in the same tx, in slice order.
+// Already-seen ids are skipped (their Fn is not called). It returns the number
+// of items whose Fn ran. Any Fn error rolls back the WHOLE batch (no inbox row,
+// no side effect persists), so the caller may safely fall back to per-item
+// processing — the batch left nothing behind.
+func ProcessBatchOnce(ctx context.Context, pool *pg.Pool, consumer string, items []BatchItem) (int, error) {
+	applied := 0
+	err := pg.RunInTx(ctx, pool, func(ctx context.Context) error {
+		applied = 0
+		db := pg.FromContext(ctx, pool)
+		for _, it := range items {
+			tag, err := db.Exec(ctx,
+				`insert into inbox (consumer, message_id) values ($1, $2) on conflict do nothing`,
+				consumer, it.MessageID)
+			if err != nil {
+				return fmt.Errorf("inbox: batch insert %s: %w", it.MessageID, err)
+			}
+			if tag.RowsAffected() == 0 {
+				continue // already processed by this consumer
+			}
+			if err := it.Fn(ctx); err != nil {
+				return err // rolls back the entire batch, including prior rows
+			}
+			applied++
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return applied, nil
+}

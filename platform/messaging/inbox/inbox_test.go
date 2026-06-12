@@ -74,6 +74,46 @@ func TestProcessOnce_FnErrorRollsBackMarker(t *testing.T) {
 	require.True(t, processed, "second call should succeed since marker was rolled back")
 }
 
+func TestProcessBatchOnce_AppliesAllInOneTx(t *testing.T) {
+	pool := newPool(t)
+	ctx := context.Background()
+
+	var applied []string
+	items := []inbox.BatchItem{
+		{MessageID: "m1", Fn: func(_ context.Context) error { applied = append(applied, "m1"); return nil }},
+		{MessageID: "m2", Fn: func(_ context.Context) error { applied = append(applied, "m2"); return nil }},
+	}
+	n, err := inbox.ProcessBatchOnce(ctx, pool, "c1", items)
+	require.NoError(t, err)
+	require.Equal(t, 2, n)
+	require.Equal(t, []string{"m1", "m2"}, applied)
+
+	// Re-running the same ids is a full no-op (dedup).
+	applied = nil
+	n, err = inbox.ProcessBatchOnce(ctx, pool, "c1", items)
+	require.NoError(t, err)
+	require.Equal(t, 0, n)
+	require.Empty(t, applied)
+}
+
+func TestProcessBatchOnce_RollsBackEntireBatchOnError(t *testing.T) {
+	pool := newPool(t)
+	ctx := context.Background()
+
+	boom := errors.New("boom")
+	items := []inbox.BatchItem{
+		{MessageID: "g1", Fn: func(_ context.Context) error { return nil }},
+		{MessageID: "bad", Fn: func(_ context.Context) error { return boom }},
+	}
+	_, err := inbox.ProcessBatchOnce(ctx, pool, "c1", items)
+	require.ErrorIs(t, err, boom)
+
+	var count int
+	require.NoError(t, pool.Reader().QueryRow(ctx,
+		`select count(*) from inbox where consumer='c1'`).Scan(&count))
+	require.Zero(t, count, "rollback must persist no inbox rows")
+}
+
 func TestProcessOnce_DifferentConsumersEachProcessOnce(t *testing.T) {
 	pool := newPool(t)
 	ctx := context.Background()
