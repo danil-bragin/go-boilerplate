@@ -59,9 +59,11 @@ jobs:
       - name: buf breaking
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            buf breaking --against '.git#branch=origin/main'
+            buf breaking --against '.git#ref=origin/main'
+          elif git rev-parse --verify --quiet HEAD~1 >/dev/null; then
+            buf breaking --against '.git#ref=HEAD~1'
           else
-            buf breaking --against '.git#branch=HEAD~1'
+            echo "no parent commit (bootstrap) — skipping breaking check"
           fi
 
 
@@ -85,7 +87,7 @@ jobs:
           squawk --version
 
       - name: squawk lint migrations
-        run: squawk $(git ls-files '*/migrations/*.sql' '*/migrations/sql/*.sql')
+        run: squawk -c .squawk.toml $(git ls-files '*/migrations/*.sql' '*/migrations/sql/*.sql')
 
   # ── Prometheus rules + config validation (promtool) ──────────────────────
   # BLOCKING: checks all rule files, the scrape config, and runs the rule
@@ -343,7 +345,7 @@ jobs:
       # BLOCKING on HIGH/CRITICAL fixable findings (ignore-unfixed: true keeps
       # unfixable base-image CVEs from wedging CI).
       - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # v0.31.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: "${{ matrix.service }}:ci"
           format: sarif
@@ -362,7 +364,7 @@ jobs:
       # ── Trivy: SBOM generation ────────────────────────────────────────────
       # Generates a CycloneDX SBOM for the image and uploads it as an artifact.
       - name: Generate SBOM (Trivy CycloneDX)
-        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # v0.31.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: "${{ matrix.service }}:ci"
           format: cyclonedx

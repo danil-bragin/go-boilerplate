@@ -24,7 +24,13 @@ func Default(extra ...goleak.Option) []goleak.Option {
 		goleak.IgnoreTopFunction("github.com/testcontainers/testcontainers-go.(*Reaper).connect.func1"),
 		goleak.IgnoreTopFunction("github.com/twmb/franz-go/pkg/kgo.(*Client).updateMetadataLoop"),
 		goleak.IgnoreTopFunction("github.com/twmb/franz-go/pkg/kgo.(*Client).reapConnectionsLoop"),
+		// OpenFeature v2's global event executor starts a listener goroutine that
+		// has no public Shutdown hook in this pseudo-version. The closure's
+		// reported name differs by build (with/without the newEventExecutor.
+		// prefix), so both forms are ignored. Not our leak — a third-party
+		// process-global singleton.
 		goleak.IgnoreTopFunction("go.openfeature.dev/openfeature/v2.(*eventExecutor).startEventListener.func1.1"),
+		goleak.IgnoreTopFunction("go.openfeature.dev/openfeature/v2.newEventExecutor.(*eventExecutor).startEventListener.func1.1"),
 	)
 	return append(opts, extra...)
 }
