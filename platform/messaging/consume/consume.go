@@ -61,6 +61,11 @@ type Consumer struct {
 	dec     serde.Deserializer // nil → raw proto.Unmarshal
 	logger  *slog.Logger
 	noInbox bool // test-only: skip inbox.ProcessOnce (see WithoutInbox)
+
+	// byType is the event-type → handler dispatch table, populated by index()
+	// the first time a Handler/BatchHandler is built. Shared by the per-record
+	// path (processRecord) and the batch path (BatchHandler).
+	byType map[string]Handler
 }
 
 // Option configures a Consumer.
@@ -189,12 +194,10 @@ func (h typedHandler[T]) handle(ctx context.Context, dec serde.Deserializer, val
 // non-nil sentinel keeps the (callback, error) return unambiguous.
 func noopCommitted(context.Context) {}
 
-// Handler combines the given typed handlers into a single kafka.HandlerFunc
-// that dispatches on the "event-type" record header. Records whose event type
-// matches none of the handlers are skipped with a debug log line and nil
-// error (committed, never redelivered): unknown events are a forward-
-// compatibility situation, not a failure.
-func (c *Consumer) Handler(handlers ...Handler) kafka.HandlerFunc {
+// index populates c.byType, the event-type → handler dispatch table shared by
+// the per-record path and the batch path. It panics on a duplicate event type
+// (a programming error: two handlers claiming the same versioned name).
+func (c *Consumer) index(handlers ...Handler) {
 	byType := make(map[string]Handler, len(handlers))
 	for _, h := range handlers {
 		if _, dup := byType[h.eventType()]; dup {
@@ -202,68 +205,111 @@ func (c *Consumer) Handler(handlers ...Handler) kafka.HandlerFunc {
 		}
 		byType[h.eventType()] = h
 	}
+	c.byType = byType
+}
 
-	return func(ctx context.Context, r kafka.Record) error {
-		// Install the propagated principal (if any) so audit behaviors see
-		// the real actor. Transport metadata, not authentication — the trust
-		// boundary is the broker ACL/mTLS perimeter (see auth.ExtractToContext).
-		ctx = auth.ExtractToContext(ctx, r.Headers)
+// prepared is the per-record state produced by prepare: the ctx with all
+// propagation installed, the matched handler, the message id, and a skip flag
+// set for unknown event types.
+type prepared struct {
+	ctx   context.Context
+	h     Handler
+	msgID string
+	skip  bool
+}
 
-		// Re-scope to the originating tenant (if propagated) so tenant-aware
-		// handlers, repositories, and the audit behavior see it. Same transport
-		// trust boundary as the principal (see tenant.ExtractToContext).
-		ctx = tenant.ExtractToContext(ctx, r.Headers)
+// prepare runs the pre-inbox per-record logic shared by the single-record and
+// batch paths: principal/tenant/chain-lineage ctx install, event-type lookup
+// (skip=true + debug log on unknown), and the uniform message-id policy. The
+// returned prepared.ctx carries correlation/causation; on skip the other
+// fields are zero.
+func (c *Consumer) prepare(ctx context.Context, r kafka.Record) prepared {
+	// Install the propagated principal (if any) so audit behaviors see
+	// the real actor. Transport metadata, not authentication — the trust
+	// boundary is the broker ACL/mTLS perimeter (see auth.ExtractToContext).
+	ctx = auth.ExtractToContext(ctx, r.Headers)
 
-		eventType := r.Headers[kafka.HeaderEventType]
-		h, ok := byType[eventType]
-		if !ok {
-			c.logger.DebugContext(ctx, "consume: skipping unknown event type",
-				"event_type", eventType, "topic", r.Topic, "group", c.group)
-			return nil
-		}
+	// Re-scope to the originating tenant (if propagated) so tenant-aware
+	// handlers, repositories, and the audit behavior see it. Same transport
+	// trust boundary as the principal (see tenant.ExtractToContext).
+	ctx = tenant.ExtractToContext(ctx, r.Headers)
 
-		// Uniform message-id policy: outbox-stamped header first, stable
-		// topic:partition:offset position as the fallback.
-		msgID := r.Headers[kafka.HeaderMessageID]
-		if msgID == "" {
-			msgID = fmt.Sprintf("%s:%d:%d", r.Topic, r.Partition, r.Offset)
-		}
+	eventType := r.Headers[kafka.HeaderEventType]
+	h, ok := c.byType[eventType]
+	if !ok {
+		c.logger.DebugContext(ctx, "consume: skipping unknown event type",
+			"event_type", eventType, "topic", r.Topic, "group", c.group)
+		return prepared{ctx: ctx, skip: true}
+	}
 
-		// Chain lineage: propagate the correlation id (falling back to this
-		// record's message id when it starts a chain) and make this message
-		// the causation parent of everything the handler emits. The outbox
-		// repository stamps both onto enqueued messages automatically.
-		corrID := r.Headers[msgctx.HeaderCorrelationID]
-		if corrID == "" {
-			corrID = msgID
-		}
-		ctx = msgctx.WithCorrelationID(ctx, corrID)
-		ctx = msgctx.WithParentMessageID(ctx, msgID)
+	// Uniform message-id policy: outbox-stamped header first, stable
+	// topic:partition:offset position as the fallback.
+	msgID := r.Headers[kafka.HeaderMessageID]
+	if msgID == "" {
+		msgID = fmt.Sprintf("%s:%d:%d", r.Topic, r.Partition, r.Offset)
+	}
 
-		if c.noInbox {
-			// Test-only path (WithoutInbox): no transaction, no dedup.
-			onCommitted, err := h.handle(ctx, c.dec, r.Value)
-			if err != nil {
-				return fmt.Errorf("consume: process %s (id=%s): %w", eventType, msgID, err)
-			}
-			if onCommitted != nil {
-				onCommitted(ctx)
-			}
-			return nil
-		}
+	// Chain lineage: propagate the correlation id (falling back to this
+	// record's message id when it starts a chain) and make this message
+	// the causation parent of everything the handler emits. The outbox
+	// repository stamps both onto enqueued messages automatically.
+	corrID := r.Headers[msgctx.HeaderCorrelationID]
+	if corrID == "" {
+		corrID = msgID
+	}
+	ctx = msgctx.WithCorrelationID(ctx, corrID)
+	ctx = msgctx.WithParentMessageID(ctx, msgID)
 
-		var onCommitted func(context.Context)
-		_, err := inbox.ProcessOnce(ctx, c.pool, c.group, msgID, func(ctx context.Context) error {
-			var err error
-			onCommitted, err = h.handle(ctx, c.dec, r.Value)
-			return err
-		})
+	return prepared{ctx: ctx, h: h, msgID: msgID}
+}
+
+// processRecord runs the full per-record pipeline for one record: prepare,
+// then the inbox.ProcessOnce dedup+side-effect transaction (or the noInbox
+// test path), then the post-commit hook. Unknown event types are skipped with
+// a nil error. This is the proven single-record path; BatchHandler reuses it
+// verbatim as its per-record fallback.
+func (c *Consumer) processRecord(ctx context.Context, r kafka.Record) error {
+	p := c.prepare(ctx, r)
+	if p.skip {
+		return nil
+	}
+	ctx = p.ctx
+
+	if c.noInbox {
+		// Test-only path (WithoutInbox): no transaction, no dedup.
+		onCommitted, err := p.h.handle(ctx, c.dec, r.Value)
 		if err != nil {
-			return fmt.Errorf("consume: process %s (id=%s): %w", eventType, msgID, err)
+			return fmt.Errorf("consume: process %s (id=%s): %w", r.Headers[kafka.HeaderEventType], p.msgID, err)
 		}
 		if onCommitted != nil {
 			onCommitted(ctx)
 		}
 		return nil
+	}
+
+	var onCommitted func(context.Context)
+	_, err := inbox.ProcessOnce(ctx, c.pool, c.group, p.msgID, func(ctx context.Context) error {
+		var err error
+		onCommitted, err = p.h.handle(ctx, c.dec, r.Value)
+		return err
+	})
+	if err != nil {
+		return fmt.Errorf("consume: process %s (id=%s): %w", r.Headers[kafka.HeaderEventType], p.msgID, err)
+	}
+	if onCommitted != nil {
+		onCommitted(ctx)
+	}
+	return nil
+}
+
+// Handler combines the given typed handlers into a single kafka.HandlerFunc
+// that dispatches on the "event-type" record header. Records whose event type
+// matches none of the handlers are skipped with a debug log line and nil
+// error (committed, never redelivered): unknown events are a forward-
+// compatibility situation, not a failure.
+func (c *Consumer) Handler(handlers ...Handler) kafka.HandlerFunc {
+	c.index(handlers...)
+	return func(ctx context.Context, r kafka.Record) error {
+		return c.processRecord(ctx, r)
 	}
 }
