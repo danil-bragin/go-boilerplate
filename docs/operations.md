@@ -1086,6 +1086,117 @@ docker compose -f docker-compose.yml -f docker-compose.scale.yml \
 | Consumer parallelism | `TOPIC_PARTITIONS` ↑ (set up front; `ENSURE_TOPICS` won't repartition existing topics) | Raises the per-topic consumer ceiling so more replicas do work instead of idling |
 | Async pending writes | `GATEWAY_PENDING_ASYNC=true` | Collapses pending-row INSERTs into batched multi-row writes (trades GET-after-POST read-your-writes) |
 
+---
+
+## Consistency levels (A2)
+
+Every command type declares a `cqrs.ConsistencyPolicy` that governs four
+independent behaviour axes. Strong is the default and is byte-identical to
+every pre-A2 flow; Eventual is an explicit opt-in for high-volume, low-value
+flows (view tracking, clickstream events, browse history) where audit
+completeness and read-your-writes latency can be traded for throughput.
+
+**The four axes**
+
+| Axis | Type | Meaning when `true` | Default in `Strong` | Default in `Eventual` |
+|---|---|---|---|---|
+| `Transactional` | bool | Handler runs inside `pg.RunInTx`; command + outbox enqueue are atomic | `true` | `true` |
+| `SyncAudit` | bool | Audit entry written inside the command transaction (caller uses `audit.Audit`) | `true` | `false` — caller uses `audit.AsyncAudit` |
+| `SyncRYW` | bool | Pending-row INSERT is synchronous (GET-after-POST reads your own write) | `true` | `false` — gateway may batch pending inserts (`GATEWAY_PENDING_ASYNC`) |
+| `SyncProjection` | bool | Projection applies per-event synchronously | `true` | `false` — projection may lag |
+
+**Presets**
+
+```go
+// Strong — fully ACID (default for order/payment flows).
+// Byte-identical to all pre-A2 behaviour.
+cqrs.Strong
+// → ConsistencyPolicy{Transactional: true, SyncAudit: true, SyncRYW: true, SyncProjection: true}
+
+// Eventual — keeps the DB transaction but relaxes audit/RYW/projection.
+// Use for high-volume, low-value flows where losing an audit entry is acceptable.
+cqrs.Eventual
+// → ConsistencyPolicy{Transactional: true, SyncAudit: false, SyncRYW: false, SyncProjection: false}
+```
+
+**Per-axis overrides**
+
+```go
+// Drop one axis from Strong (e.g. async audit only, keep RYW):
+cqrs.Strong.With(cqrs.SyncAudit(false))
+
+// Fully non-transactional (single-write, no outbox, no inbox):
+cqrs.Eventual.With(cqrs.Transactional(false))
+```
+
+Override syntax: `policy.With(cqrs.<Axis>(value))` returns a new copy; the
+original preset is unchanged.
+
+**When to use Eventual**
+
+Choose Eventual for commands that:
+- Perform a single small write (no outbox, no multi-table atomicity).
+- Are very high frequency (view counts, activity feeds, browse events).
+- Can tolerate a small window where the audit record is missing (e.g. during
+  a crash before the async writer drains).
+
+Keep Strong for every money-grade, order, and inventory flow.
+
+**Wiring a command with Eventual consistency**
+
+```go
+// 1. Build the pipeline with Eventual + Transactional(false) for a single-write command:
+cqrs.StandardPipeline[RecordProductView, struct{}]("record_product_view").
+    WithConsistency(cqrs.Eventual.With(cqrs.Transactional(false)), pool)
+
+// 2. Wire async audit instead of the synchronous Audit behavior:
+audit.AsyncAudit[RecordProductView, struct{}](writer, "view", func(c RecordProductView) string {
+    return c.ProductID
+})
+
+// 3. Register the writer before Start (returns error if called after Start):
+if err := svc.AddAuditWriter(writer); err != nil {
+    return err
+}
+```
+
+`audit.AsyncAudit` builds the same audit entry as `audit.Audit` and enqueues
+it in a `BufferedAuditWriter` after the handler succeeds. A handler failure
+does not enqueue anything. The `BufferedAuditWriter` drains entries in the
+background using `RecordBatchSameChain`, grouping entries by chain to amortise
+the chain-head lock. Tuning is wiring-time only — see `audit.WriterConfig`
+(`Buffer`, `BatchSize`, `FlushInterval`; defaults: 4096 / 128 / 100 ms).
+
+**Effectively-once is never relaxed**
+
+`ConsistencyPolicy` relaxes _observation_ (audit completeness, read-your-writes
+timing, projection lag). It never relaxes delivery. Outbox + inbox
+effectively-once semantics are preserved unconditionally:
+
+- `Eventual` keeps `Transactional: true` by default — the command and any
+  outbox enqueue are always atomic.
+- Calling `WithConsistency` with `Transactional: false` on a command that was
+  also marked `WithOutbox` **panics at startup**. This is a compile-time
+  foot-gun guard: a non-transactional handler with an outbox enqueue would break
+  the atomic write, which would silently corrupt the effectively-once guarantee.
+
+**Alerting on Eventual audit**
+
+Async audit is best-effort. Entries are lost on a crash if they have not yet
+been flushed to the database. If the buffer fills faster than the drainer can
+flush, entries are also dropped (non-blocking `Enqueue`). Monitor these two
+metrics:
+
+| Metric | Meaning | Alert threshold |
+|---|---|---|
+| `audit.dropped_total` | Async audit entries dropped because the buffer was full | > 0 for any sustained window |
+| `audit.async_write_errors_total` | Flush failures (DB error when writing buffered entries) | > 0 |
+
+`audit.dropped_total > 0` means there are audit gaps in the Eventual-flow
+chains. Alert on it promptly — it indicates either buffer saturation (raise
+`WriterConfig.Buffer` or reduce Eventual-flow volume) or a DB connectivity
+problem.
+
 These do not lift the **single-writer ceiling** (see "Write-path ceiling"
 below). The two cross-aggregate serialization points that throttle commands
 regardless of the writer — the single-active outbox relay and the global audit
