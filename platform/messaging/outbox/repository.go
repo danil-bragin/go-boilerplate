@@ -8,6 +8,7 @@ import (
 	"go-boilerplate/platform/messaging/msgctx"
 	"go-boilerplate/platform/messaging/outbox/gen"
 	"go-boilerplate/platform/security/auth"
+	"go-boilerplate/platform/security/tenant"
 	"go-boilerplate/platform/storage/pg"
 )
 
@@ -102,6 +103,12 @@ func StampChainHeaders(ctx context.Context, msg Message) Message {
 	// keys ourselves to honour the "explicit headers win" rule.
 	if _, ok := h[auth.HeaderPrincipalSub]; !ok {
 		auth.InjectHeaders(ctx, h)
+	}
+	// Tenant propagation: stamp the originating tenant so downstream consumers
+	// (consume.Typed → tenant.ExtractToContext) stay scoped to it across hops.
+	// Same "explicit headers win" rule as the principal above.
+	if _, ok := h[tenant.HeaderTenantID]; !ok {
+		tenant.InjectHeaders(ctx, h)
 	}
 	out, err := json.Marshal(h)
 	if err != nil {

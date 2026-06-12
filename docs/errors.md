@@ -49,4 +49,5 @@ localized texts live in the owning service's i18n catalog, keyed by code.
 | `ORDERS_INVALID_STATUS_TRANSITION` | 409 | yes | `from`, `to` | order cannot transition from {from} to {to} |
 | `RATE_LIMITED` | 429 | yes | — | rate limit exceeded |
 | `RATE_LIMIT_UNAVAILABLE` | 503 | no | — | rate limiter unavailable |
+| `TENANT_REQUIRED` | 400 | yes | — | tenant context required |
 | `VALIDATION_FAILED` | 400 | yes | — | validation failed |

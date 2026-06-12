@@ -41,6 +41,7 @@ import (
 	"go-boilerplate/platform/messaging/msgctx"
 	"go-boilerplate/platform/messaging/serde"
 	"go-boilerplate/platform/security/auth"
+	"go-boilerplate/platform/security/tenant"
 	"go-boilerplate/platform/storage/pg"
 
 	"google.golang.org/protobuf/proto"
@@ -207,6 +208,11 @@ func (c *Consumer) Handler(handlers ...Handler) kafka.HandlerFunc {
 		// the real actor. Transport metadata, not authentication — the trust
 		// boundary is the broker ACL/mTLS perimeter (see auth.ExtractToContext).
 		ctx = auth.ExtractToContext(ctx, r.Headers)
+
+		// Re-scope to the originating tenant (if propagated) so tenant-aware
+		// handlers, repositories, and the audit behavior see it. Same transport
+		// trust boundary as the principal (see tenant.ExtractToContext).
+		ctx = tenant.ExtractToContext(ctx, r.Headers)
 
 		eventType := r.Headers[kafka.HeaderEventType]
 		h, ok := byType[eventType]

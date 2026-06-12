@@ -15,6 +15,7 @@ import (
 	"go-boilerplate/platform/observability/log"
 	"go-boilerplate/platform/security/audit"
 	"go-boilerplate/platform/security/auth"
+	"go-boilerplate/platform/security/tenant"
 	"go-boilerplate/platform/storage/blob"
 	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/web/httpserver"
@@ -170,6 +171,13 @@ func mountAPIRoutes(
 		chiOpts.Middlewares = append(chiOpts.Middlewares, api.MiddlewareFunc(authedLimit))
 	}
 	if !cfg.AuthDisabled {
+		// Tenant resolution (ADR-0015): appended BEFORE auth so it sits INNER in
+		// the slice (last element = outermost), i.e. runs AFTER auth and sees the
+		// verified principal. Best-effort: requests without a tenant claim are a
+		// no-op, so it is safe on the single-tenant demo path. Tenant-scoped
+		// command pipelines fail closed via tenant.Require.
+		chiOpts.Middlewares = append(chiOpts.Middlewares, api.MiddlewareFunc(tenant.Middleware("")))
+
 		authMiddleware := auth.Middleware(verifier, auth.WithMaxTokenBytes(cfg.AuthMaxTokenBytes))
 		chiOpts.Middlewares = append(chiOpts.Middlewares, api.MiddlewareFunc(
 			func(next http.Handler) http.Handler {

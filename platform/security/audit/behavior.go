@@ -5,6 +5,7 @@ import (
 
 	"go-boilerplate/platform/cqrs"
 	"go-boilerplate/platform/security/auth"
+	"go-boilerplate/platform/security/tenant"
 )
 
 // actorFrom extracts the actor identifier from the context principal.
@@ -43,6 +44,13 @@ func Audit[C, R any](store Store, action string, subjectFor func(C) string) cqrs
 				Actor:   actorFrom(ctx),
 				Action:  action,
 				Subject: subjectFor(cmd),
+			}
+			// Record the originating tenant when one is in scope. It rides in
+			// the metadata map, which is already part of the hash chain, so no
+			// schema or chain change is needed and the tenant attribution is
+			// itself tamper-evident.
+			if tid, ok := tenant.FromContext(ctx); ok {
+				entry.Metadata = map[string]string{"tenant_id": tid}
 			}
 			if recErr := store.Record(ctx, entry); recErr != nil {
 				var zero R

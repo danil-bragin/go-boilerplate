@@ -34,7 +34,8 @@
 | `resilience` | `platform/resilience` | failsafe-go policy builders: `Retry`, `CircuitBreaker`, `Timeout`, `Bulkhead`; compose via `failsafe.With` |
 | `auth` | `platform/security/auth` | OIDC/JWT validation via lestrrat jwx/v3 (clock skew, optional azp); JWKS auto-refresh; `Principal` in `ctx`; Kafka header propagation (`InjectHeaders`/`ExtractToContext`) |
 | `authz` | `platform/security/authz` | RBAC `Behavior` — extracts roles from `ctx` principal; returns 403 if required permission absent |
-| `audit` | `platform/security/audit` | `Behavior` — on successful command writes an audit entry (who/what/when/resource) to the audit table via `pg.FromContext` |
+| `audit` | `platform/security/audit` | `Behavior` — on successful command writes an audit entry (who/what/when/resource) to the audit table via `pg.FromContext`; records the originating tenant in the (hash-chained) metadata |
+| `tenant` | `platform/security/tenant` | Tenant-id ctx carrier + Kafka `tenant-id` header `InjectHeaders`/`ExtractToContext`; `Middleware` resolves it from the verified JWT principal claim; `Require` CQRS behavior fails closed (`TENANT_REQUIRED`) when absent. `consume`/`outbox`/`audit` propagate it automatically — ADR-0015 |
 | `featureflags` | `platform/featureflags` | OpenFeature Go SDK v2 wrapper; `BoolValue`/`StringValue` helpers; swappable provider (in-memory provider included; flagd/LaunchDarkly via `openfeature.SetProviderAndWait`) |
 | `servicekit` | `platform/servicekit` | Service wiring harness: `New` (+`WithoutKafka`/`WithoutPG`), `AddConsumer`/`AddConsumerWithRetry`/`AddOutboxRelay`/`AddWorker`/`AddHTTPServer`/`AddAuditCleanup`, `Main` entry point; readiness-first drain-gate teardown |
 | `testkit` | `platform/testkit` | Test doubles + harnesses: `fakes` (in-memory broker/stores), `mockhttp` (JWKS test server), `mocks` (moq-generated), `fixtures`, `goleakopts` (shared goleak ignore set), `traffic` (seeded adversarial load generator + correctness ledger — `cmd/trafficgen`, e2e traffic tests) |
@@ -186,7 +187,7 @@ The following items are genuine gaps deferred to a later iteration:
 
 | Item | Notes |
 |---|---|
-| Multi-tenancy | Tenant-id context + event propagation is a documented seam; not built in v1 |
+| Multi-tenancy (DB isolation) | Tenant-id context + Kafka/outbox/audit propagation is now BUILT (`platform/security/tenant`, ADR-0015). What remains deferred: Postgres row-level-security policies + `tenant_id` columns on domain tables. Until then repositories isolate by filtering on `tenant.FromContext`. |
 | TLS (inter-service) | **Configurable** (ADR-0014): Kafka SASL+TLS (`KAFKA_SASL_*`, `KAFKA_TLS_ENABLED`) and Redis password+TLS (`REDIS_PASSWORD`, `REDIS_TLS_ENABLED`) are wired into the franz-go / rueidis clients; the JWKS URL must be `https` unless `AUTH_ALLOW_INSECURE_JWKS=true`. Defaults stay plaintext for dev; HTTP and OTLP (`WithInsecure`, `sslmode=disable`) still terminate TLS at the ingress/mesh in production. See `operations.md` § Transport security. |
 | Table partitioning / age-based cleanup | Age-based cleanup (polling delete of old published outbox rows, old audit rows) is wired; range-based Postgres table partitioning for true hot/cold archival is deferred. |
 | Read replica pool routing | `pg.Pool` supports reader/writer split; replica routing not enabled in the example services |

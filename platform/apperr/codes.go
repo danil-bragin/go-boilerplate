@@ -31,6 +31,12 @@ const (
 	// CodeRateLimitUnavailable marks fail-closed rejections when the
 	// distributed limiter backend is unreachable (503, transient).
 	CodeRateLimitUnavailable = "RATE_LIMIT_UNAVAILABLE"
+
+	// CodeTenantRequired marks a request or command that reached a
+	// tenant-scoped boundary without a resolvable tenant id (no tenant claim
+	// in the principal, no tenant-id propagation header). Permanent: the same
+	// input will never carry a tenant on retry.
+	CodeTenantRequired = "TENANT_REQUIRED"
 )
 
 func init() {
@@ -41,4 +47,5 @@ func init() {
 	Register(CodeMalformedPayload, 400, true, "malformed message payload")
 	Register(CodeRateLimited, 429, true, "rate limit exceeded")
 	Register(CodeRateLimitUnavailable, 503, false, "rate limiter unavailable")
+	Register(CodeTenantRequired, 400, true, "tenant context required")
 }
