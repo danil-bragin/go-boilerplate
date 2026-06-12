@@ -78,6 +78,45 @@ func (s *Service) AddConsumer(ctx context.Context, groupID string, topics []stri
 	return nil
 }
 
+// AddBatchConsumer is AddConsumer for a batch handler: each partition's poll
+// records are applied in one transaction (consume.Consumer.BatchHandler / the
+// kafka RunBatch loop). Use it for high-volume idempotent projections where
+// per-event commits are the bottleneck. Same lifecycle, group, topics, and
+// error handling as AddConsumer.
+func (s *Service) AddBatchConsumer(ctx context.Context, groupID string, topics []string, handler kafka.BatchHandlerFunc) error {
+	if s.kafkaClient == nil {
+		return errNoKafka("AddBatchConsumer")
+	}
+
+	// Ensure DLT topics exist alongside the source topics.
+	allTopics := make([]string, 0, len(topics)*2)
+	allTopics = append(allTopics, topics...)
+	for _, t := range topics {
+		allTopics = append(allTopics, t+".DLT")
+	}
+	if err := s.EnsureTopics(ctx, allTopics...); err != nil {
+		return err
+	}
+
+	// Build consumer.
+	consumerCfg := s.cfg.Kafka
+	consumerCfg.GroupID = groupID
+	consumer, err := kafka.NewConsumer(consumerCfg, topics, s.consumerOnError(groupID))
+	if err != nil {
+		return err
+	}
+	// Register consumer Close in the closer (runs before consumers-cancel in LIFO,
+	// but consumers-cancel is registered LAST so it runs FIRST — see ordering note at top).
+	s.closer.Add("kafka-consumer-"+groupID, consumer.Close)
+
+	s.goroutines = append(s.goroutines, func(ctx context.Context) {
+		if err := consumer.RunBatch(ctx, handler); err != nil && ctx.Err() == nil {
+			s.logger.Error("consumer stopped unexpectedly", "group", groupID, "error", err)
+		}
+	})
+	return nil
+}
+
 // AddConsumerWithRetry wires a consumer whose failures escalate to tiered
 // retry topics (non-blocking redrive) instead of blocking the partition
 // with in-process backoff. The flow: policy.FastAttempts immediate
