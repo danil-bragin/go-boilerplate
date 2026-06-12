@@ -76,6 +76,9 @@ services:
       POOL_MODE: transaction
       MAX_CLIENT_CONN: "500"
       DEFAULT_POOL_SIZE: "20"
+      # Transaction pooling rejects unknown startup parameters; the app sets
+      # statement_timeout (PG_STATEMENT_TIMEOUT) and pgx probes extra_float_digits.
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits,statement_timeout
     ports:
       - "6432:5432"
     depends_on:

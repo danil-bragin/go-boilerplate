@@ -9,6 +9,20 @@
 # See docs/operations.md § "Scaling — Tier-1 levers" for the rationale and the
 # signals that tell you when to reach for each one.
 #
+# KNOWN LIMITATION (surfaced by the first real up-scale run): the audit
+# append-only migration (00003/00004) assumes the migration role == the runtime
+# `app` role — it transfers audit_log ownership to audit_admin and GRANTs back to
+# current_user. With a SPLIT/privileged migrate role (PG_MIGRATE_URL below points
+# at the postgres superuser so the ALTER OWNER succeeds), those GRANTs land on the
+# migrate role, NOT on `app`, so `app` ends up without INSERT on audit_log /
+# audit_chain_head and the order command fails at audit time. The proper fix is in
+# the migration (grant the audit privileges to the runtime app role explicitly, or
+# `SET LOCAL ROLE audit_admin` for the owner-side grants) — TODO, not yet done.
+# Until then a fresh up-scale needs, once, per service DB:
+#   GRANT SELECT,INSERT ON audit_log TO app;
+#   GRANT USAGE,SELECT ON SEQUENCE audit_log_id_seq TO app;
+#   GRANT SELECT,INSERT,UPDATE ON audit_chain_head TO app;
+#
 # What it turns on:
 #   1. Connection pooling — apps connect through PgBouncer (transaction mode)
 #      instead of straight to Postgres, so a small per-pod pool fans out to many
@@ -31,7 +45,11 @@ services:
   gateway:
     environment:
       # 1+2: write through PgBouncer, reads off the (here co-located) reader DSN.
-      PG_DSN: postgres://app:app@pgbouncer:6432/gateway?sslmode=disable
+      PG_DSN: postgres://app:app@pgbouncer:5432/gateway?sslmode=disable
+      # Migrations dial Postgres DIRECTLY (never through PgBouncer — the migration
+      # runner holds a session advisory lock that transaction pooling breaks).
+      PG_MIGRATE_URL: postgres://postgres:postgres@postgres:5432/gateway?sslmode=disable
+      PG_STATEMENT_CACHE_MODE: "1" # describe-exec (prepared plans don't survive txn pooling)
       PG_READER_DSN: postgres://app:app@postgres:5432/gateway?sslmode=disable
       PG_MAX_CONNS: "10" # small per-pod pool; PgBouncer multiplexes upstream
       PG_READER_MAX_CONNS: "10"
@@ -39,10 +57,18 @@ services:
       TOPIC_PARTITIONS: "24"
       # 6: sharded audit hash chain — drop the global chain-head lock (ADR-0018).
       AUDIT_CHAIN_SHARDS: "4"
+      # Load-test: lift the edge rate limiters so the measurement hits the
+      # write-path, not the limiter (per-IP + authed-per-principal both raised;
+      # authed tier disabled). Production keeps the base-compose limits.
+      RATELIMIT_RPS: "1000000"
+      RATELIMIT_BURST: "1000000"
+      RATELIMIT_AUTHED_RPS: "0"
 
   orders:
     environment:
-      PG_DSN: postgres://app:app@pgbouncer:6432/orders?sslmode=disable
+      PG_DSN: postgres://app:app@pgbouncer:5432/orders?sslmode=disable
+      PG_MIGRATE_URL: postgres://postgres:postgres@postgres:5432/orders?sslmode=disable
+      PG_STATEMENT_CACHE_MODE: "1"
       PG_READER_DSN: postgres://app:app@postgres:5432/orders?sslmode=disable
       PG_MAX_CONNS: "10"
       PG_READER_MAX_CONNS: "10"
@@ -61,7 +87,9 @@ services:
 
   payments:
     environment:
-      PG_DSN: postgres://app:app@pgbouncer:6432/payments?sslmode=disable
+      PG_DSN: postgres://app:app@pgbouncer:5432/payments?sslmode=disable
+      PG_MIGRATE_URL: postgres://postgres:postgres@postgres:5432/payments?sslmode=disable
+      PG_STATEMENT_CACHE_MODE: "1"
       PG_READER_DSN: postgres://app:app@postgres:5432/payments?sslmode=disable
       PG_MAX_CONNS: "10"
       PG_READER_MAX_CONNS: "10"
@@ -78,6 +106,8 @@ services:
   notifications:
     environment:
       # Terminal consumer (no outbox); still benefits from pooling + parallelism.
-      PG_DSN: postgres://app:app@pgbouncer:6432/notifications?sslmode=disable
+      PG_DSN: postgres://app:app@pgbouncer:5432/notifications?sslmode=disable
+      PG_MIGRATE_URL: postgres://postgres:postgres@postgres:5432/notifications?sslmode=disable
+      PG_STATEMENT_CACHE_MODE: "1"
       PG_MAX_CONNS: "10"
       TOPIC_PARTITIONS: "24"

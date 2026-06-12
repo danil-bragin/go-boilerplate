@@ -41,19 +41,19 @@ CREATE DATABASE notifications WITH OWNER app;
 \connect gateway
 GRANT ALL PRIVILEGES ON SCHEMA public TO app;
 GRANT CONNECT ON DATABASE gateway TO audit_admin;
-GRANT USAGE ON SCHEMA public TO audit_admin;
+GRANT USAGE, CREATE ON SCHEMA public TO audit_admin;
 
 \connect orders
 GRANT ALL PRIVILEGES ON SCHEMA public TO app;
 GRANT CONNECT ON DATABASE orders TO audit_admin;
-GRANT USAGE ON SCHEMA public TO audit_admin;
+GRANT USAGE, CREATE ON SCHEMA public TO audit_admin;
 
 \connect payments
 GRANT ALL PRIVILEGES ON SCHEMA public TO app;
 GRANT CONNECT ON DATABASE payments TO audit_admin;
-GRANT USAGE ON SCHEMA public TO audit_admin;
+GRANT USAGE, CREATE ON SCHEMA public TO audit_admin;
 
 \connect notifications
 GRANT ALL PRIVILEGES ON SCHEMA public TO app;
 GRANT CONNECT ON DATABASE notifications TO audit_admin;
-GRANT USAGE ON SCHEMA public TO audit_admin;
+GRANT USAGE, CREATE ON SCHEMA public TO audit_admin;
