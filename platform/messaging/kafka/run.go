@@ -35,7 +35,12 @@ type backoffState struct {
 	until    time.Time
 }
 
-// Run enters a poll loop, processing partitions concurrently within each poll
+// partitionProcessor processes one partition's poll records in order and
+// returns the last durably-handled record (for the commit) and the first
+// unrecoverable record (for the seek-back), or nil firstBad on full success.
+type partitionProcessor func(ctx context.Context, recs []*kgo.Record) (last, firstBad *kgo.Record)
+
+// run enters a poll loop, processing partitions concurrently within each poll
 // and committing all successful offsets in a single batch RPC per poll.
 //
 // Concurrency model:
@@ -71,9 +76,13 @@ type backoffState struct {
 //     is reassigned. Consumers MUST be idempotent and deduplicate by a stable
 //     idempotency key (e.g. an inbox table keyed on message-id).
 //
-// The loop stops when ctx is cancelled; Run returns ctx.Err() in that case.
+// The loop stops when ctx is cancelled; run returns ctx.Err() in that case.
 // It also returns if the underlying client is closed (ErrClientClosed).
-func (c *Consumer) Run(ctx context.Context, h HandlerFunc) error {
+//
+// The per-partition record handling is delegated to processPartition; Run and
+// RunBatch share this loop and supply different processors, so the
+// poll/commit/seek-back/backoff machinery is identical for both.
+func (c *Consumer) run(ctx context.Context, processPartition partitionProcessor) error {
 	// Per-partition redelivery backoff state. Entries are created on handler
 	// failure and removed on the next successful record from that partition.
 	// A partition revoked while present here is harmless: the map is bounded
@@ -179,32 +188,7 @@ func (c *Consumer) Run(ctx context.Context, h HandlerFunc) error {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				var (
-					last      *kgo.Record
-					firstBad  *kgo.Record
-					succeeded int64
-				)
-				part.EachRecord(func(rec *kgo.Record) {
-					if firstBad != nil {
-						// A previous record in this partition failed; skip the
-						// rest — the seek-back below rewinds to firstBad.
-						return
-					}
-					r := RecordFromKGO(rec)
-					start := time.Now()
-					err := h(ctx, r)
-					c.metrics.recordHandlerDuration(ctx, part.Topic, time.Since(start), err)
-					if err != nil {
-						firstBad = rec
-						return
-					}
-					succeeded++
-					last = rec
-				})
-				c.metrics.addProcessed(ctx, part.Topic, succeeded)
-				if firstBad != nil {
-					c.metrics.addFailed(ctx, part.Topic)
-				}
+				last, firstBad := processPartition(ctx, part.Records)
 				mu.Lock()
 				defer mu.Unlock()
 				if last != nil {
@@ -272,6 +256,69 @@ func (c *Consumer) Run(ctx context.Context, h HandlerFunc) error {
 		// Allow the next rebalance now that we have committed and sought.
 		c.cl.AllowRebalance()
 	}
+}
+
+// Run processes one record at a time (unchanged behaviour). See run for the
+// poll/commit/seek-back/backoff machinery.
+func (c *Consumer) Run(ctx context.Context, h HandlerFunc) error {
+	return c.run(ctx, func(ctx context.Context, recs []*kgo.Record) (last, firstBad *kgo.Record) {
+		var succeeded int64
+		for _, rec := range recs {
+			start := time.Now()
+			err := h(ctx, RecordFromKGO(rec))
+			c.metrics.recordHandlerDuration(ctx, rec.Topic, time.Since(start), err)
+			if err != nil {
+				firstBad = rec
+				break
+			}
+			succeeded++
+			last = rec
+		}
+		if len(recs) > 0 {
+			c.metrics.addProcessed(ctx, recs[0].Topic, succeeded)
+		}
+		if firstBad != nil {
+			c.metrics.addFailed(ctx, firstBad.Topic)
+		}
+		return last, firstBad
+	})
+}
+
+// RunBatch hands each partition's poll records to bh as one slice. The batch
+// handler returns how many records it durably applied (in order); the consumer
+// commits up to records[processed-1] and, when processed < len with a non-nil
+// error, seeks back to records[processed] for redelivery. The per-partition
+// commit/seek-back/backoff machinery is identical to Run.
+func (c *Consumer) RunBatch(ctx context.Context, bh BatchHandlerFunc) error {
+	return c.run(ctx, func(ctx context.Context, recs []*kgo.Record) (last, firstBad *kgo.Record) {
+		if len(recs) == 0 {
+			return nil, nil
+		}
+		records := make([]Record, len(recs))
+		for i, rec := range recs {
+			records[i] = RecordFromKGO(rec)
+		}
+		start := time.Now()
+		processed, err := bh(ctx, records)
+		c.metrics.recordHandlerDuration(ctx, recs[0].Topic, time.Since(start), err)
+		// Clamp a misbehaving handler's count into [0, len(recs)] so the
+		// commit/seek-back index math below cannot panic or skip records.
+		if processed < 0 {
+			processed = 0
+		}
+		if processed > len(recs) {
+			processed = len(recs)
+		}
+		if processed > 0 {
+			last = recs[processed-1]
+			c.metrics.addProcessed(ctx, recs[0].Topic, int64(processed))
+		}
+		if err != nil && processed < len(recs) {
+			firstBad = recs[processed]
+			c.metrics.addFailed(ctx, recs[0].Topic)
+		}
+		return last, firstBad
+	})
 }
 
 // commit commits the given records, surviving caller cancellation: during

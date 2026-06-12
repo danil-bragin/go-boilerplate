@@ -16,6 +16,14 @@ import (
 // any retry/dead-letter logic (see dlq.go).
 type HandlerFunc func(ctx context.Context, r Record) error
 
+// BatchHandlerFunc processes a slice of records from ONE partition (one poll).
+// It returns the number of records it durably applied, in order: the consumer
+// commits up to records[processed-1] and, when processed < len(records) with a
+// non-nil error, seeks back to records[processed] for redelivery (same
+// at-least-once, per-partition semantics as HandlerFunc). processed == len means
+// the whole batch applied.
+type BatchHandlerFunc func(ctx context.Context, records []Record) (processed int, err error)
+
 // Consumer wraps a *kgo.Client configured for cooperative-sticky group
 // consumption with manual offset commit and per-partition parallel processing.
 type Consumer struct {
