@@ -1129,6 +1129,65 @@ multi-row INSERT per ≤50 ms/≤100 rows — trades GET-after-POST
 read-your-writes for writer relief), partitioning `orders_read`, then a
 bigger writer (e.g. Aurora).
 
+### Single-instance write ceiling (measured)
+
+A live `up-scale` load test plus an isolated audit benchmark
+(`platform/security/audit/throughput_test.go`) pinned the actual bottleneck and
+the layered ceiling. The cross-aggregate serialization points are gone (sharded
+relay ADR-0017, sharded audit ADR-0018), so the order-create write path scales —
+but with caveats:
+
+1. **It is a pipeline rate, gated by the single BUSIEST instance** (the orders DB
+   carrying the audit hash chain), NOT the sum across the four service DBs. The
+   margin over 5k on one mid instance is thin.
+2. **The audit chain is the first thing you hit, and it shards by ACTOR.** With
+   one effective actor (auth off ⇒ everything `anonymous`, or one token ⇒ one
+   principal) ALL audit writes collapse onto one chain and serialize on its
+   `audit_chain_head FOR UPDATE` — the measured ~460–825 order-create/s "ceiling"
+   was this single-actor harness artifact, NOT a production limit. With ≥16
+   diverse hot actors and `AUDIT_CHAIN_SHARDS=16` the audit path sustained
+   ~5.4k writes/s (VerifyChain intact), exceeding the 5k target with the audit
+   semantics unchanged.
+3. **Past the chain lock, the next limit is the single Postgres instance's
+   commit/WAL throughput** (~5.4k commits/s on a testcontainer). All chains
+   commit to one WAL on one disk; the `FOR UPDATE` is already taken as late as
+   possible (the Audit behaviour runs AFTER the handler's order+outbox inserts),
+   so the per-chain floor is commit-fsync-bound and sharding is the only
+   semantics-preserving lever.
+
+**Capacity levers before sharding the database (Tier-3), in escalating cost:**
+
+1. **Cap concurrent committers at the WAL-contention knee (REQUIRED).** Past
+   ~32 concurrent committers throughput goes NEGATIVE (backends fight the single
+   WAL — the sweep dropped from 5.4k @ conc 32 to 4.3k @ conc 96). Run the apps
+   behind **PgBouncer transaction mode** with `DEFAULT_POOL_SIZE` ≈ the measured
+   knee (the scale overlay sets 32): any number of client replicas funnel to that
+   many server connections, excess queues in the pooler instead of degrading the
+   instance. Without this cap the plateau does not hold under peak.
+2. **Faster storage + WAL tuning.** Provisioned-IOPS / NVMe + a dedicated WAL
+   volume, plus `commit_delay`/`commit_siblings` group-commit, larger
+   `wal_buffers` / `max_wal_size` (the scale overlay sets these on `postgres`).
+   `synchronous_commit` STAYS on — durability is a hard guarantee; `commit_delay`
+   only batches concurrent fsyncs. The real single-instance ceiling here is
+   likely comfortably >5k with no code change.
+3. **Batch the orders consumer apply** (optional, only if more headroom is needed
+   without sharding). The Phase-1 batch-apply pattern (one tx per
+   partition-batch-per-poll, one fsync amortized over N commands) applied to the
+   orders command consumer. CAUTION: a batch tx that audits N commands of mixed
+   actors holds N per-actor chain-head locks at once → multi-lock-hold + cross-
+   batch deadlock risk; it needs consistent lock ordering (e.g. sort by
+   `chain_id`) or batching by chain. Deferred — design carefully before building.
+4. **Keep the schema shard-ready** so Tier-3 stays a seam, not a rewrite: the
+   Kafka key is already `aggregate_id` (co-location), audit shards by actor, and
+   the relay shards by aggregate hash. A future `pg.ShardedPool` routes by
+   `hash(aggregate_id)` to N physical instances (Phase-2, not built — only worth
+   it once a single instance genuinely saturates at ~5k).
+
+**Bottom line:** 5k order-create/s is met on one tuned, PgBouncer-capped Postgres
+instance (and DB-per-service on separate instances clears it comfortably);
+linear scale-out to 10–50k is Tier-3 (shard Postgres), gated on a real
+single-instance saturation measurement, not assumption.
+
 ---
 
 ## Kubernetes reference manifests

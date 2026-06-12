@@ -101,6 +101,40 @@ services:
       OUTBOX_RELAY_SHARDS: "4"
       AUDIT_CHAIN_SHARDS: "4"
 
+  # PgBouncer caps server-side connections at the WAL-contention KNEE: the audit
+  # throughput sweep (platform/security/audit/throughput_test.go) plateaus at
+  # ~conc 32 on one Postgres and goes NEGATIVE past it (too many committers fight
+  # the single WAL). Transaction pooling funnels any number of app clients/replicas
+  # down to DEFAULT_POOL_SIZE server connections, so excess load queues in the
+  # pooler instead of opening more backends that degrade the instance. Size this to
+  # your measured knee. This is why the apps run BEHIND PgBouncer by default at
+  # scale — see docs/operations.md § Single-instance write ceiling.
+  pgbouncer:
+    environment:
+      DEFAULT_POOL_SIZE: "32" # the measured WAL-contention knee
+      MAX_CLIENT_CONN: "2000"
+
+  # Postgres WAL tuning for the write-heavy path (group-commit + bigger WAL).
+  # synchronous_commit STAYS on — durability is a hard guarantee; commit_delay
+  # only BATCHES concurrent fsyncs (a few µs), it does not drop them. Pair with
+  # provisioned-IOPS / NVMe + a dedicated WAL volume in production for the real
+  # single-instance ceiling (likely comfortably >5k).
+  postgres:
+    command:
+      - postgres
+      - -c
+      - synchronous_commit=on
+      - -c
+      - commit_delay=50
+      - -c
+      - commit_siblings=5
+      - -c
+      - wal_buffers=16MB
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - max_connections=200
+
   notifications:
     environment:
       # Terminal consumer (no outbox); still benefits from pooling + parallelism.
