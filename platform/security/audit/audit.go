@@ -252,6 +252,93 @@ func (s *PgStore) Record(ctx context.Context, e Entry) error {
 	return nil
 }
 
+// ChainIDFor exposes the actor→chain mapping so the async writer can group a
+// batch by chain before calling RecordBatchSameChain.
+func (s *PgStore) ChainIDFor(actor string) int16 { return s.chainIDFor(actor) }
+
+// RecordBatchSameChain inserts every entry in entries onto the SAME chain
+// (chainID), under a single audit_chain_head FOR UPDATE lock + a single head
+// advance — amortising the lock across the batch (the Phase-1 batch pattern for
+// audit). entries must all belong to chainID (the caller groups by
+// ChainIDFor(actor)); order within the slice is the chain order. Used by the
+// async BufferedAuditWriter for Eventual-consistency flows.
+func (s *PgStore) RecordBatchSameChain(ctx context.Context, chainID int16, entries []Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	db := pg.FromContext(ctx, s.pool)
+
+	// When sharding, lazily create the shard's chain head (genesis-seeded) so
+	// the FOR UPDATE lock below has a row to take. Chain 1 is seeded by the
+	// migration; ON CONFLICT keeps this idempotent and race-safe. Skipped for
+	// the single-chain default so that path is unchanged.
+	if s.chainShards > 1 {
+		if _, err := db.Exec(
+			ctx,
+			`insert into audit_chain_head (id, last_hash) values ($1, $2) on conflict (id) do nothing`,
+			chainID, genesisRoot,
+		); err != nil {
+			return fmt.Errorf("audit: ensure chain head: %w", err)
+		}
+	}
+
+	// Lock + read the chain head. FOR UPDATE serializes concurrent writers on
+	// the SAME chain: the next writer blocks here until this tx commits/rolls
+	// back. Different chains do not contend.
+	var prevHash []byte
+	if err := db.QueryRow(
+		ctx,
+		`select last_hash from audit_chain_head where id = $1 for update`,
+		chainID,
+	).Scan(&prevHash); err != nil {
+		return fmt.Errorf("audit: lock chain head: %w", err)
+	}
+
+	// Insert every entry in slice order, threading prevHash through each row so
+	// the resulting chain segment is self-consistent and will pass VerifyChain.
+	for i := range entries {
+		e := entries[i]
+		metaJSON, err := marshalMetadata(e.Metadata)
+		if err != nil {
+			return fmt.Errorf("audit: marshal metadata (batch index %d): %w", i, err)
+		}
+
+		at := e.At
+		if at.IsZero() {
+			at = time.Now().UTC()
+		}
+		// Truncate to µs: Postgres timestamptz stores µs precision, but the
+		// hash canonicalizes as UnixNano. Truncate up-front so the value we
+		// hash is byte-identical to what the row will round-trip back as —
+		// exactly as Record does to keep VerifyChain consistent.
+		at = at.Truncate(time.Microsecond)
+
+		entryHash := computeEntryHash(s.chainKey, prevHash, e.Actor, e.Action, e.Subject, at, e.Metadata)
+
+		if _, err := db.Exec(
+			ctx,
+			`insert into audit_log (actor, action, subject, metadata, created_at, prev_hash, entry_hash, chain_id)
+			 values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			e.Actor, e.Action, e.Subject, metaJSON, at, prevHash, entryHash, chainID,
+		); err != nil {
+			return fmt.Errorf("audit: record batch (index %d): %w", i, err)
+		}
+
+		prevHash = entryHash
+	}
+
+	// Advance the head once — one UPDATE instead of N. prevHash now holds the
+	// entry_hash of the last inserted row.
+	if _, err := db.Exec(
+		ctx,
+		`update audit_chain_head set last_hash = $1, updated_at = now() where id = $2`,
+		prevHash, chainID,
+	); err != nil {
+		return fmt.Errorf("audit: advance chain head (batch): %w", err)
+	}
+	return nil
+}
+
 // RecordOutOfBand records an audit entry in its OWN fresh transaction, separate
 // from any ambient command tx. Use it for events that have no command tx to
 // join: access denials (authz/ownership 403), admin DSAR reads, attachment
