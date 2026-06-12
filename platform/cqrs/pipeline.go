@@ -40,15 +40,16 @@ type AuthzPolicy interface {
 // kafka/retry escalation, platform/resilience around outbound calls), where
 // the failure domain and backoff semantics are known.
 type Pipeline[C, R any] struct {
-	name     string
-	deadline time.Duration
-	authz    AuthzPolicy
-	action   string
-	cache    Cache
-	keyFor   func(C) string
-	ttl      time.Duration
-	txPool   *pg.Pool
-	extra    []Behavior[C, R]
+	name       string
+	deadline   time.Duration
+	authz      AuthzPolicy
+	action     string
+	cache      Cache
+	keyFor     func(C) string
+	ttl        time.Duration
+	txPool     *pg.Pool
+	usesOutbox bool
+	extra      []Behavior[C, R]
 }
 
 // StandardPipeline starts a Pipeline named name with the core stack
@@ -98,6 +99,30 @@ func (p *Pipeline[C, R]) WithCache(cache Cache, keyFor func(C) string, ttl time.
 // pg.FromContext (e.g. Audit) join the inbox transaction automatically.
 func (p *Pipeline[C, R]) WithTransaction(pool *pg.Pool) *Pipeline[C, R] {
 	p.txPool = pool
+	return p
+}
+
+// WithOutbox marks this command as one that enqueues to the transactional
+// outbox. It makes the consistency guard reject Transactional:false (which would
+// break effectively-once). Set it on every outbox-producing command's pipeline.
+func (p *Pipeline[C, R]) WithOutbox() *Pipeline[C, R] {
+	p.usesOutbox = true
+	return p
+}
+
+// WithConsistency applies the policy's Transactional axis: when true it wraps the
+// handler in the Transaction behavior (pg.RunInTx) using pool; when false it does
+// not. The SyncAudit/SyncRYW/SyncProjection axes are honoured by the caller
+// (audit.Audit vs audit.AsyncAudit, gateway pending/projection wiring) because
+// cqrs must not import audit. Panics if Transactional is false on a command
+// marked WithOutbox — that combination silently breaks effectively-once.
+func (p *Pipeline[C, R]) WithConsistency(policy ConsistencyPolicy, pool *pg.Pool) *Pipeline[C, R] {
+	if !policy.Transactional && p.usesOutbox {
+		panic("cqrs: ConsistencyPolicy{Transactional:false} on a WithOutbox command breaks effectively-once (the order-write + outbox-enqueue would not be atomic)")
+	}
+	if policy.Transactional {
+		p.txPool = pool
+	}
 	return p
 }
 
