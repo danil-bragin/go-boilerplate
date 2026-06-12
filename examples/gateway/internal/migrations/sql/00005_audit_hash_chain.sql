@@ -3,9 +3,20 @@
 -- audit migration 00004_audit_hash_chain). See audit.Record / audit.VerifyChain
 -- for the chaining scheme. The gateway records audit entries on admin DSAR
 -- reads and access denials (round-8 B3), so it carries the same chain head.
-alter table audit_log
-    add column prev_hash  bytea,
-    add column entry_hash bytea;
+-- audit_log is owned by audit_admin after the append-only transfer (00004), so
+-- ALTERing it runs as that owner; SET LOCAL ROLE audit_admin (app is a member)
+-- when present, else (dev/test superuser) app still owns it.
+-- +goose StatementBegin
+do $$
+begin
+    if exists (select 1 from pg_roles where rolname = 'audit_admin') then
+        set local role audit_admin;
+    end if;
+    execute 'alter table audit_log add column prev_hash bytea, add column entry_hash bytea';
+    reset role;
+end
+$$;
+-- +goose StatementEnd
 
 create table audit_chain_head (
     id         smallint primary key default 1,
