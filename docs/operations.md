@@ -1105,6 +1105,8 @@ completeness and read-your-writes latency can be traded for throughput.
 | `SyncRYW` | bool | Pending-row INSERT is synchronous (GET-after-POST reads your own write) | `true` | `false` — gateway may batch pending inserts (`GATEWAY_PENDING_ASYNC`) |
 | `SyncProjection` | bool | Projection applies per-event synchronously | `true` | `false` — projection may lag |
 
+> **Enforcement:** `WithConsistency` only acts on `Transactional` (it gates the cqrs Transaction behavior). `SyncAudit` is enforced by the caller picking `audit.Audit` vs `audit.AsyncAudit`. `SyncRYW` and `SyncProjection` are **advisory today** — declared for completeness but honored only by convention at the call site (gateway pending path / projection), not auto-wired. They default to the sync value, so a policy is never silently less safe than it reads.
+
 **Presets**
 
 ```go

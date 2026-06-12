@@ -3,11 +3,18 @@ package cqrs
 // ConsistencyPolicy declares, per command type, how strong each consistency
 // axis is. Strong is the default; relax explicitly per high-volume flow. See
 // docs/superpowers/specs/2026-06-13-a2-consistency-policy-design.md.
+// Enforcement note: WithConsistency only acts on the Transactional axis (it
+// gates the cqrs Transaction behavior). SyncAudit is enforced by the caller
+// choosing audit.Audit vs audit.AsyncAudit (cqrs cannot import audit). SyncRYW
+// and SyncProjection are currently ADVISORY — declared here for completeness but
+// honored only by convention at the call site (gateway pending path /
+// projection), not auto-wired by WithConsistency. Both default to the strong
+// (sync) value, so a policy is never silently less safe than it reads.
 type ConsistencyPolicy struct {
-	Transactional  bool // wrap the handler in the Transaction behavior (ACID)
-	SyncAudit      bool // audit inside the command tx (caller honours this when choosing audit.Audit vs audit.AsyncAudit)
-	SyncRYW        bool // synchronous pending-row insert (gateway honours this)
-	SyncProjection bool // sync per-event projection (consumer honours this)
+	Transactional  bool // wrap the handler in the Transaction behavior (ACID) — enforced by WithConsistency
+	SyncAudit      bool // audit inside the command tx — caller chooses audit.Audit vs audit.AsyncAudit
+	SyncRYW        bool // synchronous pending-row insert — advisory; gateway honours via GATEWAY_PENDING_ASYNC
+	SyncProjection bool // sync per-event projection — advisory; honored by a consumer if it reads this
 }
 
 // Strong is fully ACID — the default for money/order flows.
