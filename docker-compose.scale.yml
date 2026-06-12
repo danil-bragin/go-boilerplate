@@ -1,0 +1,76 @@
+# =============================================================================
+# SCALE OVERLAY — Tier-1 scalability levers for the compose dev stack.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.scale.yml \
+#     --profile pgbouncer --profile apps up -d
+#
+# Every lever here already exists in the codebase; this overlay just flips them
+# ON together so the effect is observable locally. None of it is a code change.
+# See docs/operations.md § "Scaling — Tier-1 levers" for the rationale and the
+# signals that tell you when to reach for each one.
+#
+# What it turns on:
+#   1. Connection pooling — apps connect through PgBouncer (transaction mode)
+#      instead of straight to Postgres, so a small per-pod pool fans out to many
+#      more effective server connections. Pair with a SMALL PG_MAX_CONNS.
+#   2. Reader/writer split — PG_READER_DSN routes pg.FromContextRead queries to a
+#      replica. Locally it points back at the same Postgres (demonstrates the
+#      wiring); in production point it at a real read replica / Aurora reader.
+#   3. Partitioned outbox (ADR-0016) — OUTBOX_PARTITION_MODE=partitioned wires
+#      the maintenance worker (DETACH+DROP instead of DELETE churn). Demo-sized
+#      interval/retention so rotation is visible; use the 720h/2160h defaults in
+#      production.
+#   4. Relay throughput — bigger batches + tighter poll lower publish lag.
+#   5. More Kafka partitions — TOPIC_PARTITIONS raises consumer parallelism.
+#      NOTE: EnsureTopics is idempotent and never RE-partitions an existing
+#      topic, so wipe the redpanda volume (or bump partitions via rpk) for this
+#      to take effect on already-created topics.
+# =============================================================================
+
+services:
+  gateway:
+    environment:
+      # 1+2: write through PgBouncer, reads off the (here co-located) reader DSN.
+      PG_DSN: postgres://app:app@pgbouncer:6432/gateway?sslmode=disable
+      PG_READER_DSN: postgres://app:app@postgres:5432/gateway?sslmode=disable
+      PG_MAX_CONNS: "10" # small per-pod pool; PgBouncer multiplexes upstream
+      PG_READER_MAX_CONNS: "10"
+      # 5: more partitions = more parallel consumers across replicas.
+      TOPIC_PARTITIONS: "24"
+
+  orders:
+    environment:
+      PG_DSN: postgres://app:app@pgbouncer:6432/orders?sslmode=disable
+      PG_READER_DSN: postgres://app:app@postgres:5432/orders?sslmode=disable
+      PG_MAX_CONNS: "10"
+      PG_READER_MAX_CONNS: "10"
+      TOPIC_PARTITIONS: "24"
+      # 3: partitioned outbox retention (demo-sized; prod = 720h/2160h).
+      OUTBOX_PARTITION_MODE: partitioned
+      OUTBOX_PARTITION_INTERVAL: 24h
+      OUTBOX_PARTITION_RETENTION: 72h
+      OUTBOX_PARTITION_LOOKAHEAD: "2"
+      # 4: relay throughput.
+      OUTBOX_BATCH_SIZE: "500"
+      OUTBOX_POLL_INTERVAL: 100ms
+
+  payments:
+    environment:
+      PG_DSN: postgres://app:app@pgbouncer:6432/payments?sslmode=disable
+      PG_READER_DSN: postgres://app:app@postgres:5432/payments?sslmode=disable
+      PG_MAX_CONNS: "10"
+      PG_READER_MAX_CONNS: "10"
+      TOPIC_PARTITIONS: "24"
+      OUTBOX_PARTITION_MODE: partitioned
+      OUTBOX_PARTITION_INTERVAL: 24h
+      OUTBOX_PARTITION_RETENTION: 72h
+      OUTBOX_PARTITION_LOOKAHEAD: "2"
+      OUTBOX_BATCH_SIZE: "500"
+      OUTBOX_POLL_INTERVAL: 100ms
+
+  notifications:
+    environment:
+      # Terminal consumer (no outbox); still benefits from pooling + parallelism.
+      PG_DSN: postgres://app:app@pgbouncer:6432/notifications?sslmode=disable
+      PG_MAX_CONNS: "10"
+      TOPIC_PARTITIONS: "24"

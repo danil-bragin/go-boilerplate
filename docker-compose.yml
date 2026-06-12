@@ -473,6 +473,10 @@ services:
       LOG_FORMAT: json
       # Topics
       ORDERS_COMMANDS_TOPIC: orders.commands
+      # Snappy local demo: poll the outbox 5× faster than the prod-sane 1s
+      # default. Env-tunable (no rebuild) — raise BATCH_SIZE / lower POLL for
+      # throughput; see docs/operations.md § Scaling.
+      OUTBOX_POLL_INTERVAL: 200ms
       # Go runtime memory limit: ~90% of the container memory limit above.
       GOMEMLIMIT: 460MiB
     # In-image static probe (cmd/probe) → admin /livez; see the gateway block.
@@ -525,6 +529,8 @@ services:
       LOG_FORMAT: json
       # Topics
       ORDERS_EVENTS_TOPIC: orders.events
+      # Snappy local demo (see orders); env-tunable for throughput.
+      OUTBOX_POLL_INTERVAL: 200ms
       # Go runtime memory limit: ~90% of the container memory limit above.
       GOMEMLIMIT: 460MiB
     # In-image static probe (cmd/probe) → admin /livez; see the gateway block.

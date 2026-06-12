@@ -1044,6 +1044,31 @@ last (runbook above) — it derives from the others' events.
 
 ## Scaling guide (per component)
 
+### Tier-1 levers (config only — no code change)
+
+Before reaching for sharding or a bigger writer, these levers ship in the box
+and are pure configuration. Flip them all at once locally with the scale
+overlay:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.scale.yml \
+  --profile pgbouncer --profile apps up -d
+```
+
+| Lever | Knob(s) | Effect |
+|---|---|---|
+| Read/writer split | `PG_READER_DSN` (+ `PG_READER_MAX_CONNS`/`MIN_CONNS`) | `pg.FromContextRead` queries (gateway GetOrder/ListOrders/ownership/SSE/audit) hit a replica; the writer is left for writes + read-your-writes |
+| Connection pooling | PgBouncer profile + `PG_DSN`→`pgbouncer:6432`, small `PG_MAX_CONNS` | One small per-pod pool fans out to many server connections — defeats the N≈4-replica connection wall (see the Postgres-connections row below) |
+| Outbox partitioning | `OUTBOX_PARTITION_MODE=partitioned` (+ `OUTBOX_PARTITION_INTERVAL`/`RETENTION`/`LOOKAHEAD`) | DETACH+DROP retention instead of `DELETE` churn — no heap bloat, no autovacuum chase. Switch is a config flip, not a migration (the table is partitioned from day one — ADR-0016). Audit is deliberately NOT partitionable |
+| Relay throughput | `OUTBOX_BATCH_SIZE` ↑, `OUTBOX_POLL_INTERVAL` ↓ | Bigger drains, lower publish lag (single-active relay; see outbox row) |
+| Consumer parallelism | `TOPIC_PARTITIONS` ↑ (set up front; `ENSURE_TOPICS` won't repartition existing topics) | Raises the per-topic consumer ceiling so more replicas do work instead of idling |
+| Async pending writes | `GATEWAY_PENDING_ASYNC=true` | Collapses pending-row INSERTs into batched multi-row writes (trades GET-after-POST read-your-writes) |
+
+These do not lift the **single-writer ceiling** (see "Write-path ceiling"
+below) — that needs Tier-2/3 (shard the outbox relay, shard the audit chain,
+shard Postgres). They DO remove read pressure, connection-count walls, and
+`DELETE` bloat, which is usually what bites first.
+
 | Component | Scale how | Hard limits / caveats |
 |---|---|---|
 | Gateway (HTTP edge) | Horizontal replicas behind the LB; `deploy/k8s/gateway-deployment.yaml` includes an HPA sketch | Stateless. With `RATELIMIT_REDIS=true` the per-IP limit is shared across replicas; in-memory mode multiplies the effective limit by replica count. In embedded-projection mode every replica is also a consumer-group member — see next row |

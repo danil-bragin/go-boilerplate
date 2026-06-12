@@ -15,7 +15,6 @@ package payments
 
 import (
 	"context"
-	"time"
 
 	"go-boilerplate/examples/payments/internal/app"
 	"go-boilerplate/examples/payments/internal/domain/payment"
@@ -39,6 +38,10 @@ type Config struct {
 	// OutTopic is the topic payments PUBLISHES to. Named after the topic per
 	// docs/conventions.md §topic envs — consumers point at the same env name.
 	OutTopic string `env:"PAYMENTS_EVENTS_TOPIC" envDefault:"payments.events"`
+	// OutboxRelay tunables (OUTBOX_BATCH_SIZE / OUTBOX_POLL_INTERVAL /
+	// OUTBOX_RETENTION_AGE / OUTBOX_CLEANUP_INTERVAL / OUTBOX_SINGLE_ACTIVE) —
+	// env-loaded so throughput can be tuned without a rebuild.
+	OutboxRelay outbox.RelayConfig
 	// OutboxPartition controls opt-in outbox partition maintenance (ADR-0016);
 	// default mode "simple" makes the wiring a no-op.
 	OutboxPartition outbox.PartitionConfig
@@ -90,9 +93,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 
 	// Outbox relay + cleaner (publishes PaymentProcessed events).
 	outboxRepo := outbox.NewRepository(svc.Pool())
-	if err := svc.AddOutboxRelay(svc.DefaultOutboxPublisher(), outbox.RelayConfig{
-		PollInterval: 200 * time.Millisecond,
-	}); err != nil {
+	if err := svc.AddOutboxRelay(svc.DefaultOutboxPublisher(), cfg.OutboxRelay); err != nil {
 		return nil, err
 	}
 	// Opt-in outbox partition maintenance (ADR-0016). No-op unless

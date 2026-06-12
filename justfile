@@ -157,6 +157,11 @@ up-apps:
 up-full:
     docker compose --profile observability --profile apps up -d --build
 
+# Apps with Tier-1 scale levers ON (PgBouncer pooling, reader split, partitioned
+# outbox, tuned relay, more Kafka partitions) — see docs/operations.md § Scaling.
+up-scale:
+    docker compose -f docker-compose.yml -f docker-compose.scale.yml --profile pgbouncer --profile apps up -d --build
+
 # One-command proof of life: full stack up → create an order → watch it reach "paid" — requires jq.
 # Idempotent: re-runs reuse the running stack and the same Idempotency-Key maps to the same order.
 # DEMO_GATEWAY_URL / DEMO_KEYCLOAK_URL override the default host ports (e.g. when 8080 is taken).
