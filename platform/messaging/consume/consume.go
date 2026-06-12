@@ -61,6 +61,7 @@ type Consumer struct {
 	dec     serde.Deserializer // nil → raw proto.Unmarshal
 	logger  *slog.Logger
 	noInbox bool // test-only: skip inbox.ProcessOnce (see WithoutInbox)
+	metrics consumeMetrics
 
 	// byType is the event-type → handler dispatch table, populated by index()
 	// the first time a Handler/BatchHandler is built. Shared by the per-record
@@ -97,7 +98,7 @@ func WithoutInbox() Option {
 // New creates a Consumer. group is the inbox consumer name — messages are
 // processed at most once per (group, message-id).
 func New(pool *pg.Pool, group string, opts ...Option) *Consumer {
-	c := &Consumer{pool: pool, group: group, logger: slog.Default()}
+	c := &Consumer{pool: pool, group: group, logger: slog.Default(), metrics: newConsumeMetrics()}
 	for _, o := range opts {
 		o(c)
 	}

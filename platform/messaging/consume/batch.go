@@ -90,8 +90,7 @@ func (c *Consumer) BatchHandler(handlers ...Handler) kafka.BatchHandlerFunc {
 		// Fallback: replay the ORIGINAL records per-record, in offset order,
 		// reusing the proven processRecord path. Index into records so the
 		// returned offset matches what kafka must seek back to.
-		// NOTE: the addBatchFallback metric is intentionally omitted here —
-		// the consume.Consumer has no metrics field yet (Task 4 adds it).
+		c.metrics.addBatchFallback(ctx)
 		applied := 0
 		for ri, r := range records {
 			if err := c.processRecord(ctx, r); err != nil {
