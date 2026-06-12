@@ -2,6 +2,7 @@ package audit_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -37,4 +38,44 @@ func TestRecordBatch_SameChain_VerifiesAndMatchesIndividual(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, res.OK, "batched chain write must verify; break id=%d reason=%q", res.BreakID, res.Reason)
 	require.Equal(t, 3, res.Verified)
+}
+
+func TestBufferedAuditWriter_DrainsBatchedAndVerifies(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs Docker")
+	}
+	pool := newPool(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := audit.NewPgStore(pool, audit.WithChainShards(4))
+	w := audit.NewBufferedAuditWriter(store, audit.WriterConfig{Buffer: 1024, BatchSize: 64, FlushInterval: 20 * time.Millisecond})
+	go func() { _ = w.Run(ctx) }()
+
+	const n = 500
+	for i := range n {
+		require.True(t, w.Enqueue(audit.Entry{Actor: fmt.Sprintf("u%d", i%8), Action: "view", Subject: fmt.Sprintf("p%d", i)}))
+	}
+	require.Eventually(t, func() bool {
+		var c int
+		_ = pool.Reader().QueryRow(ctx, `select count(*) from audit_log`).Scan(&c)
+		return c == n
+	}, 10*time.Second, 50*time.Millisecond)
+
+	res, err := store.VerifyChain(ctx, time.Time{})
+	require.NoError(t, err)
+	require.True(t, res.OK, "async-written chain must verify; break id=%d reason=%q", res.BreakID, res.Reason)
+}
+
+func TestBufferedAuditWriter_DropsOnOverflow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs Docker")
+	}
+	pool := newPool(t)
+	store := audit.NewPgStore(pool)
+	// Tiny buffer, NO drain running ⇒ fills, then Enqueue returns false.
+	w := audit.NewBufferedAuditWriter(store, audit.WriterConfig{Buffer: 2, BatchSize: 1, FlushInterval: time.Hour})
+	require.True(t, w.Enqueue(audit.Entry{Actor: "u", Action: "v", Subject: "p"}))
+	require.True(t, w.Enqueue(audit.Entry{Actor: "u", Action: "v", Subject: "p"}))
+	require.False(t, w.Enqueue(audit.Entry{Actor: "u", Action: "v", Subject: "p"}), "full buffer ⇒ drop")
+	require.Equal(t, int64(1), w.Dropped())
 }

@@ -1,0 +1,48 @@
+package audit
+
+import (
+	"context"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
+)
+
+// writerMetrics bundles the BufferedAuditWriter instruments. Instruments are
+// created from the GLOBAL otel meter (mirroring messaging/outbox and
+// platform/cqrs); the global meter deduplicates identical instrument names. A
+// failed instrument creation degrades to a nil instrument (no-op at call
+// sites) — metrics must never break the audit path.
+type writerMetrics struct {
+	dropped metric.Int64Counter
+	errors  metric.Int64Counter
+}
+
+func newWriterMetrics() writerMetrics {
+	m := otel.Meter("security.audit")
+	var wm writerMetrics
+	if c, err := m.Int64Counter(
+		"audit.dropped_total",
+		metric.WithDescription("Async audit entries dropped because the buffer was full (Eventual-consistency flows)"),
+	); err == nil {
+		wm.dropped = c
+	}
+	if c, err := m.Int64Counter(
+		"audit.async_write_errors_total",
+		metric.WithDescription("Failed async audit batch writes"),
+	); err == nil {
+		wm.errors = c
+	}
+	return wm
+}
+
+func (m writerMetrics) addDropped(ctx context.Context) {
+	if m.dropped != nil {
+		m.dropped.Add(ctx, 1)
+	}
+}
+
+func (m writerMetrics) addError(ctx context.Context) {
+	if m.errors != nil {
+		m.errors.Add(ctx, 1)
+	}
+}
