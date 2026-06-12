@@ -89,6 +89,7 @@ func TestBatchHandler_AppliesCleanBatchInOneTx(t *testing.T) {
 
 	rec := &recorder{}
 	h := consume.New(pool, "grp-batch-clean").BatchHandler(
+		nil, // fallback defaults to processRecord
 		consume.Typed(
 			"orders.OrderCreated.v1",
 			func(ctx context.Context, evt *ordersv1.OrderCreated) error {
@@ -135,6 +136,7 @@ func TestBatchHandler_PoisonFallsBackAndReportsProcessed(t *testing.T) {
 
 	rec := &recorder{}
 	h := consume.New(pool, "grp-batch-poison").BatchHandler(
+		nil, // fallback defaults to processRecord
 		consume.Typed("orders.OrderCreated.v1", func(_ context.Context, evt *ordersv1.OrderCreated) error {
 			if evt.GetOrderId() == "poison" {
 				return errors.New("poison pill")
@@ -179,6 +181,7 @@ func TestBatchHandler_DedupSkipsSeen(t *testing.T) {
 
 	rec := &recorder{}
 	h := consume.New(pool, "grp-batch-dedup").BatchHandler(
+		nil, // fallback defaults to processRecord
 		consume.Typed(
 			"orders.OrderCreated.v1",
 			func(_ context.Context, evt *ordersv1.OrderCreated) error {
@@ -225,6 +228,7 @@ func TestBatchHandler_SkipsUnknownEventTypes(t *testing.T) {
 
 	rec := &recorder{}
 	h := consume.New(pool, "grp-batch-unknown").BatchHandler(
+		nil, // fallback defaults to processRecord
 		consume.Typed("orders.OrderCreated.v1", func(_ context.Context, evt *ordersv1.OrderCreated) error {
 			rec.record(evt.GetOrderId())
 			return nil

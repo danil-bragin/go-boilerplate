@@ -19,17 +19,26 @@ import (
 //
 // Fallback: ProcessBatchOnce is strictly all-or-nothing (a failing record rolls
 // the whole batch back, persisting nothing), so on ANY batch-tx error the handler
-// replays the ORIGINAL records one at a time through processRecord — the same
-// inbox.ProcessOnce path Handler uses — in offset order, not in parallel. It
-// returns processed = the count applied before the first record whose per-record
-// processing errored, plus that error, so the kafka layer commits up to
-// records[processed-1] and seeks back to records[processed] for redelivery.
-// Because the batch left nothing behind, the fallback re-applies each record at
-// most once (no double-apply). Decode of a malformed payload happens inside the
-// typed handler (inside the tx), so it triggers rollback → fallback → per-record
-// → existing DLT handling.
-func (c *Consumer) BatchHandler(handlers ...Handler) kafka.BatchHandlerFunc {
+// replays the ORIGINAL records one at a time through the fallback handler — in
+// offset order, not in parallel. It returns processed = the count applied before
+// the first record whose per-record processing errored, plus that error, so the
+// kafka layer commits up to records[processed-1] and seeks back to
+// records[processed] for redelivery. Because the batch left nothing behind, the
+// fallback re-applies each record at most once (no double-apply). Decode of a
+// malformed payload happens inside the typed handler (inside the tx), so it
+// triggers rollback → fallback → per-record → existing DLT handling.
+//
+// fallback is the per-record handler the batch falls back to on a batch-tx error.
+// When nil it defaults to c.processRecord (the proven inbox.ProcessOnce path
+// Handler uses). servicekit.AddBatchConsumer passes the kafka.WithRetry-wrapped
+// fallback so poison records replayed in the fallback escalate to <topic>.DLT
+// (failure-contract parity with AddConsumer) instead of hot-looping the partition.
+func (c *Consumer) BatchHandler(fallback kafka.HandlerFunc, handlers ...Handler) kafka.BatchHandlerFunc {
 	c.index(handlers...)
+
+	if fallback == nil {
+		fallback = c.processRecord
+	}
 
 	return func(ctx context.Context, records []kafka.Record) (int, error) {
 		// rec pairs a record with its prepared per-record state and a slot for
@@ -88,12 +97,12 @@ func (c *Consumer) BatchHandler(handlers ...Handler) kafka.BatchHandlerFunc {
 		}
 
 		// Fallback: replay the ORIGINAL records per-record, in offset order,
-		// reusing the proven processRecord path. Index into records so the
-		// returned offset matches what kafka must seek back to.
+		// through the fallback handler. Index into records so the returned
+		// offset matches what kafka must seek back to.
 		c.metrics.addBatchFallback(ctx)
 		applied := 0
 		for ri, r := range records {
-			if err := c.processRecord(ctx, r); err != nil {
+			if err := fallback(ctx, r); err != nil {
 				return ri, err
 			}
 			applied = ri + 1

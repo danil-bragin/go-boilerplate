@@ -53,11 +53,7 @@ func (s *Service) AddConsumer(ctx context.Context, groupID string, topics []stri
 	}
 
 	// Wrap with retry/DLT so poison messages never block the partition.
-	wrapped := kafka.WithRetry(handler, kafka.RetryOpts{
-		MaxAttempts: s.cfg.ConsumerRetryMaxAttempts,
-		Producer:    s.producer,
-		Backoff:     s.cfg.ConsumerRetryBackoff,
-	})
+	wrapped := s.WrapRetry(handler)
 
 	// Build consumer.
 	consumerCfg := s.cfg.Kafka
@@ -78,17 +74,52 @@ func (s *Service) AddConsumer(ctx context.Context, groupID string, topics []stri
 	return nil
 }
 
+// WrapRetry wraps a per-record handler in kafka.WithRetry with the service's
+// configured retry/DLT policy (ConsumerRetryMaxAttempts / ConsumerRetryBackoff
+// and the shared producer). This is the SINGLE WithRetry construction used by
+// both AddConsumer and AddBatchConsumer — keeping the failure contract (poison
+// → <topic>.DLT after MaxAttempts) identical and impossible to drift between
+// the two.
+func (s *Service) WrapRetry(h kafka.HandlerFunc) kafka.HandlerFunc {
+	return kafka.WithRetry(h, kafka.RetryOpts{
+		MaxAttempts: s.cfg.ConsumerRetryMaxAttempts,
+		Producer:    s.producer,
+		Backoff:     s.cfg.ConsumerRetryBackoff,
+	})
+}
+
 // AddBatchConsumer is AddConsumer for a batch handler: each partition's poll
 // records are applied in one transaction (consume.Consumer.BatchHandler / the
 // kafka RunBatch loop). Use it for high-volume idempotent projections where
 // per-event commits are the bottleneck. Same lifecycle, group, topics, and
-// error handling as AddConsumer.
-func (s *Service) AddBatchConsumer(ctx context.Context, groupID string, topics []string, handler kafka.BatchHandlerFunc) error {
+// failure contract as AddConsumer.
+//
+// FAILURE-CONTRACT PARITY: the per-record fallback is wrapped in kafka.WithRetry
+// (via WrapRetry) BY DEFAULT, exactly like AddConsumer, so on a batch-tx error
+// each record is replayed through retry/DLT — transient errors resolve by retry,
+// deterministic poison exhausts MaxAttempts and escalates to <topic>.DLT so the
+// batch advances past it instead of hot-looping the partition. No service can
+// forget DLT escalation: there is no un-wrapped batch path.
+//
+// fallback is the per-record handler the batch falls back to on a batch-tx
+// error. build constructs the batch handler from the (WithRetry-wrapped)
+// fallback — typically:
+//
+//	func(fb kafka.HandlerFunc) kafka.BatchHandlerFunc {
+//	    return consumer.BatchHandler(fb, handlers...)
+//	}
+func (s *Service) AddBatchConsumer(
+	ctx context.Context,
+	groupID string,
+	topics []string,
+	fallback kafka.HandlerFunc,
+	build func(fallback kafka.HandlerFunc) kafka.BatchHandlerFunc,
+) error {
 	if s.kafkaClient == nil {
 		return errNoKafka("AddBatchConsumer")
 	}
 
-	// Ensure DLT topics exist alongside the source topics.
+	// Ensure DLT topics exist alongside the source topics (same as AddConsumer).
 	allTopics := make([]string, 0, len(topics)*2)
 	allTopics = append(allTopics, topics...)
 	for _, t := range topics {
@@ -97,6 +128,11 @@ func (s *Service) AddBatchConsumer(ctx context.Context, groupID string, topics [
 	if err := s.EnsureTopics(ctx, allTopics...); err != nil {
 		return err
 	}
+
+	// Wrap the per-record fallback in retry/DLT — the SAME construction
+	// AddConsumer uses — then let the caller build the batch handler around it.
+	wrapped := s.WrapRetry(fallback)
+	bh := build(wrapped)
 
 	// Build consumer.
 	consumerCfg := s.cfg.Kafka
@@ -110,7 +146,7 @@ func (s *Service) AddBatchConsumer(ctx context.Context, groupID string, topics [
 	s.closer.Add("kafka-consumer-"+groupID, consumer.Close)
 
 	s.goroutines = append(s.goroutines, func(ctx context.Context) {
-		if err := consumer.RunBatch(ctx, handler); err != nil && ctx.Err() == nil {
+		if err := consumer.RunBatch(ctx, bh); err != nil && ctx.Err() == nil {
 			s.logger.Error("consumer stopped unexpectedly", "group", groupID, "error", err)
 		}
 	})

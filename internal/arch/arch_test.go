@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -135,6 +136,76 @@ func TestNoCrossServiceInternalImports(t *testing.T) {
 			}
 			t.Errorf("%s depends on %s — another service's internal/ tree", importer, dep)
 		}
+	}
+}
+
+// TestRunBatchOnlyCalledFromServicekit keeps the batch consumption path behind
+// servicekit.AddBatchConsumer, which wraps the per-record fallback in
+// kafka.WithRetry (poison → <topic>.DLT). A service that called
+// (*kafka.Consumer).RunBatch directly would build a batch loop with NO DLT
+// escalation — a deterministic poison record would hot-loop the partition
+// forever (seek-back + backoff), breaking failure-contract parity with
+// AddConsumer. This guard asserts `.RunBatch(` appears only inside
+// platform/servicekit (the sanctioned wiring) and platform/messaging/kafka
+// (the implementation + its own tests). A pure go-list/AST guard is impractical
+// here (RunBatch is a method call, not an import), so this is a source scan in
+// the same spirit as the import guards above.
+func TestRunBatchOnlyCalledFromServicekit(t *testing.T) {
+	root := moduleRoot(t)
+	allowed := []string{
+		filepath.Join("platform", "servicekit"),
+		filepath.Join("platform", "messaging", "kafka"),
+	}
+	// Exclude this guard's own source: it must name the method in its docstring
+	// and error message, which would otherwise match the scan and flag itself.
+	_, selfPath, _, _ := runtime.Caller(0)
+	selfRel, _ := filepath.Rel(root, selfPath)
+
+	// Build the search pattern at runtime so the literal call text does not
+	// appear in this file's source (it would self-match).
+	runBatchCall := regexp.MustCompile(regexp.QuoteMeta(".RunBatch" + "("))
+
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			// Skip non-source trees that can legitimately mention the method in
+			// prose/fixtures and would only produce noise.
+			switch d.Name() {
+			case ".git", "vendor", "node_modules", "testdata":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return relErr
+		}
+		if rel == selfRel {
+			return nil
+		}
+		for _, a := range allowed {
+			if rel == a || strings.HasPrefix(rel, a+string(filepath.Separator)) {
+				return nil
+			}
+		}
+		src, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if runBatchCall.Match(src) {
+			t.Errorf("%s calls RunBatch directly — batch consumption must go through "+
+				"servicekit.AddBatchConsumer so the per-record fallback is wrapped in "+
+				"kafka.WithRetry (poison escalates to the DLT); a raw batch loop skips DLT escalation", rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk module root: %v", err)
 	}
 }
 
