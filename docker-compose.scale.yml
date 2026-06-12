@@ -9,19 +9,13 @@
 # See docs/operations.md § "Scaling — Tier-1 levers" for the rationale and the
 # signals that tell you when to reach for each one.
 #
-# KNOWN LIMITATION (surfaced by the first real up-scale run): the audit
-# append-only migration (00003/00004) assumes the migration role == the runtime
-# `app` role — it transfers audit_log ownership to audit_admin and GRANTs back to
-# current_user. With a SPLIT/privileged migrate role (PG_MIGRATE_URL below points
-# at the postgres superuser so the ALTER OWNER succeeds), those GRANTs land on the
-# migrate role, NOT on `app`, so `app` ends up without INSERT on audit_log /
-# audit_chain_head and the order command fails at audit time. The proper fix is in
-# the migration (grant the audit privileges to the runtime app role explicitly, or
-# `SET LOCAL ROLE audit_admin` for the owner-side grants) — TODO, not yet done.
-# Until then a fresh up-scale needs, once, per service DB:
-#   GRANT SELECT,INSERT ON audit_log TO app;
-#   GRANT USAGE,SELECT ON SEQUENCE audit_log_id_seq TO app;
-#   GRANT SELECT,INSERT,UPDATE ON audit_chain_head TO app;
+# Migrations run as the `app` role (PG_MIGRATE_URL below dials Postgres directly
+# as app, bypassing PgBouncer's transaction pooling which the migration advisory
+# lock needs). app therefore OWNS every service table; the audit append-only
+# migration SET LOCAL ROLE audit_admin for the ownership-transfer grants/revokes
+# (app is a member of audit_admin). A fresh `up-scale` boots clean out of the box
+# — no manual grants needed (this was a real bug, now fixed in the audit
+# migrations + init.sql's audit_admin schema CREATE).
 #
 # What it turns on:
 #   1. Connection pooling — apps connect through PgBouncer (transaction mode)
@@ -48,7 +42,7 @@ services:
       PG_DSN: postgres://app:app@pgbouncer:5432/gateway?sslmode=disable
       # Migrations dial Postgres DIRECTLY (never through PgBouncer — the migration
       # runner holds a session advisory lock that transaction pooling breaks).
-      PG_MIGRATE_URL: postgres://postgres:postgres@postgres:5432/gateway?sslmode=disable
+      PG_MIGRATE_URL: postgres://app:app@postgres:5432/gateway?sslmode=disable
       PG_STATEMENT_CACHE_MODE: "1" # describe-exec (prepared plans don't survive txn pooling)
       PG_READER_DSN: postgres://app:app@postgres:5432/gateway?sslmode=disable
       PG_MAX_CONNS: "10" # small per-pod pool; PgBouncer multiplexes upstream
@@ -63,11 +57,15 @@ services:
       RATELIMIT_RPS: "1000000"
       RATELIMIT_BURST: "1000000"
       RATELIMIT_AUTHED_RPS: "0"
+      # Load-test only: no auth so the open-loop generator + verify probes are not
+      # gated by a short-lived Keycloak token (token expiry produced false
+      # "never observed" verify failures). APP_ENV=development permits this.
+      GATEWAY_AUTH_DISABLED: "true"
 
   orders:
     environment:
       PG_DSN: postgres://app:app@pgbouncer:5432/orders?sslmode=disable
-      PG_MIGRATE_URL: postgres://postgres:postgres@postgres:5432/orders?sslmode=disable
+      PG_MIGRATE_URL: postgres://app:app@postgres:5432/orders?sslmode=disable
       PG_STATEMENT_CACHE_MODE: "1"
       PG_READER_DSN: postgres://app:app@postgres:5432/orders?sslmode=disable
       PG_MAX_CONNS: "10"
@@ -88,7 +86,7 @@ services:
   payments:
     environment:
       PG_DSN: postgres://app:app@pgbouncer:5432/payments?sslmode=disable
-      PG_MIGRATE_URL: postgres://postgres:postgres@postgres:5432/payments?sslmode=disable
+      PG_MIGRATE_URL: postgres://app:app@postgres:5432/payments?sslmode=disable
       PG_STATEMENT_CACHE_MODE: "1"
       PG_READER_DSN: postgres://app:app@postgres:5432/payments?sslmode=disable
       PG_MAX_CONNS: "10"
@@ -107,7 +105,7 @@ services:
     environment:
       # Terminal consumer (no outbox); still benefits from pooling + parallelism.
       PG_DSN: postgres://app:app@pgbouncer:5432/notifications?sslmode=disable
-      PG_MIGRATE_URL: postgres://postgres:postgres@postgres:5432/notifications?sslmode=disable
+      PG_MIGRATE_URL: postgres://app:app@postgres:5432/notifications?sslmode=disable
       PG_STATEMENT_CACHE_MODE: "1"
       PG_MAX_CONNS: "10"
       TOPIC_PARTITIONS: "24"

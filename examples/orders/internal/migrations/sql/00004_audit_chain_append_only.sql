@@ -36,12 +36,17 @@ declare
 begin
     if exists (select 1 from pg_roles where rolname = 'audit_admin') then
         execute 'alter table audit_log owner to audit_admin';
+        -- Act AS the new owner — app is a non-owner after the transfer.
+        set local role audit_admin;
         execute format('grant select, insert on audit_log to %I', app_role);
         execute format('grant usage, select on sequence audit_log_id_seq to %I', app_role);
-        execute 'grant select, delete on audit_log to audit_admin';
+        execute format('revoke update, delete on audit_log from %I', app_role);
+        reset role;
+    else
+        execute format('revoke update, delete on audit_log from %I', app_role);
     end if;
-    execute format('revoke update, delete on audit_log from %I', app_role);
-    -- app reads + advances (and lazily inserts sharded) chain-head rows.
+    -- app reads + advances (and lazily inserts sharded) chain-head rows; app owns
+    -- audit_chain_head under migrate-as-app, so this is a self-grant no-op there.
     execute format('grant select, insert, update on audit_chain_head to %I', app_role);
 end
 $$;

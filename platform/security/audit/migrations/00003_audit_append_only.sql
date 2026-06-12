@@ -23,12 +23,13 @@
 --
 -- +goose StatementBegin
 do $$
--- Grant/revoke against the DATABASE OWNER (the runtime app role —
--- init.sql: CREATE DATABASE <svc> WITH OWNER app), NOT current_user. This makes
--- the migration correct whether it runs AS the app role or as a privileged /
--- superuser migrate role (PG_MIGRATE_URL): the audit privileges always land on
--- the role the service actually connects as, instead of leaking onto the
--- migrate role.
+-- Grant/revoke target the DATABASE OWNER (the runtime app role — init.sql:
+-- CREATE DATABASE <svc> WITH OWNER app). After audit_admin takes ownership the
+-- app role is a NON-owner and can no longer GRANT/REVOKE on audit_log, so we
+-- SET LOCAL ROLE audit_admin (app is a member — GRANT audit_admin TO app — so
+-- SET ROLE works even with INHERIT FALSE) and run the owner-side statements as
+-- audit_admin. Correct whether migrations run as the app role (the default) or
+-- any role that is a member of audit_admin.
 declare
     app_role text := (select pg_catalog.pg_get_userbyid(datdba)
                       from pg_database where datname = current_database());
@@ -37,13 +38,17 @@ begin
         -- Hand the table + its owned sequence to the privileged role so the app
         -- role becomes a non-owner the REVOKE can actually constrain.
         execute 'alter table audit_log owner to audit_admin';
+        -- Act AS the new owner to re-grant the app role and constrain it.
+        set local role audit_admin;
         execute format('grant select, insert on audit_log to %I', app_role);
         execute format('grant usage, select on sequence audit_log_id_seq to %I', app_role);
-        execute 'grant select, delete on audit_log to audit_admin';
+        execute format('revoke update, delete on audit_log from %I', app_role);
+        reset role;
+    else
+        -- No audit_admin (single-role dev / the test superuser): app owns
+        -- audit_log, so the REVOKE is a documented no-op for an owner.
+        execute format('revoke update, delete on audit_log from %I', app_role);
     end if;
-    -- REVOKE UPDATE/DELETE from the app role. Bites when the app is a non-owner
-    -- (audit_admin branch ran); a no-op for an owner/superuser.
-    execute format('revoke update, delete on audit_log from %I', app_role);
 end
 $$;
 -- +goose StatementEnd
