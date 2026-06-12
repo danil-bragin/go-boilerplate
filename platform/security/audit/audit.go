@@ -172,20 +172,20 @@ func (s *PgStore) SetOnError(fn func(error)) {
 	s.onError = fn
 }
 
-// Record inserts an audit entry into the GLOBAL hash chain. It uses
-// pg.FromContext so the write joins any transaction active on ctx (set by
-// pg.RunInTx / cqrs.Transaction).
+// Record inserts an audit entry into its hash chain. It uses pg.FromContext so
+// the write joins any transaction active on ctx (set by pg.RunInTx /
+// cqrs.Transaction).
 //
-// Chaining: the single audit_chain_head row is locked FOR UPDATE, its
-// last_hash becomes the new row's prev_hash, entry_hash =
-// sha256(prev_hash || canonical(entry)) is computed, the row is inserted, and
+// Chaining: the entry's chain-head row (chain 1 by default; the actor-hashed
+// chain when AUDIT_CHAIN_SHARDS > 1 — see WithChainShards / chainIDFor) is
+// locked FOR UPDATE, its last_hash becomes the new row's prev_hash, entry_hash
+// = sha256(prev_hash || canonical(entry)) is computed, the row is inserted, and
 // the head is advanced to entry_hash — all under the lock and inside the
 // command transaction. Holding the lock until the command commits serializes
-// the chain across concurrent writers: the order is total and gap-free, so
-// VerifyChain can recompute it deterministically. The cost is that audit
-// writes are serialized globally — see BenchmarkRecord for the contention
-// ceiling this imposes (the documented trade-off of a single global chain;
-// per-actor chains are the escape hatch when this becomes the bottleneck).
+// that chain's writers: per-chain order is total and gap-free, so VerifyChain
+// can recompute it deterministically. With a single chain (default) this
+// serializes ALL audit writes — see BenchmarkRecord for the contention ceiling;
+// sharding (ADR-0018) is the escape hatch when it becomes the bottleneck.
 func (s *PgStore) Record(ctx context.Context, e Entry) error {
 	metaJSON, err := marshalMetadata(e.Metadata)
 	if err != nil {
