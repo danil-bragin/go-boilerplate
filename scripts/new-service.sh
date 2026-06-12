@@ -53,6 +53,13 @@ trap cleanup EXIT
 
 cp -R "$src" "$dst"
 
+# Drop the template's cross-service contract tests: they pin the SHOWCASE
+# services' wire compatibility against the central examples/e2e/contract
+# fixtures (contract.PaymentsEventsTopic, …). A freshly scaffolded service
+# has no such fixtures, so these tests would reference undefined symbols
+# after the name rewrite. Delete them — the new service writes its own.
+find "$dst" -name 'contract_test.go' -delete
+
 # Rename files and directories whose names contain the template name
 # (cmd/payments, payments.go, payments_test.go, payments.sql.go, ...).
 # -depth so children are renamed before their parents.
