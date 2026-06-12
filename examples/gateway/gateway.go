@@ -55,6 +55,7 @@ import (
 	"go-boilerplate/examples/gateway/internal/projection"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/consume"
+	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/run"
 	"go-boilerplate/platform/security/auth"
 	"go-boilerplate/platform/servicekit"
@@ -176,13 +177,31 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 		if sd := svc.Serde(); sd != nil {
 			consumeOpts = append(consumeOpts, consume.WithSerde(sd))
 		}
-		projHandler := projection.NewHandler(svc.Pool(), svc.Logger(), appCache, streamer.Notify, consumeOpts...)
-		if err := svc.AddConsumer(
-			ctx, "gateway-projection",
-			[]string{cfg.OrdersEventsTopic, cfg.PaymentsEventsTopic},
-			projHandler,
-		); err != nil {
-			return nil, err
+		if cfg.ProjectionBatch {
+			// Batch-apply mode (default): one tx per partition-batch-per-poll.
+			// perRecord is the proven per-event path; AddBatchConsumer wraps it
+			// in WithRetry/DLT and supplies it as the batch fallback, so the
+			// failure contract (poison → <topic>.DLT) is identical to per-event.
+			perRecord := projection.NewHandler(svc.Pool(), svc.Logger(), appCache, streamer.Notify, consumeOpts...)
+			build := func(fb kafka.HandlerFunc) kafka.BatchHandlerFunc {
+				return projection.NewBatchHandler(svc.Pool(), svc.Logger(), appCache, streamer.Notify, fb, consumeOpts...)
+			}
+			if err := svc.AddBatchConsumer(
+				ctx, "gateway-projection",
+				[]string{cfg.OrdersEventsTopic, cfg.PaymentsEventsTopic},
+				perRecord, build,
+			); err != nil {
+				return nil, err
+			}
+		} else {
+			projHandler := projection.NewHandler(svc.Pool(), svc.Logger(), appCache, streamer.Notify, consumeOpts...)
+			if err := svc.AddConsumer(
+				ctx, "gateway-projection",
+				[]string{cfg.OrdersEventsTopic, cfg.PaymentsEventsTopic},
+				projHandler,
+			); err != nil {
+				return nil, err
+			}
 		}
 	} else {
 		svc.Logger().Info("gateway: embedded projection disabled — expecting a standalone projection deployment (cmd/projection)")

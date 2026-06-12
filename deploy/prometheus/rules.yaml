@@ -60,6 +60,24 @@ groups:
           description: "Records exhausted all retry tiers (or hit a non-retryable error). Inspect the DLT and redrive after fixing the cause."
           runbook_url: "docs/operations.md#dlt-redrive-procedure"
 
+      - alert: GatewayProjectionDLT
+        # The gateway read-model projection consumes the service's OWN trusted
+        # outbox events (proto + schema registry), so a DLT here is a code or
+        # schema bug — NOT bad external input. Alert loudly on any DLT > 0.
+        #
+        # kafka.dlt.produced has no `group` label (only `topic` = the DLT topic
+        # name), so the projection is keyed on its input-topic DLTs:
+        # orders.events.DLT / payments.events.DLT are written ONLY by the
+        # consumer of those topics, which is the gateway-projection group.
+        expr: sum(rate(otel_kafka_dlt_produced_total{topic=~"(orders|payments)\\.events\\.DLT"}[5m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateway projection dead-lettered an event to {{ $labels.topic }}"
+          description: "The projection consumes the service's own trusted outbox (proto + schema registry). A DLT here means a code or schema bug, not bad external input. Inspect the record and the projection handler immediately — do not just redrive."
+          runbook_url: "docs/operations.md#dlt-redrive-procedure"
+
       - alert: KafkaCommitFailures
         expr: increase(otel_kafka_consumer_commit_failures_total[15m]) > 0
         labels:

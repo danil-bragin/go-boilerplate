@@ -91,6 +91,16 @@ type Config struct {
 	// same consumer group ("gateway-projection") and inbox table, so a
 	// rolling migration between modes is safe.
 	EmbeddedProjection bool `env:"GATEWAY_EMBEDDED_PROJECTION" envDefault:"true"`
+	// ProjectionBatch runs the read-model projection in batch-apply mode: each
+	// partition's poll records are applied in ONE transaction (one tx per
+	// partition-batch-per-poll) instead of one tx per event — fewer commits,
+	// higher projection throughput. Default true. The per-event path stays
+	// available via GATEWAY_PROJECTION_BATCH=false. Both paths share the same
+	// projection handlers, inbox dedup, offset ordering, post-commit cache-bust
+	// + SSE notify hooks, and the WithRetry/DLT failure contract (a batch-tx
+	// error falls back to the proven per-record path). Applies to both the
+	// embedded projection and the standalone cmd/projection binary.
+	ProjectionBatch bool `env:"GATEWAY_PROJECTION_BATCH" envDefault:"true"`
 	// PendingAsync moves the POST-time pending-row insert off the request
 	// path into a single batched async writer (api.PendingBatcher: one
 	// multi-row INSERT ... ON CONFLICT DO NOTHING per ≤50ms/≤100 rows).

@@ -840,6 +840,19 @@ from the event topics, **within topic retention only** (`TOPIC_RETENTION`,
 default 168 h; events older than that are gone — DB rows are the source of
 truth, ADR-0011). Two distinct situations:
 
+> **Batch-apply mode (default).** The projection runs in batch-apply mode
+> (`GATEWAY_PROJECTION_BATCH=true`): each partition's poll records are applied
+> in **one transaction per partition-batch-per-poll** instead of one tx per
+> event — fewer commits, higher throughput. Dedup, ordering, and the
+> post-commit cache-bust + SSE notify hooks are identical to per-event mode; on
+> a batch-tx error the batch falls back to the proven per-record path, so the
+> WithRetry/DLT failure contract is unchanged. Set `GATEWAY_PROJECTION_BATCH=false`
+> to revert to one tx per event. Because the projection consumes the service's
+> **own trusted outbox** (proto + schema registry), a record reaching the DLT
+> here means a **code or schema bug, not bad external input** — the
+> `GatewayProjectionDLT` alert fires on any `orders.events.DLT` /
+> `payments.events.DLT` write; investigate the handler, do not just redrive.
+
 ### A. Reconverge / repair (preferred — no data loss window)
 
 Projection upserts are idempotent and reorder-safe (`pending < created <

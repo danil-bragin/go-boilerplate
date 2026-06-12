@@ -8,6 +8,7 @@ import (
 	"go-boilerplate/examples/gateway/internal/projection"
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/messaging/consume"
+	"go-boilerplate/platform/messaging/kafka"
 	"go-boilerplate/platform/run"
 	"go-boilerplate/platform/servicekit"
 
@@ -75,13 +76,31 @@ func NewProjectionApp(ctx context.Context) (*ProjectionApp, error) {
 	if sd := svc.Serde(); sd != nil {
 		consumeOpts = append(consumeOpts, consume.WithSerde(sd))
 	}
-	projHandler := projection.NewHandler(svc.Pool(), svc.Logger(), appCache, streamer.Notify, consumeOpts...)
-	if err := svc.AddConsumer(
-		ctx, "gateway-projection",
-		[]string{cfg.OrdersEventsTopic, cfg.PaymentsEventsTopic},
-		projHandler,
-	); err != nil {
-		return nil, err
+	if cfg.ProjectionBatch {
+		// Batch-apply mode (default, GATEWAY_PROJECTION_BATCH=true): one tx per
+		// partition-batch-per-poll. perRecord is the per-event fallback;
+		// AddBatchConsumer wraps it in WithRetry/DLT, so the failure contract
+		// (poison → <topic>.DLT) matches per-event mode.
+		perRecord := projection.NewHandler(svc.Pool(), svc.Logger(), appCache, streamer.Notify, consumeOpts...)
+		build := func(fb kafka.HandlerFunc) kafka.BatchHandlerFunc {
+			return projection.NewBatchHandler(svc.Pool(), svc.Logger(), appCache, streamer.Notify, fb, consumeOpts...)
+		}
+		if err := svc.AddBatchConsumer(
+			ctx, "gateway-projection",
+			[]string{cfg.OrdersEventsTopic, cfg.PaymentsEventsTopic},
+			perRecord, build,
+		); err != nil {
+			return nil, err
+		}
+	} else {
+		projHandler := projection.NewHandler(svc.Pool(), svc.Logger(), appCache, streamer.Notify, consumeOpts...)
+		if err := svc.AddConsumer(
+			ctx, "gateway-projection",
+			[]string{cfg.OrdersEventsTopic, cfg.PaymentsEventsTopic},
+			projHandler,
+		); err != nil {
+			return nil, err
+		}
 	}
 
 	return &ProjectionApp{svc: svc}, nil

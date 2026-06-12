@@ -76,15 +76,46 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 // pool, consume.WithoutInbox); production wiring goes through NewHandler so
 // writes always join the ambient inbox transaction.
 func NewHandlerWithStore(pool *pg.Pool, storeFor StoreFor, logger *slog.Logger, cache cqrs.Cache, notify StatusNotifier, opts ...consume.Option) kafka.HandlerFunc {
+	opts = append([]consume.Option{consume.WithLogger(logger)}, opts...)
+	return consume.New(pool, consumerGroup, opts...).Handler(
+		projectionHandlers(storeFor, logger, cache, notify, newLifecycleMetrics())...,
+	)
+}
+
+// NewBatchHandler is NewHandler in batch-apply mode: the projection commits one
+// transaction per partition-batch-per-poll (consume.Consumer.BatchHandler)
+// instead of one per event. fallback is the per-record path the batch falls
+// back to on a batch-tx error — servicekit.AddBatchConsumer supplies the
+// WithRetry/DLT-wrapped fallback, so a poison record still escalates to the
+// <topic>.DLT exactly as in per-event mode. Same projection handlers, inbox
+// dedup, offset ordering, and post-commit hooks (cache bust + SSE notify).
+//
+// cache/notify may be nil, identical to NewHandler.
+func NewBatchHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify StatusNotifier, fallback kafka.HandlerFunc, opts ...consume.Option) kafka.BatchHandlerFunc {
+	storeFor := func(ctx context.Context) Store {
+		return storegen.New(pg.FromContext(ctx, pool))
+	}
+	opts = append([]consume.Option{consume.WithLogger(logger)}, opts...)
+	return consume.New(pool, consumerGroup, opts...).BatchHandler(
+		fallback,
+		projectionHandlers(storeFor, logger, cache, notify, newLifecycleMetrics())...,
+	)
+}
+
+// projectionHandlers builds the four typed projection handlers shared by
+// NewHandler (per-event) and NewBatchHandler (batch-apply) — the SINGLE source
+// of projection logic, dedup, ordering, and the post-commit cache-bust + SSE
+// notify hooks. storeFor resolves the orders_read write surface bound to the
+// ambient (inbox / batch) transaction; metrics observes the order-lifecycle
+// latency once per applied terminal write.
+func projectionHandlers(storeFor StoreFor, logger *slog.Logger, cache cqrs.Cache, notify StatusNotifier, metrics lifecycleMetrics) []consume.Handler {
 	committed := func(ctx context.Context, orderID string) {
 		bustOrderCache(ctx, cache, logger, orderID)
 		if notify != nil {
 			notify(ctx, orderID)
 		}
 	}
-	metrics := newLifecycleMetrics()
-	opts = append([]consume.Option{consume.WithLogger(logger)}, opts...)
-	return consume.New(pool, consumerGroup, opts...).Handler(
+	return []consume.Handler{
 		consume.TypedFor(
 			1,
 			func(ctx context.Context, evt *ordersv1.OrderCreated) error {
@@ -201,7 +232,7 @@ func NewHandlerWithStore(pool *pg.Pool, storeFor StoreFor, logger *slog.Logger, 
 				committed(ctx, evt.GetOrderId())
 			}),
 		),
-	)
+	}
 }
 
 func parseOrderID(raw string) (uuid.UUID, error) {
