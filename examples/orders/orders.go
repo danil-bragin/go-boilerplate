@@ -44,6 +44,9 @@ type Config struct {
 	// PaymentDeadline is how long an order may stay 'created' (unpaid) before
 	// an OrderPaymentTimedOut event is emitted.
 	PaymentDeadline time.Duration `env:"ORDERS_PAYMENT_DEADLINE" envDefault:"15m"`
+	// OutboxPartition controls opt-in outbox partition maintenance (ADR-0016).
+	// Default mode "simple" makes the wiring below a no-op.
+	OutboxPartition outbox.PartitionConfig
 }
 
 // Option is a functional option for [NewApp].
@@ -102,6 +105,11 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if err := svc.AddOutboxRelay(svc.DefaultOutboxPublisher(), outbox.RelayConfig{
 		PollInterval: 200 * time.Millisecond,
 	}); err != nil {
+		return nil, err
+	}
+	// Opt-in outbox partition maintenance (ADR-0016). No-op unless
+	// OUTBOX_PARTITION_MODE=partitioned.
+	if err := svc.AddOutboxPartitionMaintenance(cfg.OutboxPartition); err != nil {
 		return nil, err
 	}
 

@@ -39,6 +39,9 @@ type Config struct {
 	// OutTopic is the topic payments PUBLISHES to. Named after the topic per
 	// docs/conventions.md §topic envs — consumers point at the same env name.
 	OutTopic string `env:"PAYMENTS_EVENTS_TOPIC" envDefault:"payments.events"`
+	// OutboxPartition controls opt-in outbox partition maintenance (ADR-0016);
+	// default mode "simple" makes the wiring a no-op.
+	OutboxPartition outbox.PartitionConfig
 }
 
 // Option is a functional option for [NewApp].
@@ -90,6 +93,11 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if err := svc.AddOutboxRelay(svc.DefaultOutboxPublisher(), outbox.RelayConfig{
 		PollInterval: 200 * time.Millisecond,
 	}); err != nil {
+		return nil, err
+	}
+	// Opt-in outbox partition maintenance (ADR-0016). No-op unless
+	// OUTBOX_PARTITION_MODE=partitioned.
+	if err := svc.AddOutboxPartitionMaintenance(cfg.OutboxPartition); err != nil {
 		return nil, err
 	}
 

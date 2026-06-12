@@ -2,12 +2,12 @@ package outbox
 
 // Package-level doc note on scaling:
 //
-// For very high volume, prefer time-partitioning (pg_partman / native
-// PARTITION BY RANGE on published_at) + DROP PARTITION over age-based DELETE.
-// DELETE causes table bloat and autovacuum pressure at scale.
-// This age-based cleaner is the simple default and is suitable for most
-// deployments. Time-partitioning is the recommended path once table size
-// becomes a bottleneck.
+// This age-based cleaner is the "simple" mode default (OUTBOX_PARTITION_MODE=
+// simple) and suits most deployments. At very high volume DELETE causes heap
+// bloat and autovacuum pressure; switch to "partitioned" mode (ADR-0016), which
+// DETACH+DROPs whole created_at partitions instead — see PartitionManager and
+// servicekit.AddOutboxPartitionMaintenance. The table is RANGE-partitioned by
+// created_at from day one, so that switch is a config flip, not a migration.
 
 import (
 	"context"

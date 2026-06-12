@@ -139,6 +139,11 @@ func TestCleanup_DeleteUsesPublishedAtIndex(t *testing.T) {
 
 	plan := explainPlan(t, pool,
 		`delete from outbox where published_at is not null and published_at < now() - interval '24 hours'`)
-	require.Contains(t, plan, "outbox_published_at_idx",
+	// Outbox is partitioned (ADR-0016), so the partial index is propagated to
+	// each partition under a partition-qualified name (e.g.
+	// outbox_default_published_at_idx). Match the suffix so the assertion holds
+	// for both the parent and per-partition index names — what matters is that
+	// the DELETE is served by the published_at partial index, not a seq scan.
+	require.Contains(t, plan, "published_at_idx",
 		"retention DELETE must use the partial published_at index, got plan:\n%s", plan)
 }
