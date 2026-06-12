@@ -60,3 +60,34 @@ func Audit[C, R any](store Store, action string, subjectFor func(C) string) cqrs
 		}
 	}
 }
+
+// AsyncAudit is the Eventual-consistency twin of Audit: after the handler
+// succeeds it builds the same Entry and hands it to the async BufferedAuditWriter
+// instead of recording inside the command tx. The command never waits for, nor
+// fails on, the audit write (best-effort — a full buffer drops with a metric).
+// Use it for high-volume low-value commands (ConsistencyPolicy.SyncAudit=false);
+// keep Audit for money/order flows.
+func AsyncAudit[C, R any](w *BufferedAuditWriter, action string, subjectFor func(C) string) cqrs.Behavior[C, R] {
+	return func(next cqrs.HandlerFunc[C, R]) cqrs.HandlerFunc[C, R] {
+		return func(ctx context.Context, cmd C) (R, error) {
+			res, err := next(ctx, cmd)
+			if err != nil {
+				return res, err
+			}
+			entry := Entry{
+				Actor:   actorFrom(ctx),
+				Action:  action,
+				Subject: subjectFor(cmd),
+			}
+			// Record the originating tenant when one is in scope. It rides in
+			// the metadata map, which is already part of the hash chain, so no
+			// schema or chain change is needed and the tenant attribution is
+			// itself tamper-evident.
+			if tid, ok := tenant.FromContext(ctx); ok {
+				entry.Metadata = map[string]string{"tenant_id": tid}
+			}
+			w.Enqueue(entry) // best-effort; drop+metric on overflow
+			return res, nil
+		}
+	}
+}

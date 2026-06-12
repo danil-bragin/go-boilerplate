@@ -2,6 +2,7 @@ package audit_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -78,4 +79,37 @@ func TestBufferedAuditWriter_DropsOnOverflow(t *testing.T) {
 	require.True(t, w.Enqueue(audit.Entry{Actor: "u", Action: "v", Subject: "p"}))
 	require.False(t, w.Enqueue(audit.Entry{Actor: "u", Action: "v", Subject: "p"}), "full buffer ⇒ drop")
 	require.Equal(t, int64(1), w.Dropped())
+}
+
+func TestAsyncAudit_EnqueuesAfterHandler_NeverFailsCommand(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs Docker")
+	}
+	pool := newPool(t)
+	store := audit.NewPgStore(pool)
+	w := audit.NewBufferedAuditWriter(store, audit.WriterConfig{Buffer: 16, FlushInterval: time.Hour})
+	b := audit.AsyncAudit[string, string](w, "view", func(c string) string { return c })
+
+	called := false
+	h := b(func(_ context.Context, _ string) (string, error) { called = true; return "ok", nil })
+	out, err := h(context.Background(), "p1")
+	require.NoError(t, err)
+	require.Equal(t, "ok", out)
+	require.True(t, called)
+	require.Equal(t, 1, w.Len(), "entry enqueued after a successful handler")
+}
+
+func TestAsyncAudit_HandlerError_DoesNotEnqueue(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs Docker")
+	}
+	pool := newPool(t)
+	store := audit.NewPgStore(pool)
+	w := audit.NewBufferedAuditWriter(store, audit.WriterConfig{Buffer: 16, FlushInterval: time.Hour})
+	b := audit.AsyncAudit[string, string](w, "view", func(c string) string { return c })
+	wantErr := errors.New("boom")
+	h := b(func(_ context.Context, _ string) (string, error) { return "", wantErr })
+	_, err := h(context.Background(), "p1")
+	require.ErrorIs(t, err, wantErr)
+	require.Equal(t, 0, w.Len(), "no audit on handler failure")
 }
