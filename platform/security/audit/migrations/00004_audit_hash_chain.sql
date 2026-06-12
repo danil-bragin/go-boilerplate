@@ -27,6 +27,23 @@ create table audit_chain_head (
 insert into audit_chain_head (id, last_hash)
 values (1, '\x0000000000000000000000000000000000000000000000000000000000000000'::bytea);
 
+-- The app role reads + advances the chain head on every audit write (and the
+-- sharded mode lazily INSERTs new per-chain head rows — ADR-0018). Grant those
+-- to the DATABASE OWNER (the runtime app role) explicitly, so it works whether
+-- migrations run as the app role (which would own the table anyway) or as a
+-- privileged/superuser migrate role (PG_MIGRATE_URL), where the table would
+-- otherwise be owned by the migrate role and leave the app without access.
+-- +goose StatementBegin
+do $$
+declare
+    app_role text := (select pg_catalog.pg_get_userbyid(datdba)
+                      from pg_database where datname = current_database());
+begin
+    execute format('grant select, insert, update on audit_chain_head to %I', app_role);
+end
+$$;
+-- +goose StatementEnd
+
 -- +goose Down
 drop table audit_chain_head;
 alter table audit_log

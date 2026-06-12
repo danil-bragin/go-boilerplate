@@ -15,14 +15,20 @@
 -- UPDATE/DELETE. Skipped (best-effort) where audit_admin is absent — see the
 -- platform audit migration 00003 for the full rationale and trade-off.
 -- +goose StatementBegin
+-- Grant/revoke against the DATABASE OWNER (the runtime app role), not
+-- current_user, so this works whether migrations run as app or a privileged/
+-- superuser migrate role (PG_MIGRATE_URL). See platform audit 00003.
 do $$
+declare
+    app_role text := (select pg_catalog.pg_get_userbyid(datdba)
+                      from pg_database where datname = current_database());
 begin
     if exists (select 1 from pg_roles where rolname = 'audit_admin') then
         execute 'alter table audit_log owner to audit_admin';
-        execute 'grant select, insert on audit_log to ' || quote_ident(current_user);
+        execute format('grant select, insert on audit_log to %I', app_role);
         execute 'grant select, delete on audit_log to audit_admin';
     end if;
-    execute format('revoke update, delete on audit_log from %I', current_user);
+    execute format('revoke update, delete on audit_log from %I', app_role);
 end
 $$;
 -- +goose StatementEnd
