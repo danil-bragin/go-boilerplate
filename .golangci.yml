@@ -26,7 +26,15 @@ linters:
     - wastedassign
     - usestdlibvars
     - copyloopvar
+    # B1/A3: forbid stray debug prints in library + service code. The slog
+    # logger (platform/observability/log) is the only sanctioned output sink;
+    # genuine stdout CLIs live under cmd/ and are excluded below.
+    - forbidigo
   settings:
+    forbidigo:
+      forbid:
+        - pattern: ^fmt\.Print.*$
+          msg: use the slog logger (platform/observability/log) instead of fmt.Print*; cmd/ CLIs are exempt
     gocritic:
       enabled-tags:
         - diagnostic
@@ -46,9 +54,14 @@ linters:
         linters:
           - errcheck
           - gosec
+          - forbidigo
       - path: platform/testkit/
         linters:
           - gosec
+      # cmd/ binaries are user-facing CLIs whose stdout IS the contract.
+      - path: cmd/
+        linters:
+          - forbidigo
 
 formatters:
   enable:
