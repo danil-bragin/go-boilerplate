@@ -34,6 +34,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash"
+	"hash/fnv"
 	"math"
 	"sort"
 	"time"
@@ -78,6 +79,12 @@ type PgStore struct {
 	// each time a denial audit is coalesced away (wire a metric counter).
 	denialLimiter   *denialLimiter
 	onDenialDropped func()
+	// chainShards is the number of independent hash chains, keyed by actor hash
+	// (ADR-0018). 1 (default) = a single global chain (id=1), behaviour
+	// unchanged. N > 1 splits audit writes across N chains so commands by
+	// different actors no longer serialize on one chain-head lock — ~N× audit
+	// write throughput, tamper-evidence preserved per chain.
+	chainShards int
 }
 
 // Option configures a PgStore at construction.
@@ -111,6 +118,21 @@ func WithChainKey(key config.Secret) Option {
 	}
 }
 
+// WithChainShards splits the audit hash chain into n independent chains keyed
+// by actor hash (ADR-0018), so commands by different actors stop serializing on
+// a single chain-head FOR UPDATE lock. n <= 1 keeps the single global chain
+// (default, behaviour unchanged). Tamper-evidence is preserved PER chain:
+// VerifyChain walks and anchors each chain independently. Pick n around the
+// concurrency you need (≤ the number of distinct hot actors); a given actor
+// always maps to one chain, so per-actor audit order is preserved.
+func WithChainShards(n int) Option {
+	return func(s *PgStore) {
+		if n > 1 {
+			s.chainShards = n
+		}
+	}
+}
+
 // WithOnDenialDropped registers a callback invoked whenever a denial audit
 // (ActionAuthzDenied) is COALESCED by the per-(actor,action) bound in
 // RecordOutOfBand (security review #5). Wire it to a metric counter so the
@@ -124,11 +146,24 @@ func WithOnDenialDropped(fn func()) Option {
 // without it the chain falls back to keyless sha256 (edit/delete detection
 // only — see WithChainKey).
 func NewPgStore(pool *pg.Pool, opts ...Option) *PgStore {
-	s := &PgStore{pool: pool, denialLimiter: newDenialLimiter()}
+	s := &PgStore{pool: pool, denialLimiter: newDenialLimiter(), chainShards: 1}
 	for _, o := range opts {
 		o(s)
 	}
 	return s
+}
+
+// chainIDFor maps an actor to its chain head id. With a single chain (default)
+// it is always 1 — the genesis head seeded by the audit_chain_head migration.
+// With N shards it is 1 + fnv32(actor) % N, so chains occupy ids [1, N] and a
+// given actor is stable to exactly one chain (per-actor order preserved).
+func (s *PgStore) chainIDFor(actor string) int16 {
+	if s.chainShards <= 1 {
+		return 1
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(actor))
+	return 1 + int16(h.Sum32()%uint32(s.chainShards)) //nolint:gosec // shard index in [0,N); N is small
 }
 
 // SetOnError registers a callback invoked for each Cleanup error inside
@@ -158,12 +193,29 @@ func (s *PgStore) Record(ctx context.Context, e Entry) error {
 	}
 	db := pg.FromContext(ctx, s.pool)
 
-	// Lock + read the chain head. FOR UPDATE serializes concurrent Records:
-	// the next writer blocks here until this command's tx commits/rolls back.
+	chainID := s.chainIDFor(e.Actor)
+	// When sharding, lazily create the shard's chain head (genesis-seeded) so the
+	// FOR UPDATE lock below has a row to take. Chain 1 is seeded by the
+	// migration; ON CONFLICT keeps this idempotent and race-safe. Skipped for the
+	// single-chain default so that path is unchanged.
+	if s.chainShards > 1 {
+		if _, err := db.Exec(
+			ctx,
+			`insert into audit_chain_head (id, last_hash) values ($1, $2) on conflict (id) do nothing`,
+			chainID, genesisRoot,
+		); err != nil {
+			return fmt.Errorf("audit: ensure chain head: %w", err)
+		}
+	}
+
+	// Lock + read the chain head. FOR UPDATE serializes concurrent Records on the
+	// SAME chain: the next writer of this chain blocks here until the command's
+	// tx commits/rolls back. Different chains (different actors) do not contend.
 	var prevHash []byte
 	if err := db.QueryRow(
 		ctx,
-		`select last_hash from audit_chain_head where id = 1 for update`,
+		`select last_hash from audit_chain_head where id = $1 for update`,
+		chainID,
 	).Scan(&prevHash); err != nil {
 		return fmt.Errorf("audit: lock chain head: %w", err)
 	}
@@ -183,17 +235,17 @@ func (s *PgStore) Record(ctx context.Context, e Entry) error {
 
 	if _, err := db.Exec(
 		ctx,
-		`insert into audit_log (actor, action, subject, metadata, created_at, prev_hash, entry_hash)
-		 values ($1, $2, $3, $4, $5, $6, $7)`,
-		e.Actor, e.Action, e.Subject, metaJSON, at, prevHash, entryHash,
+		`insert into audit_log (actor, action, subject, metadata, created_at, prev_hash, entry_hash, chain_id)
+		 values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		e.Actor, e.Action, e.Subject, metaJSON, at, prevHash, entryHash, chainID,
 	); err != nil {
 		return fmt.Errorf("audit: record: %w", err)
 	}
 
 	if _, err := db.Exec(
 		ctx,
-		`update audit_chain_head set last_hash = $1, updated_at = now() where id = 1`,
-		entryHash,
+		`update audit_chain_head set last_hash = $1, updated_at = now() where id = $2`,
+		entryHash, chainID,
 	); err != nil {
 		return fmt.Errorf("audit: advance chain head: %w", err)
 	}
@@ -349,14 +401,57 @@ type ChainResult struct {
 // audit). The head check still applies: the partial walk must end at the
 // recorded tip.
 func (s *PgStore) VerifyChain(ctx context.Context, since time.Time) (ChainResult, error) {
+	// Verify every chain independently (one with a single global chain). Each
+	// chain anchors its own genesis + head, so a break in any chain is reported;
+	// the OK result's Verified is the total rows walked across all chains.
+	chainRows, err := pg.FromContextRead(ctx, s.pool).Query(
+		ctx, `select id from audit_chain_head order by id`,
+	)
+	if err != nil {
+		return ChainResult{}, fmt.Errorf("audit: list chains: %w", err)
+	}
+	var chainIDs []int16
+	for chainRows.Next() {
+		var id int16
+		if err := chainRows.Scan(&id); err != nil {
+			chainRows.Close()
+			return ChainResult{}, fmt.Errorf("audit: scan chain id: %w", err)
+		}
+		chainIDs = append(chainIDs, id)
+	}
+	if err := chainRows.Err(); err != nil {
+		chainRows.Close()
+		return ChainResult{}, fmt.Errorf("audit: list chains rows: %w", err)
+	}
+	chainRows.Close()
+
+	total := 0
+	for _, cid := range chainIDs {
+		res, err := s.verifyOneChain(ctx, cid, since)
+		if err != nil {
+			return ChainResult{}, err
+		}
+		if !res.OK {
+			return res, nil // first break wins
+		}
+		total += res.Verified
+	}
+	return ChainResult{OK: true, Verified: total}, nil
+}
+
+// verifyOneChain walks a single chain (chain_id == chainID) and applies the
+// genesis / link / entry-hash / head checks to it. It is the per-chain core of
+// VerifyChain; with the default single chain it is called exactly once for
+// chainID 1.
+func (s *PgStore) verifyOneChain(ctx context.Context, chainID int16, since time.Time) (ChainResult, error) {
 	fullWalk := since.IsZero()
 	rows, err := pg.FromContextRead(ctx, s.pool).Query(
 		ctx,
 		`select id, actor, action, subject, metadata, created_at, prev_hash, entry_hash
 		 from audit_log
-		 where created_at >= $1
+		 where chain_id = $1 and created_at >= $2
 		 order by id asc`,
-		since.UTC(),
+		chainID, since.UTC(),
 	)
 	if err != nil {
 		return ChainResult{}, fmt.Errorf("audit: verify chain: %w", err)
@@ -438,7 +533,8 @@ func (s *PgStore) VerifyChain(ctx context.Context, since time.Time) (ChainResult
 		var headHash []byte
 		if err := pg.FromContextRead(ctx, s.pool).QueryRow(
 			ctx,
-			`select last_hash from audit_chain_head where id = 1`,
+			`select last_hash from audit_chain_head where id = $1`,
+			chainID,
 		).Scan(&headHash); err != nil {
 			return ChainResult{}, fmt.Errorf("audit: verify chain head: %w", err)
 		}

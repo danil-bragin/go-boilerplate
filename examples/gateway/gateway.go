@@ -219,7 +219,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	// Key the audit hash chain with the HMAC secret when configured
 	// (AUDIT_CHAIN_KEY) — forgery-resistance against the app role. No-op when
 	// unset (keyless sha256 fallback).
-	apiServer.SetAuditChainKey(cfg.AuditChainKey)
+	apiServer.SetAuditChainKey(cfg.AuditChainKey, cfg.AuditChainShards)
 
 	// GATEWAY_PENDING_ASYNC=true: the POST-time pending-row insert goes
 	// through a single batched async writer instead of one synchronous

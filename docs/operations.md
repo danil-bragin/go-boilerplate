@@ -1065,9 +1065,14 @@ docker compose -f docker-compose.yml -f docker-compose.scale.yml \
 | Async pending writes | `GATEWAY_PENDING_ASYNC=true` | Collapses pending-row INSERTs into batched multi-row writes (trades GET-after-POST read-your-writes) |
 
 These do not lift the **single-writer ceiling** (see "Write-path ceiling"
-below) — that needs Tier-2/3 (shard the outbox relay, shard the audit chain,
-shard Postgres). They DO remove read pressure, connection-count walls, and
-`DELETE` bloat, which is usually what bites first.
+below). The two cross-aggregate serialization points that throttle commands
+regardless of the writer — the single-active outbox relay and the global audit
+hash-chain lock — are removed by **Tier-2 sharding**, both opt-in config flips:
+`OUTBOX_RELAY_SHARDS=N` (ADR-0017, ordered parallel publish) and
+`AUDIT_CHAIN_SHARDS=N` (ADR-0018, actor-keyed parallel audit chains). What
+remains after that is the writer itself — Tier-3: shard Postgres. The Tier-1
+levers above still matter first: they remove read pressure, connection-count
+walls, and `DELETE` bloat, which is usually what bites before any of it.
 
 | Component | Scale how | Hard limits / caveats |
 |---|---|---|

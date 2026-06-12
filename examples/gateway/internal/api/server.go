@@ -88,8 +88,8 @@ func (s *Server) SetEncoder(enc Encoder) { s.encoder = enc }
 // (keyless sha256 fallback). It also wires the denial-coalesced counter so the
 // bounded-denial-storm rate (security review #5) is observable. Must be called
 // before the server starts handling requests.
-func (s *Server) SetAuditChainKey(key config.Secret) {
-	opts := []audit.Option{audit.WithChainKey(key)}
+func (s *Server) SetAuditChainKey(key config.Secret, shards int) {
+	opts := []audit.Option{audit.WithChainKey(key), audit.WithChainShards(shards)}
 	// Best-effort metric: a denial audit coalesced by the per-(actor,action)
 	// bound increments this. Global-meter instrument, nil-degrading like the
 	// pending-batch counter.

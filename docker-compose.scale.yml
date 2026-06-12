@@ -37,6 +37,8 @@ services:
       PG_READER_MAX_CONNS: "10"
       # 5: more partitions = more parallel consumers across replicas.
       TOPIC_PARTITIONS: "24"
+      # 6: sharded audit hash chain — drop the global chain-head lock (ADR-0018).
+      AUDIT_CHAIN_SHARDS: "4"
 
   orders:
     environment:
@@ -55,6 +57,7 @@ services:
       OUTBOX_BATCH_SIZE: "500"
       OUTBOX_POLL_INTERVAL: 100ms
       OUTBOX_RELAY_SHARDS: "4"
+      AUDIT_CHAIN_SHARDS: "4"
 
   payments:
     environment:
@@ -69,6 +72,8 @@ services:
       OUTBOX_PARTITION_LOOKAHEAD: "2"
       OUTBOX_BATCH_SIZE: "500"
       OUTBOX_POLL_INTERVAL: 100ms
+      OUTBOX_RELAY_SHARDS: "4"
+      AUDIT_CHAIN_SHARDS: "4"
 
   notifications:
     environment:

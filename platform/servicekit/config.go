@@ -122,6 +122,13 @@ type Config struct {
 	// Wire it into the store with audit.NewPgStore(pool,
 	// audit.WithChainKey(cfg.AuditChainKey)).
 	AuditChainKey config.Secret `env:"AUDIT_CHAIN_KEY" envDefault:""`
+
+	// AuditChainShards splits the audit hash chain into N actor-keyed chains
+	// (audit.WithChainShards, ADR-0018) so commands by different actors stop
+	// serializing on a single chain-head lock. 1 (default) = one global chain,
+	// behaviour unchanged. Raise it toward the number of distinct hot actors
+	// when the global audit-chain lock becomes the command-throughput ceiling.
+	AuditChainShards int `env:"AUDIT_CHAIN_SHARDS" envDefault:"1"`
 }
 
 // RetentionInvariantViolated reports whether the inbox dedup window is shorter
