@@ -187,3 +187,30 @@ func TestMigrateSharded_AppliesToEveryShard(t *testing.T) {
 		return nil
 	}))
 }
+
+func TestShardedPool_SingleShard_ByteIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs Docker")
+	}
+	ctx := context.Background()
+	sp := newShardedTestPool(t, 1)
+	require.NoError(t, sp.ForEachShard(ctx, func(_ int, p *pg.Pool) error {
+		_, err := p.Writer().Exec(ctx, `create table k (v text)`)
+		return err
+	}))
+
+	// Every key routes to the one shard; the sharded tx behaves like a plain tx.
+	for _, key := range []string{"a", "b", "order-999"} {
+		require.Same(t, sp.Shards()[0], sp.Resolve(key))
+		kctx := pg.WithShardKey(ctx, key)
+		require.NoError(t, sp.RunInTx(kctx, func(ctx context.Context) error {
+			db, err := sp.FromContext(ctx)
+			require.NoError(t, err)
+			_, err = db.Exec(ctx, `insert into k (v) values ($1)`, key)
+			return err
+		}))
+	}
+	var n int
+	require.NoError(t, sp.Shards()[0].Reader().QueryRow(ctx, `select count(*) from k`).Scan(&n))
+	require.Equal(t, 3, n)
+}
