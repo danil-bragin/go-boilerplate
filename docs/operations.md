@@ -1088,6 +1088,94 @@ docker compose -f docker-compose.yml -f docker-compose.scale.yml \
 
 ---
 
+### Tier-3 — Postgres sharding (`PG_SHARDS`, ADR-0019)
+
+Tier-1 removes read pressure / connection walls / `DELETE` bloat; Tier-2
+(`OUTBOX_RELAY_SHARDS`, `AUDIT_CHAIN_SHARDS`) removes the two cross-aggregate
+serialization points. What is left is the **single Postgres writer itself**
+(ADR-0008): the full effectively-once order-create write path tops out at
+**~5–6k order-create transactions/s** on one instance. The only lever that
+lifts a single writer's ceiling is adding more **writers** — horizontal
+sharding (`pg.ShardedPool`, ADR-0019).
+
+**Turn it on.** Set `PG_SHARDS` to a comma-separated DSN list — this service's
+database on each physical shard — instead of (or in addition to) `PG_DSN`. With
+`M` DSNs, `pg.ShardedPool` builds `M` independent tuned pools. Each aggregate's
+`order_id` (the Kafka record key) is hashed FNV-1a 64-bit into one of 256 fixed
+logical shards, mapped to a physical shard by `assign[l] = l % M`; an aggregate
+and everything atomic with it (its row, outbox row, inbox-dedup row, audit
+chain) always live on the same shard, so effectively-once and per-aggregate
+order are preserved **per shard**. A keyed write with no shard key fails closed
+(never a silent shard-0 write). The same FNV-1a hash is used by every service
+process, so the gateway and `orders` route the same `order_id` identically.
+
+```bash
+# orders service, M=2 — its DB on both shards:
+PG_SHARDS="postgres://app:app@pg-0:5432/orders?sslmode=disable,postgres://app:app@pg-1:5432/orders?sslmode=disable"
+# PG_READER_SHARDS — optional matching reader DSN list (reader/writer split per shard).
+```
+
+Run it locally with the **`docker-compose.shard.yml` overlay** (M=2, adds a
+second Postgres `postgres-shard-1` carrying all four service DBs via the same
+`init.sql`):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.shard.yml --profile apps up
+```
+
+**`M=1` is the default and byte-identical.** With `PG_SHARDS` unset each service
+builds a single pool from `PG_DSN` (`assign[l]=0` ∀ l ⇒ every key resolves to
+that one pool) — exactly today's behaviour. Sharding is strictly opt-in.
+
+**The ceiling math.** `M` independent shards give `~M×` write capacity for the
+same code: `5k = ceil(5000/K) shards` for a per-shard ceiling `K` (≈5k here,
+so one shard ≈ 5k, two ≈ 10k, …); **50k order-tx/s is reached by changing one
+number — `M`.** Each shard runs its own relay leader / cleaner / audit chains
+(ADR-0017/0018), so no per-shard component reintroduces a global serialization
+point.
+
+**Measured (D2).** On a single host the linearity is bounded by shared IO, not
+the code: **M=1 ~4900 order-tx/s → M=2 ~7400 order-tx/s, ~1.5×** — two Postgres
+instances contend for the same disk/CPU. On **separate nodes** (real shard
+hardware) the same code approaches linear `~M×`. The reproducible proof lives in
+`platform/storage/pg/sharded_linearity_test.go`, gated by `TIER3_LINEARITY=1`
+(it spins multiple Postgres containers, so it is excluded from the normal suite
+and pre-push).
+
+**Migrations.** At `M>1` `pg.NewSharded` **rejects** a configured
+`PG_MIGRATE_URL` — each shard migrates via its own DSN (goose run per shard by
+`MigrateSharded`, non-atomically across the fleet, so use expand-contract
+migrations). Leave `PG_MIGRATE_URL` unset under sharding; the overlay clears it
+explicitly so it is safe to layer over `docker-compose.scale.yml` (which sets
+it).
+
+**Known limitations** (none block the primitive; all are what a production
+sharding rollout adds on top — see ADR-0019):
+
+- **Readiness = all-shards-up.** `HealthCheck` fails if any shard is down (that
+  shard's aggregates cannot be written). Per-aggregate availability (503 only
+  the affected keys) is not built.
+- **Audit retention covers shard 0 only at `M>1`.** A single `PG_AUDIT_ADMIN_URL`
+  binds one admin pool to shard 0; the retention cleaner prunes shard 0's
+  `audit_log` only and logs a loud `WARN` (`servicekit/cleanup.go`) — the other
+  shards' rows are not pruned (the append-only guarantee still holds). Per-shard
+  retention needs per-shard admin DSNs (not built).
+- **Per-shard relay / cleaners.** Each shard elects its own outbox relay leader
+  and runs its own audit chains; the relay advisory-lock key is suffixed per
+  physical shard so leaders on different shards never collide.
+- **Static `M` / live resharding deferred.** `M` is fixed at deploy. Growing it
+  requires moving a logical shard's data with a consistent cutover — deferred.
+  The 256-logical-shard indirection exists so that, when built, keys never
+  rehash (only the logical→physical assignment moves). Until then: pick `M` up
+  front, reshard offline.
+- **Assignment is a single source of truth.** Every service must share the same
+  `M` / logical→physical map or the same key routes differently in two services.
+
+See **ADR-0019** for the full design and `sharded_linearity_test.go`
+(`TIER3_LINEARITY=1`) for the linearity proof.
+
+---
+
 ## Consistency levels (A2)
 
 Every command type declares a `cqrs.ConsistencyPolicy` that governs four
