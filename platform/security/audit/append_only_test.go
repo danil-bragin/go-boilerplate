@@ -175,10 +175,16 @@ func TestAuditMigration_TransfersOwnershipWhenAuditAdminExists(t *testing.T) {
 	dsn := pgtest.NewDSN(t)
 	ctx := context.Background()
 
-	// Provision audit_admin BEFORE migrating so the transfer branch fires.
+	// Provision audit_admin BEFORE migrating so the transfer branch fires —
+	// mirroring deploy/postgres/init.sql, which also grants the role CREATE on
+	// schema public. PG15+ revokes CREATE on public from PUBLIC, so without this
+	// grant migration 00005 (which runs `create index` AS audit_admin after the
+	// ownership transfer) fails with "permission denied for schema public".
 	bootstrap, err := pgxpool.New(ctx, dsn)
 	require.NoError(t, err)
 	_, err = bootstrap.Exec(ctx, `create role audit_admin login password 'audit_admin'`)
+	require.NoError(t, err)
+	_, err = bootstrap.Exec(ctx, `grant usage, create on schema public to audit_admin`)
 	require.NoError(t, err)
 	bootstrap.Close()
 
