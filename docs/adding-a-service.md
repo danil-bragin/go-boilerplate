@@ -387,11 +387,14 @@ func DecorateArrangeShipmentHandler(
 // never errored (forward compatibility). The transport stays decode +
 // dispatch ONLY — business branching belongs in the Service.
 func NewEventHandler(
-	pool *pg.Pool,
+	sp *pg.ShardedPool,
 	handler cqrs.HandlerFunc[ArrangeShipment, ArrangeShipmentResult],
 	opts ...consume.Option,
 ) kafka.HandlerFunc {
-	return consume.New(pool, "shipping", opts...).Handler(
+	// consume.New takes the sharded pool so each record is routed to its shard
+	// by the Kafka record key (Tier-3, ADR-0019); at M=1 (PG_SHARDS unset) it is
+	// the single pool — byte-identical to the unsharded path.
+	return consume.New(sp, "shipping", opts...).Handler(
 		consume.Typed(orderCreatedEventType, func(ctx context.Context, evt *ordersv1.OrderCreated) error {
 			_, err := handler(ctx, ArrangeShipment{OrderID: evt.GetOrderId()})
 			return err
@@ -452,7 +455,7 @@ func NewApp(ctx context.Context) (*App, error) {
 	if sd := svc.Serde(); sd != nil {
 		consumeOpts = append(consumeOpts, consume.WithSerde(sd))
 	}
-	evtHandler := NewEventHandler(svc.Pool(), handler, consumeOpts...)
+	evtHandler := NewEventHandler(svc.Shards(), handler, consumeOpts...)
 
 	// Consumer with in-process retry + poison-DLT (3 attempts → <topic>.DLT).
 	// For tiered retry topics instead, see AddConsumerWithRetry (§8).
