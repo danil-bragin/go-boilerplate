@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -162,4 +163,48 @@ func TestDurableAudit_StagesAfterSuccess_NotOnError(t *testing.T) {
 		return err
 	})
 	require.Equal(t, 1, pendingCount(t, pool), "no intent on handler error")
+}
+
+// TestDrainPending_ConcurrentDrainersNoDoubleApply proves the exactly-once guard
+// under the leader-failover overlap that pg.RunAsLeader explicitly permits (it is
+// election, not fencing). Two drainers run concurrently against the same staged
+// intents on a SINGLE chain (max contention); the claim-and-apply (DELETE ...
+// RETURNING) must ensure each intent lands in the chain exactly once — no
+// duplicates, and VerifyChain stays OK.
+func TestDrainPending_ConcurrentDrainersNoDoubleApply(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs Docker")
+	}
+	pool := newPool(t)
+	ctx := context.Background()
+	store := audit.NewPgStore(pool) // chainShards=1 ⇒ one chain ⇒ both drainers fight over it
+	const n = 300
+	for i := range n {
+		require.NoError(t, pg.RunInTx(ctx, pool, func(ctx context.Context) error {
+			return store.InsertPending(ctx, audit.Entry{Actor: "svc", Action: "order:create", Subject: fmt.Sprintf("o%d", i)})
+		}))
+	}
+
+	var wg sync.WaitGroup
+	for range 2 { // two overlapping "leaders"
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				applied, err := store.DrainPending(ctx, 32)
+				require.NoError(t, err)
+				if applied == 0 {
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	require.Equal(t, 0, pendingCount(t, pool), "all intents drained")
+	require.Equal(t, n, auditLogCount(t, pool), "each intent applied EXACTLY once (no double-apply under overlap)")
+	res, err := store.VerifyChain(ctx, zeroTime())
+	require.NoError(t, err)
+	require.True(t, res.OK, "chain must verify; break id=%d reason=%q", res.BreakID, res.Reason)
+	require.Equal(t, n, res.Verified)
 }
