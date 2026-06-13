@@ -2,6 +2,7 @@ package audit_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"testing"
@@ -100,4 +101,29 @@ func TestDrainPending_AppliesExactlyOnceAndVerifies(t *testing.T) {
 	again, err := store.DrainPending(ctx, 32)
 	require.NoError(t, err)
 	require.Equal(t, 0, again, "second drain is a no-op")
+}
+
+func TestDurableAudit_StagesAfterSuccess_NotOnError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs Docker")
+	}
+	pool := newPool(t)
+	ctx := context.Background()
+	store := audit.NewPgStore(pool)
+	b := audit.DurableAudit[string, string](store, "order:create", func(c string) string { return c })
+
+	h := b(func(_ context.Context, _ string) (string, error) { return "ok", nil })
+	require.NoError(t, pg.RunInTx(ctx, pool, func(ctx context.Context) error {
+		_, err := h(ctx, "o1")
+		return err
+	}))
+	require.Equal(t, 1, pendingCount(t, pool), "intent staged after success")
+
+	wantErr := errors.New("boom")
+	hErr := b(func(_ context.Context, _ string) (string, error) { return "", wantErr })
+	_ = pg.RunInTx(ctx, pool, func(ctx context.Context) error {
+		_, err := hErr(ctx, "o2")
+		return err
+	})
+	require.Equal(t, 1, pendingCount(t, pool), "no intent on handler error")
 }
