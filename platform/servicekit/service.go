@@ -55,7 +55,8 @@ type Service struct {
 	cfg         Config
 	logger      *slog.Logger
 	closer      *run.Closer
-	pool        *pg.Pool
+	shards      *pg.ShardedPool
+	pool        *pg.Pool // shard 0; == the single pool at M=1 (the Pool() accessor)
 	kafkaClient *kgo.Client
 	producer    *kafka.Producer
 	h           *health.Health
@@ -186,23 +187,31 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 		logger.Info("pyroscope continuous profiling enabled", "addr", cfg.PyroscopeAddr)
 	}
 
-	// 3. Postgres pool (skipped entirely with WithoutPG — no dial).
-	var pool *pg.Pool
+	// 3. Postgres pool (skipped entirely with WithoutPG — no dial). The harness
+	// always builds a ShardedPool: M=1 (PG_SHARDS unset) is a single pool over
+	// PG_DSN, byte-identical to the unsharded pool; M>1 routes by aggregate key
+	// (Tier-3, ADR-0019). pool is shard 0 — the Pool() accessor, == the single
+	// pool at M=1 for code that has not adopted sharded routing.
+	var (
+		shards *pg.ShardedPool
+		pool   *pg.Pool
+	)
 	if !o.withoutPG {
-		pool, err = pg.New(ctx, cfg.PG)
+		shards, err = pg.NewSharded(ctx, cfg.PG.ToShardedConfig())
 		if err != nil {
 			return nil, err
 		}
-		pgPool := pool
+		pool = shards.Shards()[0]
+		sp := shards
 		closer.Add("pg", func(ctx context.Context) error {
-			return pgPool.Close(ctx)
+			return sp.Close(ctx)
 		})
 
-		// 4. Migrations (advisory-locked; idempotent). MIGRATE_ON_START=false
-		// skips them (production: a dedicated migrate job owns schema changes).
-		// MigrateDSN honors PG_MIGRATE_URL — required behind PgBouncer.
+		// 4. Migrations (advisory-locked; idempotent), run per shard. M=1 ⇒ one
+		// Migrate, identical to today. MIGRATE_ON_START=false skips them
+		// (production: a dedicated migrate job owns schema changes).
 		if cfg.MigrateOnStart && migrations != nil && migrationsDir != "" {
-			if err := pg.Migrate(ctx, cfg.PG.MigrateDSN().Reveal(), migrations, migrationsDir); err != nil {
+			if err := pg.MigrateSharded(ctx, shards, migrations, migrationsDir); err != nil {
 				return nil, err
 			}
 		}
@@ -230,9 +239,9 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 
 	// 6. Health: pg + kafka readiness checks (only for the wired subsystems).
 	h := health.New()
-	if pool != nil {
+	if shards != nil {
 		h.AddReadiness("postgres", health.Check(func(ctx context.Context) error {
-			return pool.HealthCheck(ctx)
+			return shards.HealthCheck(ctx)
 		}))
 	}
 	if producer != nil {
@@ -268,6 +277,7 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 		cfg:         cfg,
 		logger:      logger,
 		closer:      closer,
+		shards:      shards,
 		pool:        pool,
 		kafkaClient: kafkaClient,
 		producer:    producer,
@@ -278,8 +288,16 @@ func New(ctx context.Context, cfg Config, migrations fs.FS, migrationsDir string
 	}, nil
 }
 
-// Pool returns the Postgres pool.
+// Pool returns shard 0's Postgres pool. At M=1 (the default, PG_SHARDS unset)
+// this IS the single pool — use it for code that has not adopted sharded
+// routing. For sharded (M>1) per-aggregate work, use Shards() and route by the
+// aggregate key (see pg.WithShardKey / ShardedPool.RunInTx).
 func (s *Service) Pool() *pg.Pool { return s.pool }
+
+// Shards returns the sharded pool. At M=1 it wraps the single pool; at M>1 it
+// routes by aggregate key. Consumers, domain repositories, and the gateway use
+// this for per-aggregate reads/writes.
+func (s *Service) Shards() *pg.ShardedPool { return s.shards }
 
 // Producer returns the Kafka producer.
 func (s *Service) Producer() *kafka.Producer { return s.producer }
