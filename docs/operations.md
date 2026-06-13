@@ -1287,6 +1287,89 @@ chains. Alert on it promptly — it indicates either buffer saturation (raise
 `WriterConfig.Buffer` or reduce Eventual-flow volume) or a DB connectivity
 problem.
 
+### Durable audit (third mode)
+
+Durable audit is a third consistency mode that sits between Strong and
+Eventual: it never drops audit entries (unlike Eventual) and removes the
+chain-head lock from the command hot path (unlike Strong). See
+`docs/superpowers/specs/2026-06-13-durable-audit-design.md` for the full
+design rationale.
+
+**How it works.** Inside the command transaction the `audit.DurableAudit`
+behavior performs one cheap `INSERT` into the `audit_pending` staging table.
+Because this write is inside the command transaction it is durable and
+effectively-once: if the command commits, the intent is committed; if the
+command rolls back, the intent rolls back too. No chain-head lock is taken on
+the hot path. A separate single-active per-shard drain worker
+(`servicekit.AddAuditDrain`) periodically reads rows from `audit_pending`
+ordered by `(chain_id, id)` and applies them to the hash chain via
+`DrainPending`, preserving tamper-evidence across the async hop. The hashed
+timestamp is the original event time recorded at intent-insert, not the drain
+time, so the chain accurately reflects when the event occurred.
+
+**Comparison of the three audit modes**
+
+| Mode | Behavior | Chain-head lock on hot path | Never drops | Requires transaction | Measured throughput (single host, 1 shard) |
+|---|---|---|---|---|---|
+| **Strong** (`audit.Audit`) | Written inside the command transaction; audit-at-commit | Yes — `audit_chain_head FOR UPDATE` held during command | Yes | Yes | ~1.5 k cmd/s |
+| **Eventual** (`audit.AsyncAudit`) | Enqueued in-process after handler success; best-effort background flush | No | No — drops on buffer overflow or crash | No | ~28 k cmd/s |
+| **Durable** (`audit.DurableAudit`) | Intent staged in `audit_pending` inside the command transaction; applied to the chain by the drain worker | No | Yes | Yes | ~6.5 k cmd/s (~4.4× Strong) |
+
+**When to use each**
+
+- **Strong** — money-grade flows, order/payment/inventory commands where a
+  missing audit entry must prevent the command from committing. The chain-head
+  lock is acceptable at current load.
+- **Durable** — regulatory or compliance audit where no entry can ever be lost,
+  but the service needs more command throughput than Strong allows and can
+  accept a small lag (drain poll interval) between the command committing and
+  the chain being updated.
+- **Eventual** — high-volume, low-value telemetry (view tracking, clickstream,
+  browse history) where losing a small number of entries during a crash or
+  buffer saturation is acceptable.
+
+**Wiring Durable audit**
+
+```go
+// 1. Build the PgStore (same store used for Strong/Eventual audit).
+//    Durable shares chain options — shards, HMAC key — with the other modes.
+store := audit.NewPgStore(pool,
+    audit.WithChainKey(cfg.AuditChainKey),   // optional HMAC keying
+    audit.WithChainShards(cfg.AuditShards),  // optional, matches AUDIT_CHAIN_SHARDS
+)
+
+// 2. Wire DurableAudit instead of audit.Audit in the pipeline.
+//    The command MUST be Transactional (DurableAudit writes into pg.FromContext).
+audit.DurableAudit[PlaceOrder, OrderID](store, "place_order", func(c PlaceOrder) string {
+    return c.OrderID
+})
+
+// 3. Register the drain worker before calling svc.Main (returns error if called after Start).
+if err := svc.AddAuditDrain(5*time.Second, 256,
+    audit.WithChainKey(cfg.AuditChainKey),
+    audit.WithChainShards(cfg.AuditShards),
+); err != nil {
+    return err
+}
+```
+
+`AddAuditDrain` spawns one single-active (leader-elected) drain goroutine per
+physical shard. Passing `interval <= 0` disables the drain entirely (useful in
+tests). The drain runs inside the service lifecycle and shuts down cleanly on
+context cancellation.
+
+**Alerting on Durable audit**
+
+| Metric | Meaning | Alert threshold |
+|---|---|---|
+| `audit.pending_backlog` | Rows in `audit_pending` awaiting the drain worker (gauge) | Growing unbounded — means the drain worker is down or falling behind |
+
+`audit.pending_backlog` growing without bound means either the drain worker
+died (check service logs / leader-election state) or the drain cannot keep up
+with write volume (lower `interval`, raise `batchSize`, or add audit chain
+shards via `AUDIT_CHAIN_SHARDS`). A stable non-zero value is normal and simply
+reflects the current drain lag.
+
 These do not lift the **single-writer ceiling** (see "Write-path ceiling"
 below). The two cross-aggregate serialization points that throttle commands
 regardless of the writer — the single-active outbox relay and the global audit
