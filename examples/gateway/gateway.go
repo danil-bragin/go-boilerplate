@@ -182,9 +182,9 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 			// perRecord is the proven per-event path; AddBatchConsumer wraps it
 			// in WithRetry/DLT and supplies it as the batch fallback, so the
 			// failure contract (poison → <topic>.DLT) is identical to per-event.
-			perRecord := projection.NewHandler(svc.Pool(), svc.Logger(), appCache, streamer.Notify, consumeOpts...)
+			perRecord := projection.NewHandler(svc.Shards(), svc.Logger(), appCache, streamer.Notify, consumeOpts...)
 			build := func(fb kafka.HandlerFunc) kafka.BatchHandlerFunc {
-				return projection.NewBatchHandler(svc.Pool(), svc.Logger(), appCache, streamer.Notify, fb, consumeOpts...)
+				return projection.NewBatchHandler(svc.Shards(), svc.Logger(), appCache, streamer.Notify, fb, consumeOpts...)
 			}
 			if err := svc.AddBatchConsumer(
 				ctx, "gateway-projection",
@@ -194,7 +194,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 				return nil, err
 			}
 		} else {
-			projHandler := projection.NewHandler(svc.Pool(), svc.Logger(), appCache, streamer.Notify, consumeOpts...)
+			projHandler := projection.NewHandler(svc.Shards(), svc.Logger(), appCache, streamer.Notify, consumeOpts...)
 			if err := svc.AddConsumer(
 				ctx, "gateway-projection",
 				[]string{cfg.OrdersEventsTopic, cfg.PaymentsEventsTopic},

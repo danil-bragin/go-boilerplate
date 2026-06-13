@@ -82,7 +82,7 @@ func buildService(t *testing.T, pool *pg.Pool, broker string, eventsTopic string
 	decoratedHandler := app.DecorateProcessPaymentHandler(rawHandler, auditStore)
 
 	// Wire event handler.
-	evtHandler := transport.NewEventHandler(pool, decoratedHandler)
+	evtHandler := transport.NewEventHandler(pg.WrapPool(pool), decoratedHandler)
 
 	// Start relay in background.
 	relayCtx, cancelRelay := context.WithCancel(context.Background())

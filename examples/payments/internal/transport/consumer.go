@@ -26,11 +26,11 @@ var OrderCreatedEventType = consume.EventTypeFor[*ordersv1.OrderCreated](1)
 // decorated CQRS handler. All transport-level concerns (event-type dispatch,
 // message-id policy, inbox dedup, principal headers) come from consume.Typed.
 func NewEventHandler(
-	pool *pg.Pool,
+	sp *pg.ShardedPool,
 	handler func(context.Context, app.ProcessPayment) (app.ProcessPaymentResult, error),
 	opts ...consume.Option,
 ) kafka.HandlerFunc {
-	return consume.New(pg.WrapPool(pool), "payments", opts...).Handler(
+	return consume.New(sp, "payments", opts...).Handler(
 		consume.TypedFor(1, func(ctx context.Context, evt *ordersv1.OrderCreated) error {
 			_, err := handler(ctx, app.ProcessPayment{
 				OrderID:     evt.GetOrderId(),

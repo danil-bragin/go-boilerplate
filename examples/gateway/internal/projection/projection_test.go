@@ -8,6 +8,7 @@ import (
 	"go-boilerplate/examples/gateway/internal/projection"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/outbox"
+	"go-boilerplate/platform/storage/pg"
 	"go-boilerplate/platform/testkit/fakes"
 
 	"github.com/google/uuid"
@@ -28,7 +29,7 @@ import (
 func TestNewHandler_SkipsUnknownEventTypes(t *testing.T) {
 	t.Parallel()
 	broker := fakes.NewBroker()
-	handler := projection.NewHandler(nil, slog.Default(), nil, nil, consume.WithoutInbox())
+	handler := projection.NewHandler(pg.WrapPool(nil), slog.Default(), nil, nil, consume.WithoutInbox())
 	broker.Subscribe("orders.events", handler)
 	broker.Subscribe("payments.events", handler)
 
@@ -56,7 +57,7 @@ func TestNewHandler_SkipsUnknownEventTypes(t *testing.T) {
 func TestNewHandler_RoutesAllFourEventTypes(t *testing.T) {
 	t.Parallel()
 	broker := fakes.NewBroker()
-	handler := projection.NewHandler(nil, slog.Default(), nil, nil, consume.WithoutInbox())
+	handler := projection.NewHandler(pg.WrapPool(nil), slog.Default(), nil, nil, consume.WithoutInbox())
 	broker.Subscribe("orders.events", handler)
 	broker.Subscribe("payments.events", handler)
 

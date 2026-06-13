@@ -65,9 +65,14 @@ type StoreFor func(ctx context.Context) Store
 // inbox transaction commits, so readers on every instance see the new state
 // instead of a stale cached view. notify (may be nil) runs in the same
 // post-commit hook and pushes the change to SSE subscribers.
-func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify StatusNotifier, opts ...consume.Option) kafka.HandlerFunc {
-	return NewHandlerWithStore(pool, func(ctx context.Context) Store {
-		return storegen.New(pg.FromContext(ctx, pool))
+func NewHandler(sp *pg.ShardedPool, logger *slog.Logger, cache cqrs.Cache, notify StatusNotifier, opts ...consume.Option) kafka.HandlerFunc {
+	// The store binds to the ambient inbox transaction via pg.FromContext, which
+	// returns the keyed tx regardless of the pool argument — so projection writes
+	// always route to the correct shard through the consumer tx. sp.Shards()[0]
+	// is only the no-tx fallback pool; the projection always runs inside the tx.
+	fallback := sp.Shards()[0]
+	return NewHandlerWithStore(sp, func(ctx context.Context) Store {
+		return storegen.New(pg.FromContext(ctx, fallback))
 	}, logger, cache, notify, opts...)
 }
 
@@ -75,9 +80,9 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 // injected. It exists for fast-lane contract tests (recording Store, nil
 // pool, consume.WithoutInbox); production wiring goes through NewHandler so
 // writes always join the ambient inbox transaction.
-func NewHandlerWithStore(pool *pg.Pool, storeFor StoreFor, logger *slog.Logger, cache cqrs.Cache, notify StatusNotifier, opts ...consume.Option) kafka.HandlerFunc {
+func NewHandlerWithStore(sp *pg.ShardedPool, storeFor StoreFor, logger *slog.Logger, cache cqrs.Cache, notify StatusNotifier, opts ...consume.Option) kafka.HandlerFunc {
 	opts = append([]consume.Option{consume.WithLogger(logger)}, opts...)
-	return consume.New(pg.WrapPool(pool), consumerGroup, opts...).Handler(
+	return consume.New(sp, consumerGroup, opts...).Handler(
 		projectionHandlers(storeFor, logger, cache, notify, newLifecycleMetrics())...,
 	)
 }
@@ -91,12 +96,17 @@ func NewHandlerWithStore(pool *pg.Pool, storeFor StoreFor, logger *slog.Logger, 
 // dedup, offset ordering, and post-commit hooks (cache bust + SSE notify).
 //
 // cache/notify may be nil, identical to NewHandler.
-func NewBatchHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify StatusNotifier, fallback kafka.HandlerFunc, opts ...consume.Option) kafka.BatchHandlerFunc {
+func NewBatchHandler(sp *pg.ShardedPool, logger *slog.Logger, cache cqrs.Cache, notify StatusNotifier, fallback kafka.HandlerFunc, opts ...consume.Option) kafka.BatchHandlerFunc {
+	// The store binds to the ambient batch transaction via pg.FromContext, which
+	// returns the keyed tx regardless of the pool argument — so projection writes
+	// route to the correct shard through the consumer tx. sp.Shards()[0] is only
+	// the no-tx fallback pool; the projection always runs inside the batch tx.
+	inner := sp.Shards()[0]
 	storeFor := func(ctx context.Context) Store {
-		return storegen.New(pg.FromContext(ctx, pool))
+		return storegen.New(pg.FromContext(ctx, inner))
 	}
 	opts = append([]consume.Option{consume.WithLogger(logger)}, opts...)
-	return consume.New(pg.WrapPool(pool), consumerGroup, opts...).BatchHandler(
+	return consume.New(sp, consumerGroup, opts...).BatchHandler(
 		fallback,
 		projectionHandlers(storeFor, logger, cache, notify, newLifecycleMetrics())...,
 	)

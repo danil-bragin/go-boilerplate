@@ -27,11 +27,11 @@ var CommandEventType = consume.EventTypeFor[*ordersv1.CreateOrderCommand](1)
 // (event-type dispatch, message-id policy, inbox dedup, principal headers)
 // come from consume.Typed; see that package's documentation.
 func NewCommandHandler(
-	pool *pg.Pool,
+	sp *pg.ShardedPool,
 	handler func(context.Context, app.CreateOrder) (app.CreateOrderResult, error),
 	opts ...consume.Option,
 ) kafka.HandlerFunc {
-	return consume.New(pg.WrapPool(pool), "orders", opts...).Handler(
+	return consume.New(sp, "orders", opts...).Handler(
 		consume.TypedFor(1, func(ctx context.Context, cmd *ordersv1.CreateOrderCommand) error {
 			_, err := handler(ctx, app.CreateOrder{
 				OrderID:     cmd.GetOrderId(),

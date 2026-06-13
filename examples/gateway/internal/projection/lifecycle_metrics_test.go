@@ -85,7 +85,7 @@ func TestProjection_LifecycleDurationMetric(t *testing.T) {
 	t.Cleanup(func() { _ = pool.Close(ctx) })
 
 	broker := fakes.NewBroker()
-	handler := projection.NewHandler(pool, slog.Default(), nil, nil, consume.WithoutInbox())
+	handler := projection.NewHandler(pg.WrapPool(pool), slog.Default(), nil, nil, consume.WithoutInbox())
 	broker.Subscribe("orders.events", handler)
 	broker.Subscribe("payments.events", handler)
 

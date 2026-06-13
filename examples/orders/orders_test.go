@@ -82,7 +82,7 @@ func buildService(t *testing.T, pool *pg.Pool, broker string, commandsTopic stri
 	decoratedHandler := app.DecorateCreateOrderHandler(rawHandler, auditStore)
 
 	// Wire consumer handler.
-	cmdHandler := transport.NewCommandHandler(pool, decoratedHandler)
+	cmdHandler := transport.NewCommandHandler(pg.WrapPool(pool), decoratedHandler)
 
 	// Start relay in background.
 	relayCtx, cancelRelay := context.WithCancel(context.Background())

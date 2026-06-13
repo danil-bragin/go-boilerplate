@@ -128,7 +128,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if sd := svc.Serde(); sd != nil {
 		consumeOpts = append(consumeOpts, consume.WithSerde(sd))
 	}
-	cmdHandler := transport.NewCommandHandler(svc.Pool(), decoratedHandler, consumeOpts...)
+	cmdHandler := transport.NewCommandHandler(svc.Shards(), decoratedHandler, consumeOpts...)
 
 	// Register consumer with tiered retry-topic redrive (non-blocking redrive demo).
 	if err := svc.AddConsumerWithRetry(ctx, "orders-consumer", []string{cfg.CommandsTopic}, cmdHandler, retry.DefaultPolicy()); err != nil {
@@ -138,7 +138,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	// Payment-outcome consumer: records paid/payment_failed on the local order
 	// rows (inbox-deduped) so the unpaid watcher below never needs to look
 	// beyond this service's own database.
-	paymentsHandler := transport.NewPaymentsEventHandler(svc.Pool(), domainSvc, svc.Logger(), consumeOpts...)
+	paymentsHandler := transport.NewPaymentsEventHandler(svc.Shards(), domainSvc, svc.Logger(), consumeOpts...)
 	if err := svc.AddConsumer(ctx, "orders-payments", []string{cfg.PaymentsEventsTopic}, paymentsHandler); err != nil {
 		return nil, err
 	}

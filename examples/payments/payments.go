@@ -114,7 +114,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	if sd := svc.Serde(); sd != nil {
 		consumeOpts = append(consumeOpts, consume.WithSerde(sd))
 	}
-	evtHandler := transport.NewEventHandler(svc.Pool(), decoratedHandler, consumeOpts...)
+	evtHandler := transport.NewEventHandler(svc.Shards(), decoratedHandler, consumeOpts...)
 
 	// Register consumer; harness wraps with WithRetry+DLT automatically.
 	if err := svc.AddConsumer(ctx, "payments", []string{cfg.EventsTopic}, evtHandler); err != nil {

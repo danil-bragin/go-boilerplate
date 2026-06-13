@@ -108,7 +108,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	}
 	// Domain service over the delivery channel; the consumer below is a pure
 	// decode+dispatch adapter.
-	evtHandler := transport.NewEventHandler(svc.Pool(), notification.NewService(notifier), consumeOpts...)
+	evtHandler := transport.NewEventHandler(svc.Shards(), notification.NewService(notifier), consumeOpts...)
 
 	// Register consumer; harness wraps with WithRetry+DLT automatically.
 	if err := svc.AddConsumer(ctx, "notifications", []string{cfg.PaymentsEventsTopic}, evtHandler); err != nil {
