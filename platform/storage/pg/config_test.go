@@ -12,6 +12,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestConfig_ToShardedConfig_SingleVsMulti(t *testing.T) {
+	// No Shards ⇒ one shard from DSN (M=1, byte-identity).
+	c := pg.Config{DSN: "dsn0", MaxConns: 7}
+	sc := c.ToShardedConfig()
+	require.Len(t, sc.DSNs, 1)
+	require.Equal(t, "dsn0", sc.DSNs[0].Reveal())
+	require.Equal(t, int32(7), sc.PerShard.MaxConns)
+
+	// Shards set ⇒ one shard per listed DSN.
+	c2 := pg.Config{DSN: "dsn0", Shards: []config.Secret{"a", "b", "c"}}
+	sc2 := c2.ToShardedConfig()
+	require.Len(t, sc2.DSNs, 3)
+	require.Equal(t, []string{"a", "b", "c"},
+		[]string{sc2.DSNs[0].Reveal(), sc2.DSNs[1].Reveal(), sc2.DSNs[2].Reveal()})
+	require.Empty(t, sc2.PerShard.MigrateURL, "M>1: MigrateURL cleared (each shard migrates via own DSN)")
+}
+
+func TestConfig_PGShards_EnvParse(t *testing.T) {
+	t.Setenv("PG_SHARDS", "dsnA,dsnB")
+	c, err := config.Load[pg.Config]()
+	require.NoError(t, err)
+	require.Len(t, c.Shards, 2)
+	require.Equal(t, "dsnA", c.Shards[0].Reveal())
+}
+
 // TestConfig_DSNsAreRedactedInDumps: the DSN fields carry the database
 // password — a %+v / %v / %s dump of the config (panic logs, debug prints)
 // must never leak it.

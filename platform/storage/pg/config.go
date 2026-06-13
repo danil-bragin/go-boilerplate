@@ -132,6 +132,47 @@ type Config struct {
 	// batch, and CopyFrom — see querytracer.go. Env default is ON; note that
 	// a zero-value Config constructed in code (tests) leaves it off.
 	QueryMetrics bool `env:"PG_QUERY_METRICS" envDefault:"true"`
+
+	// Shards / ReaderShards list the writer and reader DSNs for horizontal
+	// sharding. When Shards is empty, ToShardedConfig yields a single shard
+	// from DSN/ReaderDSN (M=1, identical to New). When non-empty, one pool is
+	// built per listed DSN; all pools share the tuning from PerShard.
+	// Use PG_SHARDS / PG_READER_SHARDS (comma-separated DSN list) to set
+	// these via environment variables.
+	Shards       []config.Secret `env:"PG_SHARDS"        envSeparator:","`
+	ReaderShards []config.Secret `env:"PG_READER_SHARDS" envSeparator:","`
+}
+
+// ToShardedConfig builds a ShardedConfig from this Config. With no Shards set
+// it yields a single shard from DSN/ReaderDSN (M=1, identical to New(cfg));
+// with Shards set it yields one shard per listed DSN, carrying this Config's
+// tuning in PerShard. PerShard.MigrateURL is preserved only for the
+// single-shard case (NewSharded rejects it at M>1 — each shard migrates via
+// its own DSN).
+func (c Config) ToShardedConfig() ShardedConfig {
+	per := c
+	per.Shards = nil
+	per.ReaderShards = nil
+	if len(c.Shards) == 0 {
+		return ShardedConfig{
+			DSNs:       []config.Secret{c.DSN},
+			ReaderDSNs: readerDSNs(c.ReaderDSN),
+			PerShard:   per,
+		}
+	}
+	per.MigrateURL = ""
+	return ShardedConfig{
+		DSNs:       c.Shards,
+		ReaderDSNs: c.ReaderShards,
+		PerShard:   per,
+	}
+}
+
+func readerDSNs(r config.Secret) []config.Secret {
+	if r == "" {
+		return nil
+	}
+	return []config.Secret{r}
 }
 
 // BuildPoolConfig parses DSN into a *pgxpool.Config and applies sizing/timeout
