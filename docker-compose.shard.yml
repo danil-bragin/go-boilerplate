@@ -1,0 +1,101 @@
+# =============================================================================
+# SHARDING OVERLAY — Tier-3 horizontal Postgres sharding (M=2, ADR-0019).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.shard.yml \
+#     --profile apps up
+#
+# This overlay turns the default single-Postgres stack (M=1, byte-identical to a
+# plain pg.Pool) into a TWO-shard stack: it adds a second Postgres
+# (`postgres-shard-1`) and points every app service's PG_SHARDS at BOTH shards.
+# pg.ShardedPool (ADR-0019) hashes each aggregate's order_id (FNV-1a 64-bit, the
+# Kafka record key) into one of 256 logical shards, then maps logical→physical
+# (assign[l] = l % M). With M=2 the write-path single-instance ceiling becomes
+# ~M× — see docs/operations.md § "Tier-3 — Postgres sharding".
+#
+# The base stack stays M=1: PG_SHARDS is UNSET there, so each service builds a
+# single pool from PG_DSN. Sharding is strictly opt-in via this overlay.
+#
+# IMPORTANT — migrations: at M>1 pg.NewSharded REJECTS a configured PG_MIGRATE_URL
+# (each shard migrates via its OWN DSN, run per-shard by MigrateSharded). The base
+# stack never sets PG_MIGRATE_URL; the scale overlay does, so if you layer this on
+# TOP of docker-compose.scale.yml you MUST also clear PG_MIGRATE_URL (override to
+# "" — done below for every service so any layering order is safe).
+#
+# Each shard needs ALL FOUR service databases: postgres-shard-1 runs the SAME
+# deploy/postgres/init.sql as the base postgres, so it boots with the
+# gateway/orders/payments/notifications DBs (and the app / audit_admin roles).
+#
+# Known limitations (see ADR-0019 + operations.md):
+#   • readiness = ALL shards up (any shard down ⇒ that shard's aggregates cannot
+#     be written; HealthCheck fails);
+#   • audit retention: PG_AUDIT_ADMIN_URL covers shard 0 only at M>1 — the other
+#     shards' audit_log is NOT pruned (logged WARN; append-only guarantee holds);
+#   • live resharding (changing M) is deferred — pick M up front.
+#
+# Do NOT run this on top of the same postgres-data volume as a prior M=1 boot if
+# you expect a clean per-shard layout; the shard adds its own volume.
+# =============================================================================
+
+services:
+
+  # Second physical Postgres shard. Mirrors the base `postgres` service: same
+  # digest-pinned image, same init.sql (so all four service DBs + roles exist on
+  # this shard too), same healthcheck/tuning. Distinct container, volume, and
+  # host port (5433) so it can run alongside the base postgres.
+  postgres-shard-1:
+    image: postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - postgres-shard-1-data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  gateway:
+    environment:
+      # M=2: this service's DB on EACH shard, comma-separated. Aggregate keys
+      # (order_id) route to shard 0 or shard 1 by FNV-1a hash (ADR-0019).
+      PG_SHARDS: postgres://app:app@postgres:5432/gateway?sslmode=disable,postgres://app:app@postgres-shard-1:5432/gateway?sslmode=disable
+      # NewSharded rejects MigrateURL at M>1 — each shard migrates via its own
+      # DSN. Cleared here so layering over docker-compose.scale.yml stays valid.
+      PG_MIGRATE_URL: ""
+    depends_on:
+      postgres-shard-1:
+        condition: service_healthy
+
+  orders:
+    environment:
+      PG_SHARDS: postgres://app:app@postgres:5432/orders?sslmode=disable,postgres://app:app@postgres-shard-1:5432/orders?sslmode=disable
+      PG_MIGRATE_URL: ""
+    depends_on:
+      postgres-shard-1:
+        condition: service_healthy
+
+  payments:
+    environment:
+      PG_SHARDS: postgres://app:app@postgres:5432/payments?sslmode=disable,postgres://app:app@postgres-shard-1:5432/payments?sslmode=disable
+      PG_MIGRATE_URL: ""
+    depends_on:
+      postgres-shard-1:
+        condition: service_healthy
+
+  notifications:
+    environment:
+      PG_SHARDS: postgres://app:app@postgres:5432/notifications?sslmode=disable,postgres://app:app@postgres-shard-1:5432/notifications?sslmode=disable
+      PG_MIGRATE_URL: ""
+    depends_on:
+      postgres-shard-1:
+        condition: service_healthy
+
+volumes:
+  postgres-shard-1-data:
