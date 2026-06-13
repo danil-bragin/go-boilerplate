@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"go-boilerplate/platform/config"
 )
@@ -91,4 +92,35 @@ func (sp *ShardedPool) Close(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// ForEachShard runs fn against every physical shard CONCURRENTLY and returns a
+// joined error naming each failing shard. It is the fan-out primitive for
+// keyless operations (global LIST, audit verify) and for sharded migrations. A
+// partial failure is always surfaced — never a silent partial result.
+func (sp *ShardedPool) ForEachShard(ctx context.Context, fn func(idx int, p *Pool) error) error {
+	if err := ctx.Err(); err != nil {
+		return err // do not fan out on an already-cancelled context
+	}
+	errs := make([]error, len(sp.shards))
+	var wg sync.WaitGroup
+	wg.Add(len(sp.shards))
+	for i, p := range sp.shards {
+		go func(i int, p *Pool) {
+			defer wg.Done()
+			if err := fn(i, p); err != nil {
+				errs[i] = fmt.Errorf("pg: shard %d: %w", i, err)
+			}
+		}(i, p)
+	}
+	wg.Wait()
+	return errors.Join(errs...)
+}
+
+// HealthCheck reports healthy only if EVERY shard is healthy (readiness =
+// all-shards-up). A single shard down fails the whole check, because that
+// shard's aggregates cannot be written; see ADR-0019 known-limitations for the
+// per-aggregate-availability alternative.
+func (sp *ShardedPool) HealthCheck(ctx context.Context) error {
+	return sp.ForEachShard(ctx, func(_ int, p *Pool) error { return p.HealthCheck(ctx) })
 }
