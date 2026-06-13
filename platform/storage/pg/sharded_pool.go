@@ -43,6 +43,13 @@ func NewSharded(ctx context.Context, cfg ShardedConfig) (*ShardedPool, error) {
 	if len(cfg.ReaderDSNs) != 0 && len(cfg.ReaderDSNs) != len(cfg.DSNs) {
 		return nil, fmt.Errorf("pg: ReaderDSNs length %d != DSNs length %d", len(cfg.ReaderDSNs), len(cfg.DSNs))
 	}
+	if len(cfg.DSNs) > 1 && cfg.PerShard.MigrateURL != "" {
+		// A single MigrateURL would point every shard's migrations at one
+		// database — silent data corruption. Per-shard migrate targets come from
+		// each shard's own DSN; MigrateURL is only valid for M=1 (e.g. when the
+		// single DSN is behind PgBouncer and migrations need a direct session).
+		return nil, errors.New("pg: ShardedConfig.PerShard.MigrateURL must be empty when sharding (M>1) — each shard migrates via its own DSN")
+	}
 	sp := &ShardedPool{
 		shards:      make([]*Pool, 0, len(cfg.DSNs)),
 		router:      NewRouter(len(cfg.DSNs)),
