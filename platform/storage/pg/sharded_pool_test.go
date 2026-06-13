@@ -90,3 +90,73 @@ func TestShardedPool_HealthCheck_AllUp(t *testing.T) {
 	sp := newShardedTestPool(t, 2)
 	require.NoError(t, sp.HealthCheck(context.Background()))
 }
+
+func TestShardedPool_RunInTx_RoutesByKeyAndIsolates(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs Docker")
+	}
+	ctx := context.Background()
+	sp := newShardedTestPool(t, 2)
+	require.NoError(t, sp.ForEachShard(ctx, func(_ int, p *pg.Pool) error {
+		_, err := p.Writer().Exec(ctx, `create table k (v text primary key)`)
+		return err
+	}))
+
+	const key = "order-77"
+	kctx := pg.WithShardKey(ctx, key)
+	require.NoError(t, sp.RunInTx(kctx, func(ctx context.Context) error {
+		db, err := sp.FromContext(ctx)
+		if err != nil {
+			return err
+		}
+		_, err = db.Exec(ctx, `insert into k (v) values ($1)`, "hello")
+		return err
+	}))
+
+	owner := sp.Resolve(key)
+	var n int
+	require.NoError(t, owner.Reader().QueryRow(ctx, `select count(*) from k`).Scan(&n))
+	require.Equal(t, 1, n, "row must land on the resolved shard")
+	for _, p := range sp.Shards() {
+		if p == owner {
+			continue
+		}
+		var m int
+		require.NoError(t, p.Reader().QueryRow(ctx, `select count(*) from k`).Scan(&m))
+		require.Equal(t, 0, m, "no other shard may hold the row")
+	}
+}
+
+func TestShardedPool_RunInTx_RollsBack(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs Docker")
+	}
+	ctx := context.Background()
+	sp := newShardedTestPool(t, 2)
+	require.NoError(t, sp.ForEachShard(ctx, func(_ int, p *pg.Pool) error {
+		_, err := p.Writer().Exec(ctx, `create table k (v text primary key)`)
+		return err
+	}))
+	kctx := pg.WithShardKey(ctx, "order-1")
+	wantErr := errors.New("boom")
+	err := sp.RunInTx(kctx, func(ctx context.Context) error {
+		db, ferr := sp.FromContext(ctx)
+		require.NoError(t, ferr)
+		_, _ = db.Exec(ctx, `insert into k (v) values ('x')`)
+		return wantErr
+	})
+	require.ErrorIs(t, err, wantErr)
+	var n int
+	require.NoError(t, sp.Resolve("order-1").Reader().QueryRow(ctx, `select count(*) from k`).Scan(&n))
+	require.Equal(t, 0, n, "rollback must undo the insert")
+}
+
+func TestShardedPool_NoShardKey_FailsClosed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs Docker")
+	}
+	sp := newShardedTestPool(t, 2)
+	err := sp.RunInTx(context.Background(), func(context.Context) error { return nil })
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "shard key")
+}
