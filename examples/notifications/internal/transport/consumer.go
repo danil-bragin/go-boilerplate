@@ -37,7 +37,7 @@ type Notifier = notification.Notifier
 // dedup, principal headers) come from consume.Typed; the per-outcome
 // notification rules live in notification.Service.
 func NewEventHandler(pool *pg.Pool, svc *notification.Service, opts ...consume.Option) kafka.HandlerFunc {
-	return consume.New(pool, "notifications", opts...).Handler(
+	return consume.New(pg.WrapPool(pool), "notifications", opts...).Handler(
 		consume.TypedFor(1, func(_ context.Context, evt *ordersv1.PaymentProcessed) error {
 			svc.PaymentProcessed(evt.GetOrderId(), evt.GetPaymentId(), evt.GetStatus())
 			return nil

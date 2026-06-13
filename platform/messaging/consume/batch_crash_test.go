@@ -7,6 +7,7 @@ import (
 
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/kafka"
+	"go-boilerplate/platform/storage/pg"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -50,7 +51,7 @@ func TestBatchHandler_CrashBeforeOffsetCommit_NoDuplicateOnRestart(t *testing.T)
 	first := true
 
 	makeHandler := func() kafka.BatchHandlerFunc {
-		return consume.New(pool, group).BatchHandler(
+		return consume.New(pg.WrapPool(pool), group).BatchHandler(
 			nil,
 			consume.Typed("orders.OrderCreated.v1", func(hctx context.Context, evt *ordersv1.OrderCreated) error {
 				// Record the side effect only when its tx actually commits: we

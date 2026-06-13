@@ -67,7 +67,7 @@ func TestTyped_DispatchDecodeAndDedup(t *testing.T) {
 
 	var calls atomic.Int64
 	var got *ordersv1.OrderCreated
-	h := consume.New(pool, "grp", consume.WithLogger(slog.Default())).Handler(
+	h := consume.New(pg.WrapPool(pool), "grp", consume.WithLogger(slog.Default())).Handler(
 		consume.Typed("orders.OrderCreated.v1", func(_ context.Context, evt *ordersv1.OrderCreated) error {
 			calls.Add(1)
 			got = evt
@@ -100,7 +100,7 @@ func TestTyped_UnknownEventTypeSkipped(t *testing.T) {
 	pool := newPool(t)
 
 	var calls atomic.Int64
-	h := consume.New(pool, "grp").Handler(
+	h := consume.New(pg.WrapPool(pool), "grp").Handler(
 		consume.Typed("orders.OrderCreated.v1", func(context.Context, *ordersv1.OrderCreated) error {
 			calls.Add(1)
 			return nil
@@ -127,7 +127,7 @@ func TestTyped_MessageIDFallbackTopicPartitionOffset(t *testing.T) {
 	pool := newPool(t)
 
 	var calls atomic.Int64
-	h := consume.New(pool, "grp").Handler(
+	h := consume.New(pg.WrapPool(pool), "grp").Handler(
 		consume.Typed("orders.OrderCreated.v1", func(context.Context, *ordersv1.OrderCreated) error {
 			calls.Add(1)
 			return nil
@@ -158,7 +158,7 @@ func TestTyped_HandlerErrorPropagatesAndRetries(t *testing.T) {
 
 	fail := true
 	var calls atomic.Int64
-	h := consume.New(pool, "grp").Handler(
+	h := consume.New(pg.WrapPool(pool), "grp").Handler(
 		consume.Typed("orders.OrderCreated.v1", func(context.Context, *ordersv1.OrderCreated) error {
 			calls.Add(1)
 			if fail {
@@ -200,7 +200,7 @@ func TestTyped_SerdeDecodePath(t *testing.T) {
 
 	dec := &stubDeserializer{}
 	var calls atomic.Int64
-	h := consume.New(pool, "grp", consume.WithSerde(dec)).Handler(
+	h := consume.New(pg.WrapPool(pool), "grp", consume.WithSerde(dec)).Handler(
 		consume.Typed("orders.OrderCreated.v1", func(context.Context, *ordersv1.OrderCreated) error {
 			calls.Add(1)
 			return nil
@@ -311,7 +311,7 @@ func TestTyped_OnCommittedRunsAfterTx(t *testing.T) {
 	pool := newPool(t)
 
 	var committed atomic.Int64
-	h := consume.New(pool, "grp").Handler(
+	h := consume.New(pg.WrapPool(pool), "grp").Handler(
 		consume.Typed(
 			"orders.OrderCreated.v1",
 			func(ctx context.Context, _ *ordersv1.OrderCreated) error {
@@ -351,7 +351,7 @@ func TestTyped_CorrelationCausationInContext(t *testing.T) {
 	pool := newPool(t)
 
 	var gotCorr, gotParent string
-	h := consume.New(pool, "grp").Handler(
+	h := consume.New(pg.WrapPool(pool), "grp").Handler(
 		consume.Typed("orders.OrderCreated.v1", func(ctx context.Context, _ *ordersv1.OrderCreated) error {
 			gotCorr = msgctx.CorrelationID(ctx)
 			gotParent = msgctx.ParentMessageID(ctx)

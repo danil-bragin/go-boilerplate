@@ -77,7 +77,7 @@ func NewHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notify Sta
 // writes always join the ambient inbox transaction.
 func NewHandlerWithStore(pool *pg.Pool, storeFor StoreFor, logger *slog.Logger, cache cqrs.Cache, notify StatusNotifier, opts ...consume.Option) kafka.HandlerFunc {
 	opts = append([]consume.Option{consume.WithLogger(logger)}, opts...)
-	return consume.New(pool, consumerGroup, opts...).Handler(
+	return consume.New(pg.WrapPool(pool), consumerGroup, opts...).Handler(
 		projectionHandlers(storeFor, logger, cache, notify, newLifecycleMetrics())...,
 	)
 }
@@ -96,7 +96,7 @@ func NewBatchHandler(pool *pg.Pool, logger *slog.Logger, cache cqrs.Cache, notif
 		return storegen.New(pg.FromContext(ctx, pool))
 	}
 	opts = append([]consume.Option{consume.WithLogger(logger)}, opts...)
-	return consume.New(pool, consumerGroup, opts...).BatchHandler(
+	return consume.New(pg.WrapPool(pool), consumerGroup, opts...).BatchHandler(
 		fallback,
 		projectionHandlers(storeFor, logger, cache, notify, newLifecycleMetrics())...,
 	)

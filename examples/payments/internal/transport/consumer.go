@@ -30,7 +30,7 @@ func NewEventHandler(
 	handler func(context.Context, app.ProcessPayment) (app.ProcessPaymentResult, error),
 	opts ...consume.Option,
 ) kafka.HandlerFunc {
-	return consume.New(pool, "payments", opts...).Handler(
+	return consume.New(pg.WrapPool(pool), "payments", opts...).Handler(
 		consume.TypedFor(1, func(ctx context.Context, evt *ordersv1.OrderCreated) error {
 			_, err := handler(ctx, app.ProcessPayment{
 				OrderID:     evt.GetOrderId(),

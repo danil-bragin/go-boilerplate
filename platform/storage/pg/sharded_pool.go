@@ -78,6 +78,21 @@ func NewSharded(ctx context.Context, cfg ShardedConfig) (*ShardedPool, error) {
 	return sp, nil
 }
 
+// WrapPool builds a single-shard (M=1) ShardedPool over an already-constructed
+// Pool. Resolve always returns p (the FNV router over m=1 maps every key to
+// shard 0), so it is byte-identical to using p directly — it just exposes the
+// ShardedPool seam (Resolve/RunInTx/FromContext) to code that holds a *Pool.
+// Used by consumers and example services that adopt sharded routing while still
+// receiving the single Pool. A nil p yields a ShardedPool whose Resolve panics
+// — pass a real pool.
+func WrapPool(p *Pool) *ShardedPool {
+	return &ShardedPool{
+		shards:      []*Pool{p},
+		router:      NewRouter(1),
+		migrateURLs: []string{""},
+	}
+}
+
 // Len is the number of physical shards.
 func (sp *ShardedPool) Len() int { return len(sp.shards) }
 

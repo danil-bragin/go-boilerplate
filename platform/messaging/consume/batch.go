@@ -5,6 +5,7 @@ import (
 
 	"go-boilerplate/platform/messaging/inbox"
 	"go-boilerplate/platform/messaging/kafka"
+	"go-boilerplate/platform/storage/pg"
 )
 
 // BatchHandler combines the given typed handlers into a kafka.BatchHandlerFunc
@@ -50,25 +51,57 @@ func (c *Consumer) BatchHandler(fallback kafka.HandlerFunc, handlers ...Handler)
 		}
 
 		// Pre-tx route: install ctx + dispatch, dropping unknown event types
-		// (acked-skipped — they don't enter the batch and aren't failures).
+		// (acked-skipped — they don't enter the batch and aren't failures). The
+		// shard key (Kafka record key = aggregate id) is installed on each
+		// record's ctx so the handler's repos resolve the same shard as that
+		// record's inbox tx, and post-commit hooks below route correctly too.
 		live := make([]rec, 0, len(records))
 		for _, r := range records {
 			p := c.prepare(ctx, r)
 			if p.skip {
 				continue
 			}
+			p.ctx = pg.WithShardKey(p.ctx, string(r.Key))
 			live = append(live, rec{r: r, p: p})
 		}
 		if len(live) == 0 {
 			return len(records), nil
 		}
 
-		// Build one batch item per live record. The Fn runs inside the shared
+		// SHARD GROUPING: a poll batch may span shards (M>1), but inbox.ProcessBatchOnce
+		// runs ONE tx on ONE pool, so we group the live records by their resolved
+		// shard and run one ProcessBatchOnce per shard-group on that shard's pool.
+		// At M=1 every key resolves to the one pool, so there is exactly one group
+		// == today's single batch tx (M=1 behaviour identical). Within a group the
+		// records keep their original offset order (range over live is in order, and
+		// we append per group preserving it), so per-record OnCommitted ordering and
+		// the all-or-nothing semantics are unchanged per shard. On ANY shard-group
+		// error we fall back to the proven per-record replay over the ORIGINAL
+		// records (which re-routes each record to its own shard via processRecord);
+		// because every group is all-or-nothing it leaves nothing behind, so the
+		// fallback re-applies each record at most once.
+		type shardGroup struct {
+			pool *pg.Pool
+			idx  []int // indices into live, in offset order
+		}
+		groups := make([]*shardGroup, 0, 1)
+		byPool := make(map[*pg.Pool]*shardGroup, 1)
+		for i := range live {
+			sp := c.pool.Resolve(string(live[i].r.Key))
+			g := byPool[sp]
+			if g == nil {
+				g = &shardGroup{pool: sp}
+				byPool[sp] = g
+				groups = append(groups, g)
+			}
+			g.idx = append(g.idx, i)
+		}
+
+		// Build one batch item per live record, keyed by index, so each shard
+		// group can assemble its own item slice. The Fn runs inside that shard's
 		// tx; it stores the post-commit hook back into the slice element so the
-		// happy path can fire hooks in order after the commit. i := i shadows
-		// the loop var so each closure captures its own index.
-		// Go 1.22+ gives each iteration its own i, so the closures below
-		// capture distinct indices without an explicit shadow.
+		// happy path can fire hooks in order after the commit. Go 1.22+ gives each
+		// iteration its own i, so the closures capture distinct indices.
 		items := make([]inbox.BatchItem, len(live))
 		for i := range live {
 			items[i] = inbox.BatchItem{
@@ -84,7 +117,23 @@ func (c *Consumer) BatchHandler(fallback kafka.HandlerFunc, handlers ...Handler)
 			}
 		}
 
-		if _, err := inbox.ProcessBatchOnce(ctx, c.pool, c.group, items); err == nil {
+		// Run each shard-group's batch tx on its own pool, with the group's shard
+		// key on the tx ctx so the handlers' repos route to that shard.
+		allOK := true
+		for _, g := range groups {
+			gItems := make([]inbox.BatchItem, len(g.idx))
+			for j, i := range g.idx {
+				gItems[j] = items[i]
+			}
+			// Every record in a group shares one shard; use the first record's key.
+			gctx := pg.WithShardKey(ctx, string(live[g.idx[0]].r.Key))
+			if _, err := inbox.ProcessBatchOnce(gctx, g.pool, c.group, gItems); err != nil {
+				allOK = false
+				break
+			}
+		}
+
+		if allOK {
 			// Happy path: fire post-commit hooks per-record, in offset order,
 			// after the commit. Only records whose Fn actually ran (not deduped)
 			// have a non-nil hook stored.

@@ -18,7 +18,7 @@
 //
 // Usage:
 //
-//	handler := consume.New(pool, "gateway-projection", consume.WithLogger(l)).Handler(
+//	handler := consume.New(svc.Shards(), "gateway-projection", consume.WithLogger(l)).Handler(
 //	    consume.TypedFor(1, onOrderCreated),     // event type derived from the proto message
 //	    consume.TypedFor(1, onPaymentProcessed), // (see EventTypeFor)
 //	)
@@ -56,7 +56,7 @@ const srMagicByte = 0x00
 // Consumer builds kafka.HandlerFuncs that share a pool, inbox consumer-group
 // name, decoder, and logger.
 type Consumer struct {
-	pool    *pg.Pool
+	pool    *pg.ShardedPool
 	group   string
 	dec     serde.Deserializer // nil → raw proto.Unmarshal
 	logger  *slog.Logger
@@ -97,7 +97,13 @@ func WithoutInbox() Option {
 
 // New creates a Consumer. group is the inbox consumer name — messages are
 // processed at most once per (group, message-id).
-func New(pool *pg.Pool, group string, opts ...Option) *Consumer {
+//
+// pool is a *pg.ShardedPool: each record is routed to its shard by the Kafka
+// record key (the aggregate id) — both the inbox dedup tx and the handler's
+// repos resolve the SAME shard. At M=1 (a single-shard pool, e.g. pg.WrapPool
+// or svc.Shards() with PG_SHARDS unset) Resolve always returns the one pool, so
+// routing is byte-identical to the unsharded path. May be nil with WithoutInbox.
+func New(pool *pg.ShardedPool, group string, opts ...Option) *Consumer {
 	c := &Consumer{pool: pool, group: group, logger: slog.Default(), metrics: newConsumeMetrics()}
 	for _, o := range opts {
 		o(c)
@@ -276,8 +282,17 @@ func (c *Consumer) processRecord(ctx context.Context, r kafka.Record) error {
 	}
 	ctx = p.ctx
 
+	// Route this record to its shard by the Kafka record key (the aggregate id
+	// on every choreography event). The shard key in ctx makes the handler's
+	// repos resolve the same shard as the inbox tx below. At M=1 the one pool
+	// owns every key (byte-identical). Empty key: all events are keyed, but
+	// Resolve("") still returns a valid shard (hash of "").
+	ctx = pg.WithShardKey(ctx, string(r.Key))
+
 	if c.noInbox {
-		// Test-only path (WithoutInbox): no transaction, no dedup.
+		// Test-only path (WithoutInbox): no transaction, no dedup; pool may be
+		// nil so we must NOT Resolve here. The shard key is still set above so
+		// handlers route to the resolved shard.
 		onCommitted, err := p.h.handle(ctx, c.dec, r.Value)
 		if err != nil {
 			return fmt.Errorf("consume: process %s (id=%s): %w", r.Headers[kafka.HeaderEventType], p.msgID, err)
@@ -288,8 +303,11 @@ func (c *Consumer) processRecord(ctx context.Context, r kafka.Record) error {
 		return nil
 	}
 
+	// Pass the resolved shard pool to inbox.ProcessOnce so dedup + side effect
+	// commit atomically on the SAME shard the handler's repos route to.
+	shard := c.pool.Resolve(string(r.Key))
 	var onCommitted func(context.Context)
-	_, err := inbox.ProcessOnce(ctx, c.pool, c.group, p.msgID, func(ctx context.Context) error {
+	_, err := inbox.ProcessOnce(ctx, shard, c.group, p.msgID, func(ctx context.Context) error {
 		var err error
 		onCommitted, err = p.h.handle(ctx, c.dec, r.Value)
 		return err

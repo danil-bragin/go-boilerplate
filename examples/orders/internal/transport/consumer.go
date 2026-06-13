@@ -31,7 +31,7 @@ func NewCommandHandler(
 	handler func(context.Context, app.CreateOrder) (app.CreateOrderResult, error),
 	opts ...consume.Option,
 ) kafka.HandlerFunc {
-	return consume.New(pool, "orders", opts...).Handler(
+	return consume.New(pg.WrapPool(pool), "orders", opts...).Handler(
 		consume.TypedFor(1, func(ctx context.Context, cmd *ordersv1.CreateOrderCommand) error {
 			_, err := handler(ctx, app.CreateOrder{
 				OrderID:     cmd.GetOrderId(),

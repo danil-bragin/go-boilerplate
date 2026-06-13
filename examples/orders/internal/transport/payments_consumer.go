@@ -38,7 +38,7 @@ type PaymentOutcomeApplier interface {
 // to decide whether an order was paid.
 func NewPaymentsEventHandler(pool *pg.Pool, svc PaymentOutcomeApplier, logger *slog.Logger, opts ...consume.Option) kafka.HandlerFunc {
 	opts = append([]consume.Option{consume.WithLogger(logger)}, opts...)
-	return consume.New(pool, "orders-payments", opts...).Handler(
+	return consume.New(pg.WrapPool(pool), "orders-payments", opts...).Handler(
 		consume.TypedFor(1, func(ctx context.Context, evt *ordersv1.PaymentProcessed) error {
 			return svc.ApplyPaymentOutcome(ctx, evt.GetOrderId(), order.StatusPaid)
 		}),

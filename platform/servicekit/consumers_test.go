@@ -144,7 +144,7 @@ func TestAddBatchConsumer_PoisonEscalatesToDLT(t *testing.T) {
 	// the durable inbox guarantee is exactly-once, which we assert separately.
 	var mu sync.Mutex
 	appliedIDs := map[string]bool{}
-	c := consume.New(svc.Pool(), groupID)
+	c := consume.New(svc.Shards(), groupID)
 	handlers := []consume.Handler{
 		consume.Typed("orders.OrderCreated.v1", func(_ context.Context, evt *ordersv1.OrderCreated) error {
 			if evt.GetOrderId() == "poison" {
@@ -231,7 +231,7 @@ func TestAddBatchConsumer_TransientResolvesByRetryNotDLT(t *testing.T) {
 	// in-process via WithRetry until success.
 	var attempts atomic.Int32
 	applied := make(chan struct{}, 1)
-	c := consume.New(svc.Pool(), groupID)
+	c := consume.New(svc.Shards(), groupID)
 	handlers := []consume.Handler{
 		consume.Typed("orders.OrderCreated.v1", func(_ context.Context, _ *ordersv1.OrderCreated) error {
 			if attempts.Add(1) <= 2 {
