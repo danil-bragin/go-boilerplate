@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -97,6 +98,16 @@ func (w *BufferedAuditWriter) Run(ctx context.Context) error {
 // preserves order; map grouping preserves per-key append order), so the
 // resulting chain segment is deterministic and passes VerifyChain — do NOT
 // sort within a group.
+//
+// Chain-groups are flushed CONCURRENTLY: each chain has its own audit_chain_head
+// row and therefore its own FOR UPDATE lock, so the per-chain transactions never
+// contend and can commit in parallel. With AUDIT_CHAIN_SHARDS=N and diverse
+// actors this lets the drain rate scale ~N× (bounded by the pool / single-PG
+// commit capacity), instead of serialising every chain through one goroutine.
+// A single chain (N=1, the default) runs exactly one transaction — no added
+// overhead. Ordering WITHIN a chain is preserved (one tx per chain-group, in
+// enqueue order); ordering ACROSS chains is irrelevant to VerifyChain since each
+// chain is verified independently.
 func (w *BufferedAuditWriter) flush(ctx context.Context, batch []Entry) {
 	if len(batch) == 0 {
 		return
@@ -106,15 +117,35 @@ func (w *BufferedAuditWriter) flush(ctx context.Context, batch []Entry) {
 		cid := w.store.ChainIDFor(e.Actor)
 		byChain[cid] = append(byChain[cid], e)
 	}
+	if len(byChain) == 1 {
+		// Common case (single shard / single hot actor): no goroutine overhead.
+		for cid, entries := range byChain {
+			w.flushChain(ctx, cid, entries)
+		}
+		return
+	}
+	var wg sync.WaitGroup
+	wg.Add(len(byChain))
 	for cid, entries := range byChain {
-		err := pg.RunInTx(ctx, w.store.pool, func(ctx context.Context) error {
-			return w.store.RecordBatchSameChain(ctx, cid, entries)
-		})
-		if err != nil {
-			w.metrics.addError(ctx)
-			if w.store.onError != nil {
-				w.store.onError(err)
-			}
+		go func(cid int16, entries []Entry) {
+			defer wg.Done()
+			w.flushChain(ctx, cid, entries)
+		}(cid, entries)
+	}
+	wg.Wait()
+}
+
+// flushChain writes one chain-group in a single transaction. Errors are
+// best-effort: counted, optionally surfaced via onError, never propagated (the
+// command that enqueued these entries has already returned).
+func (w *BufferedAuditWriter) flushChain(ctx context.Context, cid int16, entries []Entry) {
+	err := pg.RunInTx(ctx, w.store.pool, func(ctx context.Context) error {
+		return w.store.RecordBatchSameChain(ctx, cid, entries)
+	})
+	if err != nil {
+		w.metrics.addError(ctx)
+		if w.store.onError != nil {
+			w.store.onError(err)
 		}
 	}
 }

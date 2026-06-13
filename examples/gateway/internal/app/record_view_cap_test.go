@@ -96,8 +96,8 @@ func TestRecordProductView_AuditDrainCap(t *testing.T) {
 
 	const enqueue = 50000
 
-	for _, actors := range []int{1, 8} {
-		pool := capPool(t, 32)
+	for _, actors := range []int{1, 8, 16, 32} {
+		pool := capPool(t, 64)
 		ctx, cancel := context.WithCancel(context.Background())
 		store := audit.NewPgStore(pool, audit.WithChainShards(actors))
 		w := audit.NewBufferedAuditWriter(store, audit.WriterConfig{
