@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/fstest"
 
 	"go-boilerplate/platform/config"
 	"go-boilerplate/platform/storage/pg"
@@ -159,4 +160,30 @@ func TestShardedPool_NoShardKey_FailsClosed(t *testing.T) {
 	err := sp.RunInTx(context.Background(), func(context.Context) error { return nil })
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "shard key")
+}
+
+func TestMigrateSharded_AppliesToEveryShard(t *testing.T) {
+	if testing.Short() {
+		t.Skip("needs Docker")
+	}
+	ctx := context.Background()
+	sp := newShardedTestPool(t, 2)
+
+	fsys := fstest.MapFS{
+		"sql/00001_widgets.sql": &fstest.MapFile{Data: []byte(
+			"-- +goose Up\ncreate table widgets (id bigserial primary key);\n-- +goose Down\ndrop table widgets;\n",
+		)},
+	}
+	require.NoError(t, pg.MigrateSharded(ctx, sp, fsys, "sql"))
+
+	require.NoError(t, sp.ForEachShard(ctx, func(_ int, p *pg.Pool) error {
+		var ok bool
+		err := p.Reader().QueryRow(ctx,
+			`select exists (select 1 from information_schema.tables where table_name='widgets')`).Scan(&ok)
+		if err != nil {
+			return err
+		}
+		require.True(t, ok)
+		return nil
+	}))
 }
