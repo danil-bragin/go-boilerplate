@@ -39,6 +39,19 @@ type pendingRow struct {
 	entry Entry
 }
 
+// PendingBacklog returns the number of rows currently staged in audit_pending
+// (i.e. intents that have not yet been drained to the hash chain). It uses the
+// reader pool so it never contends with the drain writer path. The T5 drain
+// worker calls this each tick and passes the result to RecordPendingBacklog.
+func (s *PgStore) PendingBacklog(ctx context.Context) (int64, error) {
+	var n int64
+	if err := s.pool.Reader().QueryRow(ctx,
+		`select count(*) from audit_pending`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("audit: pending backlog count: %w", err)
+	}
+	return n, nil
+}
+
 // DrainPending applies up to batchSize staged intents to the hash chain and
 // deletes them, exactly-once: reads pending ordered by (chain_id, id), groups by
 // chain, and for each chain group runs RecordBatchSameChain + DELETE in ONE

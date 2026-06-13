@@ -103,6 +103,42 @@ func TestDrainPending_AppliesExactlyOnceAndVerifies(t *testing.T) {
 	require.Equal(t, 0, again, "second drain is a no-op")
 }
 
+// TestPendingBacklog_ReturnsRowCount verifies that PendingBacklog returns the
+// exact number of rows in audit_pending: 0 before any inserts, N after N
+// inserts, and 0 again after DrainPending empties the table.
+func TestPendingBacklog_ReturnsRowCount(t *testing.T) {
+	pool := newPool(t) // skips if testing.Short() / no Docker
+	ctx := context.Background()
+	store := audit.NewPgStore(pool)
+
+	n, err := store.PendingBacklog(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), n, "empty table: backlog is 0")
+
+	// Stage 3 intents.
+	for i := range 3 {
+		require.NoError(t, pg.RunInTx(ctx, pool, func(ctx context.Context) error {
+			return store.InsertPending(ctx, audit.Entry{
+				Actor:   "u1",
+				Action:  "order.place",
+				Subject: fmt.Sprintf("order-%d", i),
+			})
+		}))
+	}
+
+	n, err = store.PendingBacklog(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), n, "3 rows staged: backlog is 3")
+
+	// Drain and check again.
+	_, err = store.DrainPending(ctx, 128)
+	require.NoError(t, err)
+
+	n, err = store.PendingBacklog(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(0), n, "after drain: backlog is 0")
+}
+
 func TestDurableAudit_StagesAfterSuccess_NotOnError(t *testing.T) {
 	if testing.Short() {
 		t.Skip("needs Docker")

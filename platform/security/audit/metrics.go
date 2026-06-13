@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"sync"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -44,5 +45,43 @@ func (m writerMetrics) addDropped(ctx context.Context) {
 func (m writerMetrics) addError(ctx context.Context) {
 	if m.errors != nil {
 		m.errors.Add(ctx, 1)
+	}
+}
+
+// storeMetrics holds instruments used by the durable-audit drain path (PgStore
+// methods). It is initialised exactly once via sync.Once so that multiple
+// PgStore instances created in the same process share a single gauge
+// registration — the global meter deduplicates by name, but one registration
+// is cleaner. A failed instrument creation degrades to nil (no-op at call
+// sites) matching the nil-degrading idiom above.
+var (
+	storeMetricsOnce sync.Once
+	storeMetricsInst storeMetrics
+)
+
+type storeMetrics struct {
+	pendingBacklog metric.Int64Gauge
+}
+
+func getStoreMetrics() storeMetrics {
+	storeMetricsOnce.Do(func() {
+		m := otel.Meter("security.audit")
+		if g, err := m.Int64Gauge(
+			"audit.pending_backlog",
+			metric.WithDescription("Rows in audit_pending awaiting the durable-audit drain (lag indicator)"),
+		); err == nil {
+			storeMetricsInst.pendingBacklog = g
+		}
+	})
+	return storeMetricsInst
+}
+
+// RecordPendingBacklog records the current number of rows in audit_pending as
+// the audit.pending_backlog gauge. Call it from the drain worker each tick so
+// operators can observe drain lag. Nil-degrading: if the gauge could not be
+// registered at startup the call is a no-op and never returns an error.
+func (s *PgStore) RecordPendingBacklog(ctx context.Context, n int64) {
+	if g := getStoreMetrics().pendingBacklog; g != nil {
+		g.Record(ctx, n)
 	}
 }
