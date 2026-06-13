@@ -234,9 +234,11 @@ func TestRetryConsumer_DoesNotBlockOtherTraffic(t *testing.T) {
 	callCounts := map[string]int{}
 	k2Success := make(chan time.Time, 1)
 	k1RetrySuccess := make(chan time.Time, 1)
+	warmup := make(chan struct{}, 1)
 
 	// Handler: K1 always fails on first call (escalated by mainHandler);
-	// succeeds on retry. K2 always succeeds.
+	// succeeds on retry. K2 always succeeds. (WARMUP is handled in mainHandler,
+	// so only the MAIN consumer — the one that must process K2 — signals readiness.)
 	handler := func(_ context.Context, r kafka.Record) error {
 		key := string(r.Key)
 		mu.Lock()
@@ -266,6 +268,15 @@ func TestRetryConsumer_DoesNotBlockOtherTraffic(t *testing.T) {
 	}
 
 	mainHandler := func(ctx context.Context, r kafka.Record) error {
+		if string(r.Key) == "WARMUP" {
+			// Only the MAIN consumer signals readiness — it is the one that must
+			// process K2 without being blocked by K1's retry tier.
+			select {
+			case warmup <- struct{}{}:
+			default:
+			}
+			return nil
+		}
 		if err := handler(ctx, r); err != nil {
 			if _, escErr := esc.Escalate(ctx, r.Topic, r, err); escErr != nil {
 				return escErr
@@ -283,7 +294,9 @@ func TestRetryConsumer_DoesNotBlockOtherTraffic(t *testing.T) {
 	retryConsumer, err := retry.NewConsumer(retryCfg, groupRetry, []string{base}, handler, esc, pol)
 	require.NoError(t, err)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// 60s: comfortably covers warmup group-join (slow under -p 1) + K1's 5s
+	// retry tier within one deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	go func() { _ = mainConsumer.Run(ctx, mainHandler) }()
@@ -291,6 +304,21 @@ func TestRetryConsumer_DoesNotBlockOtherTraffic(t *testing.T) {
 
 	go func() { _ = retryConsumer.Run(ctx) }()
 	t.Cleanup(func() { _ = retryConsumer.Close(context.Background()) })
+
+	// Warm up: produce a throwaway record and wait until the main consumer has
+	// processed it, proving its group is joined and polling. Group-join
+	// (rebalance) can take several seconds when the Docker host is saturated
+	// under -p 1; doing it BEFORE the timed window below keeps the K1/K2
+	// non-blocking assertion robust (it measures retry behaviour, not cold-start
+	// latency). Generous bound — this is the slow part, not the thing under test.
+	require.NoError(t, prod.Produce(ctx, kafka.Record{
+		Topic: base, Key: []byte("WARMUP"), Value: []byte("warmup"),
+	}))
+	select {
+	case <-warmup:
+	case <-time.After(25 * time.Second):
+		t.Fatal("main consumer did not join its group / process the warmup record within 25s")
+	}
 
 	start := time.Now()
 
