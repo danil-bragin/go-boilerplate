@@ -76,7 +76,7 @@ func WithPendingBufferSize(n int) PendingBatcherOption {
 // batch flushes; clients retry / SSE snapshot covers (documented on
 // GATEWAY_PENDING_ASYNC).
 type PendingBatcher struct {
-	pool          *pg.Pool
+	shards        *pg.ShardedPool
 	logger        *slog.Logger
 	buf           chan storegen.InsertPendingOrderParams
 	dropped       metric.Int64Counter
@@ -87,9 +87,9 @@ type PendingBatcher struct {
 
 // NewPendingBatcher builds a batcher. Wire Run via servicekit's AddWorker so
 // it starts with the service and drains on shutdown.
-func NewPendingBatcher(pool *pg.Pool, logger *slog.Logger, opts ...PendingBatcherOption) *PendingBatcher {
+func NewPendingBatcher(shards *pg.ShardedPool, logger *slog.Logger, opts ...PendingBatcherOption) *PendingBatcher {
 	b := &PendingBatcher{
-		pool:          pool,
+		shards:        shards,
 		logger:        logger,
 		flushInterval: defaultPendingFlushInterval,
 		maxBatch:      defaultPendingMaxBatch,
@@ -185,23 +185,42 @@ func (b *PendingBatcher) drain(batch []storegen.InsertPendingOrderParams) {
 	}
 }
 
-// flush writes the batch as one multi-row INSERT ... ON CONFLICT (order_id)
-// DO NOTHING. DO NOTHING (unlike DO UPDATE) tolerates duplicate order ids
-// WITHIN one statement — an idempotent POST retry landing twice in the same
-// batch is skipped, not an error — and never downgrades a row a racing
-// projection write already upgraded. A failed flush is logged and dropped
-// (best-effort, same contract as the sync path's failed insert).
+// flush groups the buffered rows BY SHARD (sp.Resolve(orderID)) and writes one
+// multi-row INSERT ... ON CONFLICT (order_id) DO NOTHING per shard — the
+// pending row for order X must land on shard Resolve(X), the same shard the
+// projection writes its read-model row to. At M=1 every order resolves to shard
+// 0, so this is exactly one group / one statement — byte-identical to the
+// pre-sharding single INSERT.
+//
+// DO NOTHING (unlike DO UPDATE) tolerates duplicate order ids WITHIN one
+// statement — an idempotent POST retry landing twice in the same batch is
+// skipped, not an error — and never downgrades a row a racing projection write
+// already upgraded. A failed per-shard flush is logged and its rows dropped
+// (best-effort, same contract as the sync path's failed insert); a failure on
+// one shard does not abort the others (no cross-shard tx).
 func (b *PendingBatcher) flush(ctx context.Context, batch []storegen.InsertPendingOrderParams) {
 	if len(batch) == 0 {
 		return
 	}
+	byShard := map[*pg.Pool][]storegen.InsertPendingOrderParams{}
+	for _, p := range batch {
+		shard := b.shards.Resolve(p.OrderID.String())
+		byShard[shard] = append(byShard[shard], p)
+	}
+	for shard, rows := range byShard {
+		b.flushShard(ctx, shard, rows)
+	}
+}
+
+// flushShard writes one shard's rows as a single multi-row INSERT.
+func (b *PendingBatcher) flushShard(ctx context.Context, shard *pg.Pool, rows []storegen.InsertPendingOrderParams) {
 	// Hand-built multi-row INSERT (sqlc has no multirow variant for this
 	// query). MUST stay column-compatible with InsertPendingOrder in
 	// internal/store/queries/gateway.sql — change both together.
 	var sb strings.Builder
 	sb.WriteString("insert into orders_read (order_id, customer_id, amount_cents, currency, status, updated_at) values ")
-	args := make([]any, 0, len(batch)*4)
-	for i, p := range batch {
+	args := make([]any, 0, len(rows)*4)
+	for i, p := range rows {
 		if i > 0 {
 			sb.WriteByte(',')
 		}
@@ -211,13 +230,13 @@ func (b *PendingBatcher) flush(ctx context.Context, batch []storegen.InsertPendi
 	}
 	sb.WriteString(" on conflict (order_id) do nothing")
 
-	if _, err := b.pool.Writer().Exec(ctx, sb.String(), args...); err != nil {
+	if _, err := shard.Writer().Exec(ctx, sb.String(), args...); err != nil {
 		// Failed flushes are the likeliest loss mode — count them in the same
 		// dropped metric operators are told to watch, not just buffer-fulls.
 		if b.dropped != nil {
-			b.dropped.Add(ctx, int64(len(batch)))
+			b.dropped.Add(ctx, int64(len(rows)))
 		}
 		b.logger.WarnContext(ctx, "gateway: async pending-row batch insert failed (rows dropped — best-effort)",
-			"rows", len(batch), "error", err)
+			"rows", len(rows), "error", err)
 	}
 }

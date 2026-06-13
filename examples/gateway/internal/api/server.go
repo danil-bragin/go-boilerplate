@@ -59,7 +59,7 @@ type Encoder interface {
 
 // Server implements StrictServerInterface.
 type Server struct {
-	pool              *pg.Pool
+	shards            *pg.ShardedPool
 	producer          *kafka.Producer
 	commandsTopic     string
 	logger            *slog.Logger
@@ -99,7 +99,19 @@ func (s *Server) SetAuditChainKey(key config.Secret, shards int) {
 	); err == nil {
 		opts = append(opts, audit.WithOnDenialDropped(func() { c.Add(context.Background(), 1) }))
 	}
-	s.auditStore = audit.NewPgStore(s.pool, opts...)
+	s.auditStore = audit.NewPgStore(s.auditPool(), opts...)
+}
+
+// auditPool returns shard 0's writer pool, the pool the audit store binds to
+// today. Audit rows are written into the consumer/edge tx that produced them
+// (chain-keyed by actor, not by order id), so the single-store binding stays
+// shard 0; the cross-shard VerifyAudit fan-out (C4) reads every shard directly.
+// Returns nil when no shards are wired (the stub test server).
+func (s *Server) auditPool() *pg.Pool {
+	if s.shards == nil {
+		return nil
+	}
+	return s.shards.Shards()[0]
 }
 
 // NewServer creates a new Server wired with the given dependencies.
@@ -109,7 +121,7 @@ func (s *Server) SetAuditChainKey(key config.Secret, shards int) {
 // authDisabled mirrors the gateway AuthDisabled flag — when true, the RBAC
 // check on POST /v1/orders is skipped (no principal in ctx).
 func NewServer(
-	pool *pg.Pool,
+	shards *pg.ShardedPool,
 	producer *kafka.Producer,
 	commandsTopic string,
 	logger *slog.Logger,
@@ -117,16 +129,17 @@ func NewServer(
 	listOrdersHandler cqrs.HandlerFunc[app.ListOrders, app.OrderPage],
 	authDisabled bool,
 ) *Server {
-	return &Server{
-		pool:              pool,
+	s := &Server{
+		shards:            shards,
 		producer:          producer,
 		commandsTopic:     commandsTopic,
 		logger:            logger,
 		getOrderHandler:   getOrderHandler,
 		listOrdersHandler: listOrdersHandler,
 		authDisabled:      authDisabled,
-		auditStore:        audit.NewPgStore(pool),
 	}
+	s.auditStore = audit.NewPgStore(s.auditPool())
+	return s
 }
 
 // HealthCheck implements StrictServerInterface.
@@ -319,9 +332,19 @@ func (s *Server) CreateOrder(ctx context.Context, request CreateOrderRequestObje
 	}
 	if s.pendingBatcher != nil {
 		s.pendingBatcher.Enqueue(ctx, pendingRow)
-	} else if err := storegen.New(s.pool.Writer()).InsertPendingOrder(ctx, pendingRow); err != nil {
-		s.logger.WarnContext(ctx, "gateway: pending projection row insert failed",
-			"order_id", orderID, "error", err)
+	} else {
+		// Route the synchronous insert to the shard that owns this order id —
+		// the same shard the projection will write the read-model row to. At
+		// M=1 Resolve maps to shard 0 (byte-identical to the old direct write).
+		shardCtx := pg.WithShardKey(ctx, orderID)
+		db, derr := s.shards.FromContext(shardCtx)
+		if derr != nil {
+			s.logger.WarnContext(ctx, "gateway: pending projection row insert skipped (shard resolve failed)",
+				"order_id", orderID, "error", derr)
+		} else if err := storegen.New(db).InsertPendingOrder(shardCtx, pendingRow); err != nil {
+			s.logger.WarnContext(ctx, "gateway: pending projection row insert failed",
+				"order_id", orderID, "error", err)
+		}
 	}
 
 	return CreateOrder202JSONResponse{
@@ -362,7 +385,17 @@ func (s *Server) rejectIdempotentBodyMismatch(ctx context.Context, orderID strin
 	if err != nil {
 		return fmt.Errorf("gateway: parse derived order id: %w", err)
 	}
-	row, err := storegen.New(pg.FromContextRead(ctx, s.pool)).GetOrderView(ctx, id)
+	// The read-model row for this order lives on shard Resolve(orderID); bind
+	// the order id as the shard key so the idempotency lookup hits the owning
+	// shard's reader (M=1 ⇒ shard 0, unchanged).
+	ctx = pg.WithShardKey(ctx, orderID)
+	db, err := s.shards.FromContextRead(ctx)
+	if err != nil {
+		s.logger.WarnContext(ctx, "gateway: idempotency body-mismatch check skipped (shard resolve failed)",
+			"order_id", orderID, "error", err)
+		return nil // proceed
+	}
+	row, err := storegen.New(db).GetOrderView(ctx, id)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			s.logger.WarnContext(ctx, "gateway: idempotency body-mismatch check skipped (read failed)",

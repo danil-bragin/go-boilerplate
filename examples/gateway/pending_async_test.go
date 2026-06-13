@@ -166,7 +166,7 @@ func TestPendingBatcher_DrainFlushesBufferOnStop(t *testing.T) {
 	t.Cleanup(func() { _ = pool.Close(ctx) })
 
 	// 1h flush interval: only the shutdown drain can explain flushed rows.
-	b := api.NewPendingBatcher(pool, slog.New(slog.DiscardHandler),
+	b := api.NewPendingBatcher(pg.WrapPool(pool), slog.New(slog.DiscardHandler),
 		api.WithPendingFlushInterval(time.Hour))
 
 	runCtx, cancel := context.WithCancel(ctx)

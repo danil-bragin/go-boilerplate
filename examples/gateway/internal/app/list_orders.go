@@ -94,7 +94,7 @@ type listRow struct {
 // ListOrdersHandler returns a raw (undecorated) CQRS query handler that pages
 // through the read-model projection with keyset pagination over
 // (created_at, order_id) descending.
-func ListOrdersHandler(pool *pg.Pool) cqrs.HandlerFunc[ListOrders, OrderPage] {
+func ListOrdersHandler(sp *pg.ShardedPool) cqrs.HandlerFunc[ListOrders, OrderPage] {
 	return func(ctx context.Context, q ListOrders) (OrderPage, error) {
 		limit := q.Limit
 		switch {
@@ -117,7 +117,9 @@ func ListOrdersHandler(pool *pg.Pool) cqrs.HandlerFunc[ListOrders, OrderPage] {
 			cursorID = id
 		}
 
-		queries := storegen.New(pg.FromContextRead(ctx, pool))
+		// C2 wires LIST through the ShardedPool seam (single-shard read of shard
+		// 0); C3 replaces this body with the scatter-gather k-way merge.
+		queries := storegen.New(pg.FromContextRead(ctx, sp.Shards()[0]))
 		var rows []listRow
 		if q.CustomerID != "" {
 			scoped, err := queries.ListOrdersByCustomer(ctx, storegen.ListOrdersByCustomerParams{

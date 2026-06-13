@@ -22,6 +22,8 @@ func newTestServer(
 	list cqrs.HandlerFunc[app.ListOrders, app.OrderPage],
 	authDisabled bool,
 ) *Server {
+	// NewServer takes a *pg.ShardedPool; nil is fine here — these tests exercise
+	// only code paths that return before any shard I/O (auth/validation/cursor).
 	return NewServer(nil, nil, "test-topic", slog.Default(), get, list, authDisabled)
 }
 

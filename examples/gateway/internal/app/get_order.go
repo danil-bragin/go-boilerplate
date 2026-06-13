@@ -69,14 +69,25 @@ type OrderView struct {
 // order from the read-model projection table.
 // The caller should wrap it with Decorate (Tracing, Logging, Metrics, Caching)
 // before use.
-func GetOrderHandler(pool *pg.Pool) cqrs.HandlerFunc[GetOrder, OrderView] {
+//
+// Sharding: the read model for order X lives on shard Resolve(X) (the
+// projection writes it inside the consumer tx, routed by the order id). So the
+// read binds the order id as the shard key (pg.WithShardKey) and reads via the
+// resolved shard's reader pool (sp.FromContextRead). At M=1 Resolve maps every
+// key to shard 0, so this is byte-identical to reading the single pool.
+func GetOrderHandler(sp *pg.ShardedPool) cqrs.HandlerFunc[GetOrder, OrderView] {
 	return func(ctx context.Context, q GetOrder) (OrderView, error) {
 		id, err := uuid.Parse(q.OrderID)
 		if err != nil {
 			return OrderView{}, OrderNotFound(q.OrderID)
 		}
 
-		queries := storegen.New(pg.FromContextRead(ctx, pool))
+		ctx = pg.WithShardKey(ctx, q.OrderID)
+		db, err := sp.FromContextRead(ctx)
+		if err != nil {
+			return OrderView{}, fmt.Errorf("app: resolve order shard: %w", err)
+		}
+		queries := storegen.New(db)
 		row, err := queries.GetOrderView(ctx, id)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {

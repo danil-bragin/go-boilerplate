@@ -164,9 +164,9 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	authedLimit := newAuthedRateLimit(buildAuthedLimiter(cfg, svc), trustedPrefixes)
 
 	// Build the CQRS query handlers (raw → decorated).
-	rawGetOrder := gatewayapp.GetOrderHandler(svc.Pool())
+	rawGetOrder := gatewayapp.GetOrderHandler(svc.Shards())
 	decoratedGetOrder := gatewayapp.DecorateGetOrderHandler(rawGetOrder, appCache)
-	decoratedListOrders := gatewayapp.DecorateListOrdersHandler(gatewayapp.ListOrdersHandler(svc.Pool()))
+	decoratedListOrders := gatewayapp.DecorateListOrdersHandler(gatewayapp.ListOrdersHandler(svc.Shards()))
 
 	// Projection consumer subscribes to both events topics. With
 	// GATEWAY_EMBEDDED_PROJECTION=false the consumer is NOT registered here —
@@ -224,7 +224,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 
 	// Wire the API server (strict handler) with RBAC and resilience.
 	apiServer := api.NewServer(
-		svc.Pool(),
+		svc.Shards(),
 		svc.Producer(),
 		cfg.CommandsTopic,
 		svc.Logger(),
@@ -247,7 +247,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	// BEFORE the pg pool closes, and Run flushes its buffer before
 	// returning — accepted rows are not lost to a graceful shutdown.
 	if cfg.PendingAsync {
-		batcher := api.NewPendingBatcher(svc.Pool(), svc.Logger())
+		batcher := api.NewPendingBatcher(svc.Shards(), svc.Logger())
 		apiServer.SetPendingBatcher(batcher)
 		if err := svc.AddWorker("pending-batcher", batcher.Run); err != nil {
 			return nil, err
