@@ -68,6 +68,16 @@ func TestShardingConsistencyBench(t *testing.T) {
 			results = append(results, result{"eventual", n, rate, extra})
 		})
 	}
+	// Durable: cheap intent in the keyed tx (no chain lock on the hot path),
+	// chain built by an after-the-window drain. The COMMAND rate is insert-bound
+	// so it scales like Eventual while staying durable+exactly-once like Strong.
+	for _, n := range []int{1, 2} {
+		t.Run(fmt.Sprintf("durable/shards=%d", n), func(t *testing.T) {
+			sp := buildShards(t, n)
+			rate := measureDurable(t, sp, strongTotal, conc)
+			results = append(results, result{"durable", n, rate, verifyAllShards(t, sp, strongTotal)})
+		})
+	}
 
 	t.Logf("=== Tier-3 × A2 sharding bench (strongTotal=%d eventualTotal=%d, conc=%d, single audit actor) ===", strongTotal, eventualTotal, conc)
 	base := map[string]float64{}
@@ -181,6 +191,56 @@ func measureEventual(t *testing.T, sp *pg.ShardedPool, total, conc int) (float64
 		dropped += w.Dropped()
 	}
 	return rate, fmt.Sprintf("audit drained=%d dropped=%d", countAll(t, sp, "audit_log"), dropped)
+}
+
+// measureDurable runs `total` Durable order-writes at `conc`, mirroring
+// measureStrong, EXCEPT the keyed transaction stages a CHEAP audit INTENT
+// (InsertPending: one insert into audit_pending, NO chain-head lock) alongside
+// the order + outbox rows. The returned rate is the COMMAND rate — only the
+// concurrent command phase is timed; the chain is built afterwards by draining
+// audit_pending to empty (single goroutine per shard, OUTSIDE the timed window).
+// Because the hot path never takes the chain lock, the command rate is
+// insert-bound and far exceeds Strong's chain-serialized rate.
+func measureDurable(t *testing.T, sp *pg.ShardedPool, total, conc int) float64 {
+	t.Helper()
+	store := audit.NewPgStore(sp.Shards()[0]) // routes via the ambient tx to the order's shard
+	rate := runConc(total, conc, func(i int) {
+		oid := fmt.Sprintf("order-%d", i)
+		ctx := pg.WithShardKey(context.Background(), oid)
+		_ = sp.RunInTx(ctx, func(ctx context.Context) error {
+			db, err := sp.FromContext(ctx)
+			if err != nil {
+				return err
+			}
+			if _, err := db.Exec(ctx, `insert into orders_t (id, amount) values ($1, $2)`, oid, 100); err != nil {
+				return err
+			}
+			if _, err := db.Exec(ctx, `insert into outbox_t (order_id, payload) values ($1, $2)`, oid, "{}"); err != nil {
+				return err
+			}
+			// Cheap intent: stamps chain_id from the actor and stages it on the
+			// order's shard (ambient tx) — no FOR UPDATE on the chain head.
+			return store.InsertPending(ctx, audit.Entry{Actor: "svc", Action: "order:create", Subject: oid})
+		})
+	})
+	// Command phase done & timed. Now DRAIN every shard to empty (after the
+	// window): the intent landed on Resolve(oid)'s shard via the ambient tx, so
+	// each shard's own store must drain its own audit_pending.
+	ctx := context.Background()
+	for _, p := range sp.Shards() {
+		st := audit.NewPgStore(p)
+		for {
+			applied, err := st.DrainPending(ctx, 256)
+			require.NoError(t, err)
+			if applied == 0 {
+				break
+			}
+		}
+	}
+	require.Equal(t, total, countAll(t, sp, "orders_t"), "every order row must land")
+	require.Equal(t, total, countAll(t, sp, "outbox_t"), "every outbox row must land (effectively-once)")
+	require.Equal(t, 0, countAll(t, sp, "audit_pending"), "every staged intent must drain (zero loss)")
+	return rate
 }
 
 // verifyAllShards asserts every shard's audit hash chain passes VerifyChain and
