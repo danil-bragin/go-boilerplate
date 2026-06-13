@@ -69,6 +69,11 @@ type Server struct {
 	encoder           Encoder
 	pendingBatcher    *PendingBatcher
 	auditStore        *audit.PgStore
+	// auditOpts are the audit.Option set applied to the shard-0 auditStore;
+	// VerifyAudit reuses them to build a read-only PgStore per shard for the
+	// cross-shard chain-verify fan-out (C4), so every shard verifies under the
+	// same chain key / chain-shard count.
+	auditOpts []audit.Option
 }
 
 // SetPendingBatcher switches the POST-time pending-row insert from the
@@ -99,6 +104,7 @@ func (s *Server) SetAuditChainKey(key config.Secret, shards int) {
 	); err == nil {
 		opts = append(opts, audit.WithOnDenialDropped(func() { c.Add(context.Background(), 1) }))
 	}
+	s.auditOpts = opts
 	s.auditStore = audit.NewPgStore(s.auditPool(), opts...)
 }
 
@@ -499,7 +505,7 @@ func (s *Server) VerifyAudit(ctx context.Context, request VerifyAuditRequestObje
 		since = *request.Params.Since
 	}
 
-	res, err := s.auditStore.VerifyChain(ctx, since)
+	res, err := s.verifyAuditAllShards(ctx, since)
 	if err != nil {
 		return nil, fmt.Errorf("gateway: verify audit chain: %w", err)
 	}
@@ -510,6 +516,56 @@ func (s *Server) VerifyAudit(ctx context.Context, request VerifyAuditRequestObje
 		out.BreakId = &breakID
 		reason := res.Reason
 		out.Reason = &reason
+	}
+	return out, nil
+}
+
+// verifyAuditAllShards fans the audit chain-verify out over EVERY physical
+// shard and aggregates the per-shard ChainResults into one. Audit rows are
+// written into the consumer/edge tx that produced them (routed by shard key),
+// so each shard holds an independent hash chain that must verify on its own.
+//
+// Aggregation: overall OK iff ALL shards OK; Verified sums the rows walked
+// across shards. On a break the FIRST broken shard (lowest index) is reported
+// with its BreakID and a Reason carrying the shard index ("shard N: <reason>")
+// so forensics can locate the tampered shard. At M=1 there is exactly one shard
+// and the reason is NOT prefixed — the response is byte-identical to the
+// pre-fan-out single VerifyChain result.
+//
+// Each shard verifies via a read-only audit.PgStore built over that shard's
+// pool with the same chain options (s.auditOpts) — VerifyChain is read-only, so
+// a store-per-shard is safe and needs no write coordination (no cross-shard tx).
+func (s *Server) verifyAuditAllShards(ctx context.Context, since time.Time) (audit.ChainResult, error) {
+	shards := s.shards.Shards()
+	single := len(shards) == 1
+
+	total := 0
+	var firstBreak *audit.ChainResult
+	firstBreakShard := -1
+
+	for idx, p := range shards {
+		store := audit.NewPgStore(p, s.auditOpts...)
+		res, err := store.VerifyChain(ctx, since)
+		if err != nil {
+			return audit.ChainResult{}, fmt.Errorf("shard %d: %w", idx, err)
+		}
+		total += res.Verified
+		if !res.OK && firstBreak == nil {
+			r := res
+			firstBreak = &r
+			firstBreakShard = idx
+		}
+	}
+
+	if firstBreak == nil {
+		return audit.ChainResult{OK: true, Verified: total}, nil
+	}
+	out := *firstBreak
+	out.Verified = total
+	if !single {
+		// M>1: locate the break to its shard. M=1 keeps the bare reason for
+		// backward compatibility.
+		out.Reason = fmt.Sprintf("shard %d: %s", firstBreakShard, firstBreak.Reason)
 	}
 	return out, nil
 }
