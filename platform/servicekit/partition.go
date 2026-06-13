@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"go-boilerplate/platform/messaging/outbox"
+	"go-boilerplate/platform/storage/pg"
 )
 
 // AddOutboxPartitionMaintenance wires the opt-in outbox partition maintenance
@@ -33,14 +34,26 @@ func (s *Service) AddOutboxPartitionMaintenance(cfg outbox.PartitionConfig) erro
 		return errors.New("servicekit: AddOutboxPartitionMaintenance requires postgres, but the service was built with WithoutPG()")
 	}
 
-	pm := outbox.NewPartitionManager(s.pool, cfg, outbox.WithPartitionOnError(func(err error) {
-		s.logger.Warn("outbox partition maintenance", "error", err)
-	}))
+	// One partition manager PER physical shard: the partitioned outbox table
+	// lives in every database, so partition DDL (ensure future / drop expired)
+	// must run on EVERY shard, not just shard 0. M=1 ⇒ one manager, identical
+	// to today.
+	physical := s.shards.Shards()
+	managers := make([]*outbox.PartitionManager, len(physical))
+	for i, pool := range physical {
+		pIdx := i
+		managers[i] = outbox.NewPartitionManager(pool, cfg, outbox.WithPartitionOnError(func(err error) {
+			s.logger.Warn("outbox partition maintenance", "pshard", pIdx, "error", err)
+		}))
+	}
 
-	// Eager pre-create so the first inserts route correctly. Best-effort and
-	// bounded — never block service wiring on it.
+	// Eager pre-create on every shard so the first inserts route correctly.
+	// Best-effort and bounded — never block service wiring on it.
 	eagerCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	if err := pm.EnsurePartitions(eagerCtx, time.Now().UTC()); err != nil {
+	now := time.Now().UTC()
+	if err := s.shards.ForEachShard(eagerCtx, func(i int, _ *pg.Pool) error {
+		return managers[i].EnsurePartitions(eagerCtx, now)
+	}); err != nil {
 		s.logger.Warn("outbox partition pre-create at startup failed (rows fall into DEFAULT until first maintenance tick)", "error", err)
 	}
 	cancel()
@@ -60,5 +73,12 @@ func (s *Service) AddOutboxPartitionMaintenance(cfg outbox.PartitionConfig) erro
 		cadence = cfg.Interval
 	}
 
-	return s.AddPeriodicWorker("outbox-partition-maintenance", cadence, cadence/10, true, pm.Maintain)
+	// Single leader-elected worker (leader lock on shard 0) that fans Maintain
+	// across every physical shard's manager, so partition DDL is never issued
+	// by two instances at once yet runs on every database.
+	return s.AddPeriodicWorker("outbox-partition-maintenance", cadence, cadence/10, true, func(ctx context.Context) error {
+		return s.shards.ForEachShard(ctx, func(i int, _ *pg.Pool) error {
+			return managers[i].Maintain(ctx)
+		})
+	})
 }

@@ -35,8 +35,8 @@ const unpaidBatchLimit = 100
 // restarts, and concurrent instances all collapse on the guarded UPDATE —
 // a lost claim means someone else won and no event is enqueued.
 type UnpaidWatcher struct {
-	pool *pg.Pool
-	svc  *order.Service
+	shards *pg.ShardedPool
+	svc    *order.Service
 }
 
 // NewUnpaidWatcher builds a watcher over the domain service. The payment
@@ -44,25 +44,52 @@ type UnpaidWatcher struct {
 // owned by the caller: register Poll via servicekit's
 // Service.AddPeriodicWorker with ORDERS_UNPAID_CHECK_INTERVAL as the
 // interval.
-func NewUnpaidWatcher(pool *pg.Pool, svc *order.Service) *UnpaidWatcher {
-	return &UnpaidWatcher{pool: pool, svc: svc}
+//
+// PHYSICAL SHARDING (Tier-3, ADR-0019): orders are distributed across physical
+// shards by order_id, and an order's expiry candidacy is visible only on its
+// OWN shard. The watcher therefore takes the ShardedPool and scans EVERY
+// physical shard. At M=1 (PG_SHARDS unset) there is one shard, identical to
+// the historical single-pool behaviour.
+func NewUnpaidWatcher(shards *pg.ShardedPool, svc *order.Service) *UnpaidWatcher {
+	return &UnpaidWatcher{shards: shards, svc: svc}
 }
 
-// Poll drains all currently-expired unpaid orders in batches. It is the
-// per-tick body for servicekit's AddPeriodicWorker — typically registered
-// singleActive so only one instance scans, though the compare-and-set guard
-// in the service keeps concurrent polls exactly-once anyway.
+// Poll drains all currently-expired unpaid orders in batches across every
+// physical shard. It is the per-tick body for servicekit's AddPeriodicWorker —
+// typically registered singleActive so only one instance scans, though the
+// compare-and-set guard in the service keeps concurrent polls exactly-once
+// anyway.
+//
+// Each shard is scanned and flipped on ITS OWN pool: the scan and every
+// per-order CAS+enqueue run inside a pg.RunInTx bound to that shard's pool, so
+// the repository's pg.FromContext resolves to the right database and an order
+// found on shard p has its OrderPaymentTimedOut written to shard p's outbox.
 func (w *UnpaidWatcher) Poll(ctx context.Context) error {
+	return w.shards.ForEachShard(ctx, func(_ int, p *pg.Pool) error {
+		return w.pollShard(ctx, p)
+	})
+}
+
+// pollShard drains all currently-expired unpaid orders on a single physical
+// shard pool.
+func (w *UnpaidWatcher) pollShard(ctx context.Context, pool *pg.Pool) error {
 	for {
-		rows, err := w.svc.ListUnpaidExpired(ctx, unpaidBatchLimit)
-		if err != nil {
+		// The scan runs in a short read-bound tx on this shard's pool so the
+		// repository's pg.FromContext resolves to THIS database, not shard 0.
+		var rows []order.UnpaidOrder
+		if err := pg.RunInTx(ctx, pool, func(ctx context.Context) error {
+			var err error
+			rows, err = w.svc.ListUnpaidExpired(ctx, unpaidBatchLimit)
+			return err
+		}); err != nil {
 			return fmt.Errorf("unpaid_watcher: %w", err)
 		}
 		for _, row := range rows {
-			// One transaction per order: EmitPaymentTimeout requires a
-			// caller-owned tx so its CAS claim and outbox enqueue commit
-			// atomically (see its godoc).
-			if err := pg.RunInTx(ctx, w.pool, func(ctx context.Context) error {
+			// One transaction per order, on this shard's pool: EmitPaymentTimeout
+			// requires a caller-owned tx so its CAS claim and outbox enqueue
+			// commit atomically (see its godoc), and binding it to pool keeps the
+			// write on the order's own shard.
+			if err := pg.RunInTx(ctx, pool, func(ctx context.Context) error {
 				return w.svc.EmitPaymentTimeout(ctx, row.ID, row.CreatedAt)
 			}); err != nil {
 				return fmt.Errorf("unpaid_watcher: %w", err)

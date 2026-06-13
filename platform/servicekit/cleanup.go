@@ -7,6 +7,7 @@ import (
 
 	"go-boilerplate/platform/messaging/inbox"
 	"go-boilerplate/platform/security/audit"
+	"go-boilerplate/platform/storage/pg"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -39,6 +40,20 @@ import (
 func (s *Service) AddAuditCleanup(store *audit.PgStore, interval, retention time.Duration) {
 	if interval <= 0 {
 		return
+	}
+	// PHYSICAL SHARDING LIMITATION (Tier-3, ADR-0019): the audit_log lives in
+	// every physical database, but the retention DELETE must run through a
+	// PRIVILEGED admin pool (PG_AUDIT_ADMIN_URL), and only ONE admin DSN is
+	// configured. The store is bound to shard 0's pool + that single admin
+	// pool, so this worker can only prune shard 0's audit_log. We surface the
+	// gap loudly rather than silently retaining the other shards' rows
+	// forever; per-shard audit retention needs per-shard admin DSNs.
+	if s.shards.Len() > 1 {
+		s.logger.Warn(
+			"servicekit: audit retention runs on physical shard 0 ONLY — PG_SHARDS>1 needs per-shard admin DSNs; "+
+				"the other shards' audit_log rows are NOT pruned by this worker (append-only guarantee still holds)",
+			"physical_shards", s.shards.Len(),
+		)
 	}
 	if url := s.cfg.PG.AuditAdminURL.Reveal(); url != "" {
 		if adminPool, err := pgxpool.New(context.Background(), url); err != nil {
@@ -82,10 +97,15 @@ func (s *Service) registerInboxCleanup() {
 	if retention == 0 {
 		retention = 168 * time.Hour // 7d fallback
 	}
-	pool := s.pool
-	// Same error-impossibility note as AddAuditCleanup.
+	// Fan out over EVERY physical shard: the inbox lives in each database, so a
+	// single-pool cleanup would only prune shard 0 and let the other shards'
+	// inbox tables grow unbounded. The age-based DELETE is idempotent, so the
+	// non-leader (singleActive=false) fan-out stays safe. M=1 ⇒ one shard,
+	// identical to today. Same error-impossibility note as AddAuditCleanup.
 	_ = s.AddPeriodicWorker("inbox-cleanup", s.cfg.InboxCleanupInterval, 0, false, func(ctx context.Context) error {
-		_, err := inbox.Cleanup(ctx, pool, retention)
-		return err
+		return s.shards.ForEachShard(ctx, func(_ int, p *pg.Pool) error {
+			_, err := inbox.Cleanup(ctx, p, retention)
+			return err
+		})
 	})
 }

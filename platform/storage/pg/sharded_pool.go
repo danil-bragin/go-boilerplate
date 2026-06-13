@@ -93,6 +93,21 @@ func WrapPool(p *Pool) *ShardedPool {
 	}
 }
 
+// WrapShards builds an M=len(pools) ShardedPool over already-constructed Pools,
+// routing by an FNV hash of the aggregate key across the supplied shards. It is
+// the multi-shard counterpart of WrapPool, exposing the ShardedPool seam over
+// pools dialed elsewhere (e.g. tests that stand up N containers, or callers
+// that own pool construction). A single pool yields the same M=1 pool WrapPool
+// would; an empty slice panics on Resolve.
+func WrapShards(pools []*Pool) *ShardedPool {
+	urls := make([]string, len(pools))
+	return &ShardedPool{
+		shards:      pools,
+		router:      NewRouter(len(pools)),
+		migrateURLs: urls,
+	}
+}
+
 // Len is the number of physical shards.
 func (sp *ShardedPool) Len() int { return len(sp.shards) }
 

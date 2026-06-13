@@ -20,13 +20,15 @@ import (
 // closer waits on s.wg BEFORE the pg closer runs, so an untracked cleanup
 // goroutine could race its DELETE against pool teardown.
 func TestRegisterInboxCleanup_TrackedByWaitGroup(t *testing.T) {
+	pool := &pg.Pool{} // never dereferenced before the first tick
 	s := &Service{
 		cfg: Config{
 			InboxCleanupInterval: time.Hour, // first tick far in the future
 			InboxRetention:       time.Hour,
 		},
 		logger: slog.Default(),
-		pool:   &pg.Pool{}, // never dereferenced before the first tick
+		pool:   pool,
+		shards: pg.WrapPool(pool),
 	}
 
 	s.registerInboxCleanup()
@@ -71,10 +73,12 @@ func TestRegisterInboxCleanup_TrackedByWaitGroup(t *testing.T) {
 // TestRegisterInboxCleanup_DisabledWhenIntervalZero asserts that a zero
 // interval (or missing pool) registers nothing.
 func TestRegisterInboxCleanup_DisabledWhenIntervalZero(t *testing.T) {
+	pool := &pg.Pool{}
 	s := &Service{
 		cfg:    Config{InboxCleanupInterval: 0},
 		logger: slog.Default(),
-		pool:   &pg.Pool{},
+		pool:   pool,
+		shards: pg.WrapPool(pool),
 	}
 	s.registerInboxCleanup()
 	if len(s.goroutines) != 0 {

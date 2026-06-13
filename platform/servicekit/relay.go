@@ -32,6 +32,16 @@ import (
 //
 // Returns an error when the service was built with WithoutPG — the outbox
 // lives in Postgres.
+//
+// PHYSICAL SHARDING (Tier-3, ADR-0019): the outbox lives in EACH physical
+// database, so a relay fleet is wired PER physical shard. An order whose
+// order_id hashes to physical shard 1 writes its OrderCreated to shard 1's
+// outbox; without a per-shard relay that row would never be relayed and the
+// choreography would stall. Each physical shard gets its own leader lock
+// (":pshard:<i>" suffix) so shard 0's leader and shard 1's leader do not
+// collide. At M=1 (PG_SHARDS unset) there is one physical shard, no suffix is
+// appended, and the wiring — including the leader-lock key — is byte-identical
+// to the historical single-pool behaviour.
 func (s *Service) AddOutboxRelay(publisher outbox.Publisher, cfg outbox.RelayConfig) error {
 	if s.pool == nil {
 		return errors.New("servicekit: AddOutboxRelay requires postgres, but the service was built with WithoutPG()")
@@ -41,45 +51,64 @@ func (s *Service) AddOutboxRelay(publisher outbox.Publisher, cfg outbox.RelayCon
 	if shards < 1 {
 		shards = 1
 	}
-	for i := range shards {
-		var opts []outbox.RelayOption
-		if shards > 1 {
-			// Sharded: each shard is its own leader (ordered parallel publish).
-			opts = append(opts, outbox.WithSingleActive(s.pool.Writer()), outbox.WithShard(i, shards))
-		} else if cfg.SingleActive {
-			opts = append(opts, outbox.WithSingleActive(s.pool.Writer()))
+
+	physical := s.shards.Shards()
+	multiPhysical := len(physical) > 1
+
+	for pIdx, pool := range physical {
+		// Per-physical-shard leader-key suffix: only set when M>1 so the M=1
+		// lock key stays byte-identical to the historical bare key.
+		var keySuffix string
+		if multiPhysical {
+			keySuffix = fmt.Sprintf(":pshard:%d", pIdx)
 		}
-		shardIdx := i
-		relay := outbox.NewRelay(s.pool, publisher, cfg, opts...)
-		relay.SetOnError(func(err error) {
-			s.logger.Error("outbox relay error", "shard", shardIdx, "shards", shards, "error", err)
+		for i := range shards {
+			var opts []outbox.RelayOption
+			if shards > 1 {
+				// Aggregate-sharded: each shard is its own leader (ordered parallel publish).
+				opts = append(opts, outbox.WithSingleActive(pool.Writer()), outbox.WithShard(i, shards))
+			} else if cfg.SingleActive {
+				opts = append(opts, outbox.WithSingleActive(pool.Writer()))
+			}
+			if keySuffix != "" {
+				opts = append(opts, outbox.WithLeaderKeySuffix(keySuffix))
+			}
+			physIdx, shardIdx := pIdx, i
+			relay := outbox.NewRelay(pool, publisher, cfg, opts...)
+			relay.SetOnError(func(err error) {
+				s.logger.Error("outbox relay error", "pshard", physIdx, "shard", shardIdx, "shards", shards, "error", err)
+			})
+			s.goroutines = append(s.goroutines, func(ctx context.Context) {
+				if err := relay.Run(ctx); err != nil && ctx.Err() == nil {
+					s.logger.Error("relay stopped unexpectedly", "pshard", physIdx, "shard", shardIdx, "error", err)
+				}
+			})
+		}
+
+		// One cleaner per physical shard: the age-based DELETE is shard-agnostic
+		// within a database but must run on EVERY database, else only shard 0's
+		// published rows are ever pruned.
+		cleaner := outbox.NewCleaner(pool)
+		physIdx := pIdx
+		cleaner.SetOnError(func(err error) {
+			s.logger.Error("outbox cleaner error", "pshard", physIdx, "error", err)
 		})
+
+		retention := cfg.RetentionAge
+		if retention == 0 {
+			retention = 24 * time.Hour
+		}
+		interval := cfg.CleanupInterval
+		if interval == 0 {
+			interval = time.Hour
+		}
+
 		s.goroutines = append(s.goroutines, func(ctx context.Context) {
-			if err := relay.Run(ctx); err != nil && ctx.Err() == nil {
-				s.logger.Error("relay stopped unexpectedly", "shard", shardIdx, "error", err)
+			if err := cleaner.RunCleanup(ctx, interval, retention); err != nil && ctx.Err() == nil {
+				s.logger.Error("cleaner stopped unexpectedly", "pshard", physIdx, "error", err)
 			}
 		})
 	}
-
-	cleaner := outbox.NewCleaner(s.pool)
-	cleaner.SetOnError(func(err error) {
-		s.logger.Error("outbox cleaner error", "error", err)
-	})
-
-	retention := cfg.RetentionAge
-	if retention == 0 {
-		retention = 24 * time.Hour
-	}
-	interval := cfg.CleanupInterval
-	if interval == 0 {
-		interval = time.Hour
-	}
-
-	s.goroutines = append(s.goroutines, func(ctx context.Context) {
-		if err := cleaner.RunCleanup(ctx, interval, retention); err != nil && ctx.Err() == nil {
-			s.logger.Error("cleaner stopped unexpectedly", "error", err)
-		}
-	})
 	return nil
 }
 

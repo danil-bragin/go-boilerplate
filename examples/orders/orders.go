@@ -148,7 +148,7 @@ func NewApp(ctx context.Context, opts ...Option) (*App, error) {
 	// singleActive: only one instance scans at a time (advisory-lock leader);
 	// the CAS guard inside the watcher keeps emission exactly-once even
 	// during the brief leader-overlap window.
-	watcher := app.NewUnpaidWatcher(svc.Pool(), domainSvc)
+	watcher := app.NewUnpaidWatcher(svc.Shards(), domainSvc)
 	if err := svc.AddPeriodicWorker("unpaid-watcher", cfg.UnpaidCheckInterval, 0, true, watcher.Poll); err != nil {
 		return nil, err
 	}

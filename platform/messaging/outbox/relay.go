@@ -93,6 +93,12 @@ type Relay struct {
 	// shard-scoped lock key, so N shard-leaders run concurrently.
 	shardCount int
 	shardIndex int
+	// leaderKeySuffix, when non-empty, is appended to the advisory-lock leader
+	// key so that relays running against DIFFERENT physical databases (Tier-3
+	// PG_SHARDS, ADR-0019) elect independent leaders. Without it two physical
+	// shards would hash to the same lock key in a shared lock space and only one
+	// of them would ever publish (see WithLeaderKeySuffix).
+	leaderKeySuffix string
 	// lockSQL/unlockSQL are the advisory-lock acquire/release statements for
 	// this relay's leader key (bare for unsharded, shard-scoped otherwise).
 	lockSQL   string
@@ -148,6 +154,15 @@ func WithShard(index, count int) RelayOption {
 	}
 }
 
+// WithLeaderKeySuffix appends suffix to the advisory-lock leader key so that
+// relays running against DIFFERENT physical databases elect leaders
+// independently. servicekit appends ":pshard:<i>" for physical shard i ONLY
+// when PG_SHARDS > 1 (Tier-3, ADR-0019): at M=1 no suffix is set and the lock
+// key is byte-identical to the historical key. An empty suffix is a no-op.
+func WithLeaderKeySuffix(suffix string) RelayOption {
+	return func(r *Relay) { r.leaderKeySuffix = suffix }
+}
+
 // NewRelay creates a Relay.
 func NewRelay(pool *pg.Pool, pub Publisher, cfg RelayConfig, opts ...RelayOption) *Relay {
 	if cfg.BatchSize <= 0 {
@@ -164,13 +179,19 @@ func NewRelay(pool *pg.Pool, pub Publisher, cfg RelayConfig, opts ...RelayOption
 	for _, o := range opts {
 		o(r)
 	}
-	if r.shardCount > 1 {
-		r.lockSQL = fmt.Sprintf(
-			`select pg_try_advisory_lock(hashtext('outbox_relay:'||current_schema()||':shard:%d'))`, r.shardIndex,
-		)
-		r.unlockSQL = fmt.Sprintf(
-			`select pg_advisory_unlock(hashtext('outbox_relay:'||current_schema()||':shard:%d'))`, r.shardIndex,
-		)
+	// Build the leader key from the aggregate-shard scope (WithShard) and the
+	// physical-shard suffix (WithLeaderKeySuffix). At M=1 with no aggregate
+	// sharding both are empty, so the key stays the historical bare key.
+	if r.shardCount > 1 || r.leaderKeySuffix != "" {
+		key := `'outbox_relay:'||current_schema()`
+		if r.shardCount > 1 {
+			key += fmt.Sprintf(`||':shard:%d'`, r.shardIndex)
+		}
+		if r.leaderKeySuffix != "" {
+			key += fmt.Sprintf(`||'%s'`, r.leaderKeySuffix)
+		}
+		r.lockSQL = fmt.Sprintf(`select pg_try_advisory_lock(hashtext(%s))`, key)
+		r.unlockSQL = fmt.Sprintf(`select pg_advisory_unlock(hashtext(%s))`, key)
 	}
 	return r
 }
@@ -327,6 +348,20 @@ const (
 // advisoryLockSQL acquires (non-blocking) the schema-scoped relay leader lock
 // on the CURRENT SESSION. hashtext maps the textual key to the int lock space.
 const advisoryLockSQL = `select pg_try_advisory_lock(hashtext('outbox_relay:'||current_schema()))`
+
+// HistoricalLeaderLockSQL is the bare (unsharded, no physical-shard suffix)
+// leader-lock acquire statement — the exact string used before per-physical-
+// shard sharding. Exported so harnesses can assert that the M=1 lock key stays
+// byte-identical across the change (a rolling upgrade must not split the
+// leader). Equal to LeaderLockSQL() of a relay built with neither WithShard nor
+// WithLeaderKeySuffix.
+const HistoricalLeaderLockSQL = advisoryLockSQL
+
+// LeaderLockSQL returns the advisory-lock acquire statement this relay uses for
+// leader election. It folds in the aggregate-shard scope (WithShard) and the
+// physical-shard suffix (WithLeaderKeySuffix); at M=1 with neither it equals
+// HistoricalLeaderLockSQL. Exposed for tests that verify the lock-key strategy.
+func (r *Relay) LeaderLockSQL() string { return r.lockSQL }
 
 // advisoryUnlockSQL releases the leader lock held by the current session.
 const advisoryUnlockSQL = `select pg_advisory_unlock(hashtext('outbox_relay:'||current_schema()))`
