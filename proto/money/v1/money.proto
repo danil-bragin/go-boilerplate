@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package money.v1;
+
+option go_package = "go-boilerplate/gen/proto/money/v1;moneyv1";
+
+// Money is a monetary amount encoded for the wire as decimal-as-string. amount
+// is a decimal string (e.g. "123.450000000000000001") — NEVER a float/int — so
+// arbitrary precision (18dp crypto, FX) survives. asset is the currency/asset
+// code. (google.type.Money is intentionally NOT used: units int64 + nanos 10^-9
+// caps at 9 fractional digits and int64 amounts, which cannot carry ETH wei.)
+message Money {
+  // amount is the full-precision decimal amount as a string (never a float/int).
+  string amount = 1;
+  // asset is the currency/asset code (e.g. "USD", "ETH").
+  string asset = 2;
+}
