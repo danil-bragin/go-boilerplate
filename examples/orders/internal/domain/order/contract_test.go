@@ -33,10 +33,9 @@ func TestContract_OrderCreated(t *testing.T) {
 
 	orderID := uuid.NewString()
 	require.NoError(t, svc.Create(context.Background(), order.CreateParams{
-		OrderID:     orderID,
-		CustomerID:  "cust-42",
-		AmountCents: 123_456,
-		Currency:    "EUR",
+		OrderID:    orderID,
+		CustomerID: "cust-42",
+		Amount:     amt(123_456, "EUR"),
 	}))
 
 	require.Len(t, pub.msgs, 1, "Create must enqueue exactly one event")

@@ -9,8 +9,27 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AuditChainHead struct {
+	ID        int16
+	LastHash  []byte
+	UpdatedAt pgtype.Timestamptz
+}
+
 type AuditLog struct {
 	ID        int64
+	Actor     string
+	Action    string
+	Subject   string
+	Metadata  []byte
+	CreatedAt pgtype.Timestamptz
+	PrevHash  []byte
+	EntryHash []byte
+	ChainID   int16
+}
+
+type AuditPending struct {
+	ID        int64
+	ChainID   int16
 	Actor     string
 	Action    string
 	Subject   string
@@ -27,8 +46,8 @@ type Inbox struct {
 type Order struct {
 	ID                    uuid.UUID
 	CustomerID            string
-	AmountCents           int64
-	Currency              string
+	Amount                string
+	Asset                 string
 	Status                string
 	CreatedAt             pgtype.Timestamptz
 	PaymentTimeoutEmitted bool
@@ -41,7 +60,19 @@ type Outbox struct {
 	EventType     string
 	Payload       []byte
 	Headers       []byte
+	Topic         string
 	CreatedAt     pgtype.Timestamptz
 	PublishedAt   pgtype.Timestamptz
+}
+
+type OutboxDefault struct {
+	ID            uuid.UUID
+	AggregateType string
+	AggregateID   string
+	EventType     string
+	Payload       []byte
+	Headers       []byte
 	Topic         string
+	CreatedAt     pgtype.Timestamptz
+	PublishedAt   pgtype.Timestamptz
 }

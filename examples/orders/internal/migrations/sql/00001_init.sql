@@ -15,8 +15,10 @@
 create table orders (
     id                      uuid        primary key,
     customer_id             text        not null,
-    amount_cents            bigint      not null,
-    currency                text        not null,
+    -- Money as the canonical platform/money two-column shape: amount NUMERIC
+    -- (lossless, any asset) + asset TEXT — never bigint cents (ADR-0020).
+    amount                  numeric     not null,
+    asset                   text        not null,
     status                  text        not null,
     created_at              timestamptz not null default now(),
     -- payment_timeout_emitted (was 00003): guards the unpaid-order watcher; the

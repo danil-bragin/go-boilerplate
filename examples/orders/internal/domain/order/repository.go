@@ -23,18 +23,19 @@ import (
 	"time"
 
 	"go-boilerplate/platform/messaging/outbox"
+	"go-boilerplate/platform/money"
 
 	"github.com/google/uuid"
 )
 
-// Order is the domain view of an order row.
+// Order is the domain view of an order row. Amount is a precision-exact
+// platform/money value (any asset), stored as amount NUMERIC + asset TEXT.
 type Order struct {
-	ID          uuid.UUID
-	CustomerID  string
-	AmountCents int64
-	Currency    string
-	Status      Status
-	CreatedAt   time.Time
+	ID         uuid.UUID
+	CustomerID string
+	Amount     money.Money
+	Status     Status
+	CreatedAt  time.Time
 }
 
 // UnpaidOrder is one expired-unpaid candidate returned by ListUnpaidExpired:

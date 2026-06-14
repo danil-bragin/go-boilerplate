@@ -14,9 +14,12 @@ package app
 
 import (
 	"context"
+	"fmt"
+	"math/big"
 
 	"go-boilerplate/examples/orders/internal/domain/order"
 	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/money"
 	"go-boilerplate/platform/security/audit"
 )
 
@@ -41,11 +44,16 @@ type CreateOrderResult struct {
 // commit atomically — see the order.Service.Create godoc.
 func CreateOrderHandler(svc *order.Service) cqrs.HandlerFunc[CreateOrder, CreateOrderResult] {
 	return func(ctx context.Context, cmd CreateOrder) (CreateOrderResult, error) {
+		// Convert the wire shape (minor units + currency) into a precision-exact
+		// money.Money at the boundary.
+		amount, err := money.FromMinor(big.NewInt(cmd.AmountCents), cmd.Currency)
+		if err != nil {
+			return CreateOrderResult{}, fmt.Errorf("create order: amount %d %s: %w", cmd.AmountCents, cmd.Currency, err)
+		}
 		if err := svc.Create(ctx, order.CreateParams{
-			OrderID:     cmd.OrderID,
-			CustomerID:  cmd.CustomerID,
-			AmountCents: cmd.AmountCents,
-			Currency:    cmd.Currency,
+			OrderID:    cmd.OrderID,
+			CustomerID: cmd.CustomerID,
+			Amount:     amount,
 		}); err != nil {
 			return CreateOrderResult{}, err
 		}

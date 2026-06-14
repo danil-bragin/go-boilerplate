@@ -33,7 +33,7 @@ func insertCreated(t *testing.T, repo *order.PgRepository) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
 	require.NoError(t, repo.Insert(context.Background(), order.Order{
-		ID: id, CustomerID: "cust-1", AmountCents: 1500, Currency: "USD", Status: order.StatusCreated,
+		ID: id, CustomerID: "cust-1", Amount: amt(1500, "USD"), Status: order.StatusCreated,
 	}))
 	return id
 }
@@ -51,8 +51,7 @@ func TestPgRepository_InsertGet(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, id, got.ID)
 	assert.Equal(t, "cust-1", got.CustomerID)
-	assert.EqualValues(t, 1500, got.AmountCents)
-	assert.Equal(t, "USD", got.Currency)
+	assert.True(t, got.Amount.Equal(amt(1500, "USD")), "amount round-trips as money (got %s)", got.Amount)
 	assert.Equal(t, order.StatusCreated, got.Status)
 	assert.False(t, got.CreatedAt.IsZero(), "created_at is DB time (DEFAULT now()), set without the app supplying it")
 	assert.WithinDuration(t, time.Now().UTC(), got.CreatedAt, time.Minute)
@@ -164,7 +163,7 @@ func TestPgRepository_JoinsAmbientTransaction(t *testing.T) {
 	rollback := assert.AnError
 	err := pg.RunInTx(ctx, pool, func(ctx context.Context) error {
 		if err := repo.Insert(ctx, order.Order{
-			ID: id, CustomerID: "c", AmountCents: 1, Currency: "USD", Status: order.StatusCreated,
+			ID: id, CustomerID: "c", Amount: amt(1, "USD"), Status: order.StatusCreated,
 		}); err != nil {
 			return err
 		}

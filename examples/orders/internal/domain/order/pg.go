@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"go-boilerplate/examples/orders/internal/store/gen"
+	"go-boilerplate/platform/money"
 	"go-boilerplate/platform/storage/pg"
 
 	"github.com/google/uuid"
@@ -45,30 +46,41 @@ func (r *PgRepository) q(ctx context.Context) *gen.Queries {
 	return gen.New(pg.FromContext(ctx, r.pool))
 }
 
-// Insert writes a new order row; created_at is DB time (DEFAULT now()).
+// Insert writes a new order row; created_at is DB time (DEFAULT now()). The
+// amount goes into the NUMERIC column via money's driver.Valuer (its canonical
+// decimal string) and the asset into the text column — lossless, no float.
 func (r *PgRepository) Insert(ctx context.Context, o Order) error {
+	amountVal, err := o.Amount.AmountValue().Value()
+	if err != nil {
+		return fmt.Errorf("order: amount value: %w", err)
+	}
+	amount, _ := amountVal.(string)
 	return r.q(ctx).InsertOrder(ctx, gen.InsertOrderParams{
-		ID:          o.ID,
-		CustomerID:  o.CustomerID,
-		AmountCents: o.AmountCents,
-		Currency:    o.Currency,
-		Status:      string(o.Status),
+		ID:         o.ID,
+		CustomerID: o.CustomerID,
+		Amount:     amount,
+		Asset:      o.Amount.Asset(),
+		Status:     string(o.Status),
 	})
 }
 
-// Get returns the order by id.
+// Get returns the order by id. The NUMERIC amount and asset columns are
+// reassembled into a money.Money via ScanRow.
 func (r *PgRepository) Get(ctx context.Context, id uuid.UUID) (Order, error) {
 	row, err := r.q(ctx).GetOrder(ctx, id)
 	if err != nil {
 		return Order{}, fmt.Errorf("order: get %s: %w", id, err)
 	}
+	amount, err := money.ScanRow(row.Amount, row.Asset)
+	if err != nil {
+		return Order{}, fmt.Errorf("order: get %s: %w", id, err)
+	}
 	return Order{
-		ID:          row.ID,
-		CustomerID:  row.CustomerID,
-		AmountCents: row.AmountCents,
-		Currency:    row.Currency,
-		Status:      Status(row.Status),
-		CreatedAt:   row.CreatedAt.Time,
+		ID:         row.ID,
+		CustomerID: row.CustomerID,
+		Amount:     amount,
+		Status:     Status(row.Status),
+		CreatedAt:  row.CreatedAt.Time,
 	}, nil
 }
 

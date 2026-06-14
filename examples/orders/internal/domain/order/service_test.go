@@ -5,12 +5,14 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math/big"
 	"testing"
 	"time"
 
 	"go-boilerplate/examples/orders/internal/domain/order"
 	"go-boilerplate/platform/apperr"
 	"go-boilerplate/platform/messaging/outbox"
+	"go-boilerplate/platform/money"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -19,6 +21,16 @@ import (
 
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
+
+// amt builds a money.Money from an integer count of the asset's minor units —
+// shared across the order_test files for terse, exact amounts.
+func amt(cents int64, asset string) money.Money {
+	m, err := money.FromMinor(big.NewInt(cents), asset)
+	if err != nil {
+		panic(err)
+	}
+	return m
+}
 
 // fakeRepo is a function-field fake of order.Repository — service unit tests
 // stay Docker-free.
@@ -76,15 +88,14 @@ func TestService_Create(t *testing.T) {
 
 		id := uuid.NewString()
 		require.NoError(t, svc.Create(context.Background(), order.CreateParams{
-			OrderID: id, CustomerID: "cust-1", AmountCents: 1500, Currency: "USD",
+			OrderID: id, CustomerID: "cust-1", Amount: amt(1500, "USD"),
 		}))
 
 		require.Len(t, inserted, 1)
 		assert.Equal(t, uuid.MustParse(id), inserted[0].ID)
 		assert.Equal(t, order.StatusCreated, inserted[0].Status, "a new order always starts in 'created'")
 		assert.Equal(t, "cust-1", inserted[0].CustomerID)
-		assert.EqualValues(t, 1500, inserted[0].AmountCents)
-		assert.Equal(t, "USD", inserted[0].Currency)
+		assert.True(t, inserted[0].Amount.Equal(amt(1500, "USD")), "amount %s", inserted[0].Amount)
 
 		require.Len(t, pub.msgs, 1)
 		msg := pub.msgs[0]
@@ -107,7 +118,7 @@ func TestService_Create(t *testing.T) {
 
 		for _, bad := range []string{"", "not-a-uuid", "12345", "ffffffff-ffff-ffff-ffff-fffffffffffg"} {
 			err := svc.Create(context.Background(), order.CreateParams{
-				OrderID: bad, CustomerID: "c", AmountCents: 1, Currency: "USD",
+				OrderID: bad, CustomerID: "c", Amount: amt(1, "USD"),
 			})
 			require.Error(t, err, "order id %q must be rejected", bad)
 			assert.Equal(t, order.CodeInvalidOrderID, apperr.Code(err))
@@ -124,7 +135,7 @@ func TestService_Create(t *testing.T) {
 		svc := order.NewService(repo, pub, slog.New(slog.DiscardHandler), 15*time.Minute)
 
 		err := svc.Create(context.Background(), order.CreateParams{
-			OrderID: uuid.NewString(), CustomerID: "c", AmountCents: 1, Currency: "USD",
+			OrderID: uuid.NewString(), CustomerID: "c", Amount: amt(1, "USD"),
 		})
 		require.ErrorIs(t, err, boom)
 		assert.Empty(t, pub.msgs, "no event may be enqueued when the row write failed")

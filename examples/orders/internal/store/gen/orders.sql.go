@@ -13,18 +13,18 @@ import (
 )
 
 const getOrder = `-- name: GetOrder :one
-select id, customer_id, amount_cents, currency, status, created_at
+select id, customer_id, amount, asset, status, created_at
 from orders
 where id = $1
 `
 
 type GetOrderRow struct {
-	ID          uuid.UUID
-	CustomerID  string
-	AmountCents int64
-	Currency    string
-	Status      string
-	CreatedAt   pgtype.Timestamptz
+	ID         uuid.UUID
+	CustomerID string
+	Amount     string
+	Asset      string
+	Status     string
+	CreatedAt  pgtype.Timestamptz
 }
 
 func (q *Queries) GetOrder(ctx context.Context, id uuid.UUID) (GetOrderRow, error) {
@@ -33,8 +33,8 @@ func (q *Queries) GetOrder(ctx context.Context, id uuid.UUID) (GetOrderRow, erro
 	err := row.Scan(
 		&i.ID,
 		&i.CustomerID,
-		&i.AmountCents,
-		&i.Currency,
+		&i.Amount,
+		&i.Asset,
 		&i.Status,
 		&i.CreatedAt,
 	)
@@ -42,24 +42,25 @@ func (q *Queries) GetOrder(ctx context.Context, id uuid.UUID) (GetOrderRow, erro
 }
 
 const insertOrder = `-- name: InsertOrder :exec
-insert into orders (id, customer_id, amount_cents, currency, status)
+insert into orders (id, customer_id, amount, asset, status)
 values ($1, $2, $3, $4, $5)
 `
 
 type InsertOrderParams struct {
-	ID          uuid.UUID
-	CustomerID  string
-	AmountCents int64
-	Currency    string
-	Status      string
+	ID         uuid.UUID
+	CustomerID string
+	Amount     string
+	Asset      string
+	Status     string
 }
 
 func (q *Queries) InsertOrder(ctx context.Context, arg InsertOrderParams) error {
-	_, err := q.db.Exec(ctx, insertOrder,
+	_, err := q.db.Exec(
+		ctx, insertOrder,
 		arg.ID,
 		arg.CustomerID,
-		arg.AmountCents,
-		arg.Currency,
+		arg.Amount,
+		arg.Asset,
 		arg.Status,
 	)
 	return err

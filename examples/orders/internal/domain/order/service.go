@@ -9,6 +9,7 @@ import (
 	"go-boilerplate/platform/apperr"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/outbox"
+	"go-boilerplate/platform/money"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
@@ -36,10 +37,9 @@ var (
 // app.CreateOrder command); the service only enforces rules that need domain
 // knowledge (UUID shape, state machine).
 type CreateParams struct {
-	OrderID     string
-	CustomerID  string
-	AmountCents int64
-	Currency    string
+	OrderID    string
+	CustomerID string
+	Amount     money.Money
 }
 
 // Service owns the orders business rules: order creation, the payment
@@ -81,20 +81,26 @@ func (s *Service) Create(ctx context.Context, p CreateParams) error {
 	}
 
 	if err := s.repo.Insert(ctx, Order{
-		ID:          id,
-		CustomerID:  p.CustomerID,
-		AmountCents: p.AmountCents,
-		Currency:    p.Currency,
-		Status:      StatusCreated,
+		ID:         id,
+		CustomerID: p.CustomerID,
+		Amount:     p.Amount,
+		Status:     StatusCreated,
 	}); err != nil {
 		return fmt.Errorf("order: insert: %w", err)
 	}
 
+	// The cross-service OrderCreated event keeps the wire shape (minor units +
+	// currency, the Stripe-style contract payments consumes): re-derive it from
+	// the money value.
+	minor, err := p.Amount.Minor()
+	if err != nil {
+		return fmt.Errorf("order: amount %s to minor units: %w", p.Amount, err)
+	}
 	return s.enqueue(ctx, p.OrderID, OrderCreatedEventType, &ordersv1.OrderCreated{
 		OrderId:     p.OrderID,
 		CustomerId:  p.CustomerID,
-		AmountCents: p.AmountCents,
-		Currency:    p.Currency,
+		AmountCents: minor.Int64(),
+		Currency:    p.Amount.Asset(),
 	})
 }
 
