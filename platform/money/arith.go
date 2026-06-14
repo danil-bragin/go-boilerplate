@@ -24,6 +24,24 @@ func (m Money) Add(n Money) (Money, error) {
 	return Money{amount: m.amount.Add(n.amount), asset: m.asset}, nil
 }
 
+// Sum adds any number of same-asset Money values exactly (never rounds),
+// returning their total. It needs at least one operand — the asset is taken
+// from the first — and errors on the first cross-asset (or zero-value) operand.
+// Pass a slice with Sum(ms...).
+func Sum(ms ...Money) (Money, error) {
+	if len(ms) == 0 {
+		return Money{}, codeErr(CodeInvalidAmount, "Sum").withDetail("needs at least one operand")
+	}
+	total := ms[0]
+	for _, m := range ms[1:] {
+		var err error
+		if total, err = total.Add(m); err != nil {
+			return Money{}, err
+		}
+	}
+	return total, nil
+}
+
 // Sub returns m-n exactly. Same-asset only.
 func (m Money) Sub(n Money) (Money, error) {
 	if err := m.sameAsset(n); err != nil {
