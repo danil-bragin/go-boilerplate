@@ -10,7 +10,8 @@ func TestErrorCode_StringAllCodes(t *testing.T) {
 	codes := []ErrorCode{
 		CodeCurrencyMismatch, CodeUnknownAsset, CodeDivByZero, CodeInvalidAmount,
 		CodeParseFailed, CodeOutOfRange, CodeScaleExceeded, CodeAssetNotAllowed,
-		CodeNotMultiple, CodeInvalidRatio, ErrorCode(999),
+		CodeNotMultiple, CodeInvalidRatio, CodeAmountTooLarge, CodeInexactMinor,
+		CodeInvalidRate, ErrorCode(999),
 	}
 	for _, c := range codes {
 		if c.String() == "" {

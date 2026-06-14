@@ -24,5 +24,9 @@ func (m Money) Convert(r Rate) (Money, error) {
 	if _, ok := Lookup(r.To); !ok {
 		return Money{}, codeErr(CodeUnknownAsset, "Convert").withAsset(r.To)
 	}
+	if r.Factor.d.Sign() <= 0 {
+		return Money{}, codeErr(CodeInvalidRate, "Convert").withAssets(r.From, r.To).
+			withDetail("rate factor must be > 0")
+	}
 	return Money{amount: m.amount.Mul(r.Factor.d), asset: r.To}, nil
 }

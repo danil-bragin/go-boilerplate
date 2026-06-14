@@ -27,5 +27,8 @@ func ScanRow(amountSrc any, assetSrc string) (Money, error) {
 	if err := d.Scan(amountSrc); err != nil {
 		return Money{}, codeErr(CodeParseFailed, "ScanRow").wrap(err)
 	}
+	if err := guardMagnitude(d, "ScanRow"); err != nil {
+		return Money{}, err
+	}
 	return Money{amount: d, asset: assetSrc}, nil
 }

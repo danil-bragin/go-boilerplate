@@ -30,6 +30,15 @@ const (
 	CodeNotMultiple
 	// CodeInvalidRatio is an invalid Split/Allocate ratio.
 	CodeInvalidRatio
+	// CodeAmountTooLarge is an amount whose coefficient or exponent exceeds the
+	// safe parse bounds (a denial-of-service guard on untrusted input).
+	CodeAmountTooLarge
+	// CodeInexactMinor is an amount that carries precision finer than the
+	// asset's smallest unit, so it cannot be expressed as an exact integer of
+	// minor units.
+	CodeInexactMinor
+	// CodeInvalidRate is a conversion rate that is not strictly positive.
+	CodeInvalidRate
 )
 
 // String returns a short human-readable description of the code.
@@ -55,6 +64,12 @@ func (c ErrorCode) String() string {
 		return "not a multiple"
 	case CodeInvalidRatio:
 		return "invalid ratio"
+	case CodeAmountTooLarge:
+		return "amount too large"
+	case CodeInexactMinor:
+		return "inexact minor units"
+	case CodeInvalidRate:
+		return "invalid rate"
 	default:
 		return "unknown error"
 	}
@@ -120,6 +135,14 @@ var (
 	ErrUnknownAsset = &Error{Code: CodeUnknownAsset}
 	// ErrDivByZero is returned by DivRound when the divisor is zero.
 	ErrDivByZero = &Error{Code: CodeDivByZero}
+	// ErrAmountTooLarge is returned when a parsed amount exceeds the safe
+	// coefficient/exponent bounds (a DoS guard on untrusted input).
+	ErrAmountTooLarge = &Error{Code: CodeAmountTooLarge}
+	// ErrInexactMinor is returned by Minor when the amount has sub-smallest-unit
+	// precision and cannot be expressed as an exact integer of minor units.
+	ErrInexactMinor = &Error{Code: CodeInexactMinor}
+	// ErrInvalidRate is returned by Convert when the rate factor is not > 0.
+	ErrInvalidRate = &Error{Code: CodeInvalidRate}
 )
 
 // codeErr starts a new *Error with a code and operation name.
