@@ -2,6 +2,7 @@ package money
 
 import (
 	"errors"
+	"math/big"
 	"testing"
 )
 
@@ -88,4 +89,119 @@ func TestJSON_MarshalErrorPathSane(t *testing.T) {
 	if err := m.UnmarshalJSON([]byte(`{"amount":"1.0","asset":"ZZZ"}`)); err == nil {
 		t.Fatal("unknown asset in JSON must error")
 	}
+}
+
+func TestApply_DefaultModeFallsBackToBank(t *testing.T) {
+	if got := RoundingMode(99).apply(MustDec("1.005"), 2).String(); got != "1" {
+		t.Fatalf("unknown mode → banker's (1.005→1.00); got %s", got)
+	}
+}
+
+func TestError_StringAllBranches(t *testing.T) {
+	for _, e := range []*Error{
+		{Code: CodeCurrencyMismatch, Op: "Add", Asset: "USD", Asset2: "ETH"}, // Asset && Asset2
+		{Code: CodeUnknownAsset, Op: "Parse", Asset: "ZZZ"},                  // Asset only
+		{Code: CodeInvalidAmount, Op: "FromMinor", Detail: "nil amount"},     // Detail
+		{Code: CodeParseFailed, Op: "Parse", wrapped: errors.New("boom")},    // wrapped
+		{Code: CodeDivByZero}, // bare
+	} {
+		if e.Error() == "" {
+			t.Fatalf("Error() empty for %+v", e)
+		}
+	}
+}
+
+func TestError_IsNonErrorTarget(t *testing.T) {
+	e := &Error{Code: CodeCurrencyMismatch}
+	if e.Is(errors.New("plain")) {
+		t.Fatal("Is must be false for a non-*Error target")
+	}
+	if e.Is(nil) {
+		t.Fatal("Is must be false for nil target")
+	}
+}
+
+func TestSymbolFor_AllFiat(t *testing.T) {
+	for code, want := range map[string]string{"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "RUB": "₽", "ETH": ""} {
+		if got := symbolFor(code); got != want {
+			t.Fatalf("symbolFor(%s)=%q want %q", code, got, want)
+		}
+	}
+}
+
+func TestFormat_NegativeMinus(t *testing.T) {
+	if got := MustParse("-1234.5", "USD").Format(US); got != "-$1,234.50" {
+		t.Fatalf("NegMinus: %s", got)
+	}
+}
+
+func TestFromMinor_UnknownAsset(t *testing.T) {
+	if _, err := FromMinor(big.NewInt(1), "ZZZ"); !errors.Is(err, ErrUnknownAsset) {
+		t.Fatalf("FromMinor unknown asset: %v", err)
+	}
+}
+
+func TestMustParse_Panics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("MustParse must panic on bad input")
+		}
+	}()
+	_ = MustParse("not-a-number", "USD")
+}
+
+func TestScanRow_Errors(t *testing.T) {
+	if _, err := ScanRow("1", "ZZZ"); !errors.Is(err, ErrUnknownAsset) {
+		t.Fatalf("ScanRow unknown asset: %v", err)
+	}
+	if _, err := ScanRow("not-a-decimal", "USD"); err == nil {
+		t.Fatal("ScanRow bad amount must error")
+	}
+}
+
+func TestUnmarshalText_Errors(t *testing.T) {
+	var m Money
+	if err := m.UnmarshalText([]byte("nospace")); err == nil {
+		t.Fatal("UnmarshalText without space must error")
+	}
+	if err := m.UnmarshalText([]byte("x USD")); err == nil {
+		t.Fatal("UnmarshalText bad amount must error")
+	}
+}
+
+func TestAsErr_FallbackWrapsNonError(t *testing.T) {
+	e := asErr(errors.New("not a money error"))
+	if e == nil || e.Code != CodeInvalidAmount {
+		t.Fatalf("asErr fallback must wrap non-*Error as CodeInvalidAmount: %+v", e)
+	}
+}
+
+func TestValidate_MaxBelow(t *testing.T) {
+	mustCode(t, Validate(MustParse("10", "USD"), Max(MustParse("5", "USD"))), CodeOutOfRange)
+}
+
+func TestValidate_ScaleNonNegativeExponentAndUnknownAsset(t *testing.T) {
+	// "1E2" parses with a positive exponent → scaleOf returns 0 (no fractional digits).
+	if err := Validate(MustParse("1E2", "USD"), MaxScale()); err != nil {
+		t.Fatalf("1E2 USD has 0 fractional digits, MaxScale should pass: %v", err)
+	}
+	// MaxScale defensive unknown-asset branch (Money with an unregistered asset).
+	mustCode(t, Validate(Money{asset: "ZZZ"}, MaxScale()), CodeUnknownAsset)
+}
+
+func TestMarshalJSON_Direct(t *testing.T) {
+	b, err := MustParse("12.34", "USD").MarshalJSON()
+	if err != nil || string(b) != `{"amount":"12.34","asset":"USD"}` {
+		t.Fatalf("MarshalJSON: %s %v", b, err)
+	}
+}
+
+func TestValidate_MaxPass(t *testing.T) {
+	if err := Validate(MustParse("3", "USD"), Max(MustParse("5", "USD"))); err != nil {
+		t.Fatalf("3 <= Max(5) must pass: %v", err)
+	}
+}
+
+func TestValidate_MaxCrossAsset(t *testing.T) {
+	mustCode(t, Validate(MustParse("1", "ETH"), Max(MustParse("5", "USD"))), CodeCurrencyMismatch)
 }

@@ -1,9 +1,6 @@
 package money
 
-import (
-	"bytes"
-	"encoding/json"
-)
+import "encoding/json"
 
 // jsonMoney is the wire shape: amount is ALWAYS a string (never a JSON number,
 // which would be float-parsed and lose precision).
@@ -13,22 +10,11 @@ type jsonMoney struct {
 }
 
 // MarshalJSON emits {"amount":"123.45","asset":"USD"} with amount as a string.
+// The amount (a decimal string: digits, '.', '-', 'e') and the asset (a registry
+// code: uppercase letters/digits) contain only JSON-safe characters, so they
+// embed directly without escaping — MarshalJSON cannot fail.
 func (m Money) MarshalJSON() ([]byte, error) {
-	amt, err := json.Marshal(m.amount.String())
-	if err != nil {
-		return nil, err
-	}
-	asset, err := json.Marshal(m.asset)
-	if err != nil {
-		return nil, err
-	}
-	var b bytes.Buffer
-	b.WriteString(`{"amount":`)
-	b.Write(amt)
-	b.WriteString(`,"asset":`)
-	b.Write(asset)
-	b.WriteString(`}`)
-	return b.Bytes(), nil
+	return []byte(`{"amount":"` + m.amount.String() + `","asset":"` + m.asset + `"}`), nil
 }
 
 // UnmarshalJSON parses {"amount":"123.45","asset":"USD"}. The amount MUST be a
