@@ -41,3 +41,9 @@ func TestMoney_NoFloatExact(t *testing.T) {
 		t.Fatal("0.1 not exact")
 	}
 }
+
+func TestMoney_FromMinorNilErrors(t *testing.T) {
+	if _, err := FromMinor(nil, "USD"); err == nil {
+		t.Fatal("FromMinor(nil) must error, not panic")
+	}
+}

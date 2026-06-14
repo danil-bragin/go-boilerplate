@@ -1,6 +1,9 @@
 package money
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func TestArith_AddSubExact(t *testing.T) {
 	a, b := MustParse("0.1", "USD"), MustParse("0.2", "USD")
@@ -31,9 +34,39 @@ func TestArith_MulExactScaleGrows(t *testing.T) {
 }
 
 func TestArith_DivRoundExplicit(t *testing.T) {
-	got := MustParse("10", "USD").DivRound(MustDec("3"), 2, HalfEven)
+	got, err := MustParse("10", "USD").DivRound(MustDec("3"), 2, HalfEven)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.String() != "3.33 USD" {
 		t.Fatalf("10/3 @2 HalfEven = 3.33: %s", got)
+	}
+}
+
+func TestArith_DivRoundZeroDivisorErrors(t *testing.T) {
+	if _, err := MustParse("10", "USD").DivRound(MustDec("0"), 2, HalfEven); !errors.Is(err, ErrDivByZero) {
+		t.Fatalf("zero divisor must return ErrDivByZero, got %v", err)
+	}
+}
+
+// TestArith_DivRoundRoundsTrueQuotient guards against double-rounding: the mode
+// must round the TRUE quotient, not one pre-rounded at the library's global
+// DivisionPrecision. At scale 16 with a half-even tie this is observable.
+func TestArith_DivRoundNoDoubleRound(t *testing.T) {
+	// 0.0000000000000025 / 2 = 0.00000000000000125; HalfEven@16 → ...12 (2 is even).
+	got, err := MustParse("0.0000000000000025", "ETH").DivRound(MustDec("2"), 16, HalfEven)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.String() != "0.0000000000000012 ETH" {
+		t.Fatalf("DivRound must round the true quotient (HalfEven), got %s", got)
+	}
+}
+
+func TestArith_ZeroValueMoneyRejected(t *testing.T) {
+	var zero Money // empty asset — invalid operand
+	if _, err := zero.Add(zero); err == nil {
+		t.Fatal("zero-value Money (empty asset) must not be a valid Add operand")
 	}
 }
 

@@ -34,6 +34,9 @@ func FromMajor(s, asset string) (Money, error) { return Parse(s, asset) }
 // FromMinor builds Money from an integer count of the asset's SMALLEST unit
 // (cents, wei): value = minor × 10^-exponent (exact).
 func FromMinor(minor *big.Int, asset string) (Money, error) {
+	if minor == nil {
+		return Money{}, errNilAmount
+	}
 	a, ok := Lookup(asset)
 	if !ok {
 		return Money{}, fmt.Errorf("money: %w: %s", ErrUnknownAsset, asset)

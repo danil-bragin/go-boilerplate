@@ -1,9 +1,5 @@
 package money
 
-import "github.com/shopspring/decimal"
-
-var hundred = decimal.NewFromInt(100)
-
 // Round rounds to the asset's natural exponent under mode (banker's = HalfEven
 // is the safe default for money).
 func (m Money) Round(mode RoundingMode) Money {
@@ -31,7 +27,9 @@ func (m Money) Fraction() Money {
 }
 
 // Percent returns p percent of m (= m × p/100), EXACT (no rounding). Round at
-// the boundary separately if a minor-unit result is required.
+// the boundary separately if a minor-unit result is required. Division by 100 is
+// done by an exact decimal shift (×10^-2), NOT Div — Div would round at the
+// global DivisionPrecision and silently drop precision on small values.
 func (m Money) Percent(p Dec) Money {
-	return m.Mul(Dec{p.d.Div(hundred)})
+	return m.Mul(Dec{p.d.Shift(-2)})
 }

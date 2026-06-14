@@ -40,7 +40,7 @@ func BenchmarkDivRound(b *testing.B) {
 	d := money.MustDec("7")
 	b.ReportAllocs()
 	for range b.N {
-		_ = x.DivRound(d, 2, money.HalfEven)
+		_, _ = x.DivRound(d, 2, money.HalfEven)
 	}
 }
 

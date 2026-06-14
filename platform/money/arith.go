@@ -2,7 +2,16 @@ package money
 
 import "fmt"
 
+// divGuardDigits is how many extra fractional digits DivRound computes beyond
+// the requested scale before applying the rounding mode, so the mode rounds the
+// TRUE quotient rather than a quotient already rounded at shopspring's global
+// DivisionPrecision.
+const divGuardDigits = 16
+
 func (m Money) sameAsset(n Money) error {
+	if m.asset == "" || n.asset == "" {
+		return fmt.Errorf("%w: empty asset (zero-value Money is not a valid operand)", ErrCurrencyMismatch)
+	}
 	if m.asset != n.asset {
 		return fmt.Errorf("%w: %s vs %s", ErrCurrencyMismatch, m.asset, n.asset)
 	}
@@ -33,11 +42,19 @@ func (m Money) Mul(factor Dec) Money {
 
 // DivRound divides m by an exact divisor to scale fractional digits under mode.
 // Division is the ONLY arithmetic that rounds (it cannot be exact in general) —
-// scale + mode are explicit. To divide money AMONG recipients use Split/Allocate
-// (which conserve units), not DivRound.
-func (m Money) DivRound(divisor Dec, scale int32, mode RoundingMode) Money {
-	q := Dec{m.amount.Div(divisor.d)}
-	return Money{amount: mode.apply(q, scale).d, asset: m.asset}
+// scale + mode are explicit. A zero divisor returns ErrDivByZero (never panics).
+// To divide money AMONG recipients use Split/Allocate (which conserve units),
+// not DivRound.
+//
+// The quotient is computed with guard digits beyond scale, then rounded ONCE
+// with mode — so mode rounds the true quotient, not one pre-rounded at the
+// library's global DivisionPrecision.
+func (m Money) DivRound(divisor Dec, scale int32, mode RoundingMode) (Money, error) {
+	if divisor.d.IsZero() {
+		return Money{}, ErrDivByZero
+	}
+	q := Dec{m.amount.DivRound(divisor.d, scale+divGuardDigits)}
+	return Money{amount: mode.apply(q, scale).d, asset: m.asset}, nil
 }
 
 // Neg returns -m.
