@@ -3,11 +3,13 @@ package payment_test
 import (
 	"context"
 	"errors"
+	"math/big"
 	"testing"
 	"time"
 
 	"go-boilerplate/examples/payments/internal/domain/payment"
 	"go-boilerplate/platform/messaging/outbox"
+	"go-boilerplate/platform/money"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -16,6 +18,16 @@ import (
 
 	ordersv1 "go-boilerplate/gen/proto/orders/v1"
 )
+
+// usd builds a USD money.Money from an integer count of cents — shared across
+// the payment_test files for terse, exact amounts.
+func usd(cents int64) money.Money {
+	m, err := money.FromMinor(big.NewInt(cents), "USD")
+	if err != nil {
+		panic(err)
+	}
+	return m
+}
 
 // fixedClock is a deterministic clock.Clock for the decision rule's
 // occurred_at timestamp.
@@ -71,9 +83,9 @@ func TestService_Process_ThresholdRule(t *testing.T) {
 		amountCents int64
 		wantStatus  string
 	}{
-		{"below threshold is processed", payment.DeclineThresholdCents - 1, payment.StatusProcessed},
-		{"at threshold is declined", payment.DeclineThresholdCents, payment.StatusFailed},
-		{"above threshold is declined", payment.DeclineThresholdCents + 1, payment.StatusFailed},
+		{"below threshold is processed", payment.DeclineThresholdMinor - 1, payment.StatusProcessed},
+		{"at threshold is declined", payment.DeclineThresholdMinor, payment.StatusFailed},
+		{"above threshold is declined", payment.DeclineThresholdMinor + 1, payment.StatusFailed},
 		{"small amount is processed", 1, payment.StatusProcessed},
 	}
 	for _, tt := range tests {
@@ -84,7 +96,7 @@ func TestService_Process_ThresholdRule(t *testing.T) {
 			svc := newService(repo, pub, now)
 
 			res, err := svc.Process(context.Background(), payment.ProcessParams{
-				OrderID: "order-1", AmountCents: tt.amountCents, Currency: "USD",
+				OrderID: "order-1", Amount: usd(tt.amountCents),
 			})
 			require.NoError(t, err, "a decline is a valid domain outcome, not a handler error")
 			assert.Equal(t, tt.wantStatus, res.Status)
@@ -95,7 +107,7 @@ func TestService_Process_ThresholdRule(t *testing.T) {
 			row := repo.inserted[0]
 			assert.Equal(t, res.PaymentID, row.ID.String())
 			assert.Equal(t, "order-1", row.OrderID)
-			assert.Equal(t, tt.amountCents, row.AmountCents)
+			assert.True(t, row.Amount.Equal(usd(tt.amountCents)), "row amount %s", row.Amount)
 			assert.Equal(t, tt.wantStatus, row.Status)
 
 			// Exactly one event, on the configured topic, keyed by order.
@@ -137,7 +149,7 @@ func TestService_Process_RepoFailure(t *testing.T) {
 	svc := newService(repo, pub, time.Now().UTC())
 
 	_, err := svc.Process(context.Background(), payment.ProcessParams{
-		OrderID: "order-1", AmountCents: 100, Currency: "USD",
+		OrderID: "order-1", Amount: usd(100),
 	})
 	require.ErrorIs(t, err, boom)
 	assert.Empty(t, pub.msgs)
@@ -150,9 +162,9 @@ func TestService_Process_UniquePaymentIDs(t *testing.T) {
 	repo := &fakeRepo{}
 	svc := newService(repo, &fakePublisher{}, time.Now().UTC())
 
-	res1, err := svc.Process(context.Background(), payment.ProcessParams{OrderID: "o1", AmountCents: 1, Currency: "USD"})
+	res1, err := svc.Process(context.Background(), payment.ProcessParams{OrderID: "o1", Amount: usd(1)})
 	require.NoError(t, err)
-	res2, err := svc.Process(context.Background(), payment.ProcessParams{OrderID: "o2", AmountCents: 1, Currency: "USD"})
+	res2, err := svc.Process(context.Background(), payment.ProcessParams{OrderID: "o2", Amount: usd(1)})
 	require.NoError(t, err)
 	assert.NotEqual(t, res1.PaymentID, res2.PaymentID)
 	_, err = uuid.Parse(res1.PaymentID)

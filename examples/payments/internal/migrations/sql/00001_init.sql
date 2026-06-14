@@ -10,12 +10,17 @@
 --   00004_audit_chain_shards       audit_log.chain_id + audit_log_chain_idx
 --                                  + drop audit_chain_head singleton
 
+-- Money is stored as the canonical platform/money two-column shape: amount
+-- NUMERIC (arbitrary precision/scale, lossless — never bigint cents, never PG
+-- money/float) + asset TEXT. This generalizes the payments service from
+-- fiat-2dp-only cents to any asset (crypto/FX). See ADR-0020.
 create table payments (
-    id           uuid        primary key,
-    order_id     text        not null,
-    amount_cents bigint      not null,
-    status       text        not null,
-    created_at   timestamptz not null default now()
+    id         uuid        primary key,
+    order_id   text        not null,
+    amount     numeric     not null,
+    asset      text        not null,
+    status     text        not null,
+    created_at timestamptz not null default now()
 );
 
 -- Partitioned by created_at from day one (ADR-0016); the DEFAULT partition

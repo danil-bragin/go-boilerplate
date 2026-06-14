@@ -26,17 +26,19 @@ import (
 	"time"
 
 	"go-boilerplate/platform/messaging/outbox"
+	"go-boilerplate/platform/money"
 
 	"github.com/google/uuid"
 )
 
-// Payment is the domain view of a payment row.
+// Payment is the domain view of a payment row. Amount is a precision-exact
+// platform/money value (any asset), stored as amount NUMERIC + asset TEXT.
 type Payment struct {
-	ID          uuid.UUID
-	OrderID     string
-	AmountCents int64
-	Status      string
-	CreatedAt   time.Time
+	ID        uuid.UUID
+	OrderID   string
+	Amount    money.Money
+	Status    string
+	CreatedAt time.Time
 }
 
 // Repository is the payment persistence port, defined consumer-side.

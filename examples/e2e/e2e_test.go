@@ -238,7 +238,7 @@ func TestE2E_OrderChoreography(t *testing.T) {
 	t.Logf("Step 1 OK: order_id=%s", orderID)
 
 	// --- Step 1b: POST a declined order (failure leg) ---
-	// Amounts at or above the payments service's DeclineThresholdCents
+	// Amounts at or above the payments service's DeclineThresholdMinor
 	// (1_000_000) are deterministically declined: the payments service emits
 	// PaymentFailed and the projection must surface status=payment_failed.
 	// Posted now so it flows through the choreography concurrently with the

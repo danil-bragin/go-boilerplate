@@ -13,3 +13,8 @@ sql:
         overrides:
           - db_type: "uuid"
             go_type: "github.com/google/uuid.UUID"
+          # NUMERIC money columns surface as decimal strings; platform/money
+          # converts (AmountValue on write, ScanRow on read) — no float, no pgx
+          # numeric type leaking into the domain.
+          - db_type: "pg_catalog.numeric"
+            go_type: "string"

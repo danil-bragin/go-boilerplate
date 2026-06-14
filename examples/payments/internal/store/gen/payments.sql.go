@@ -12,7 +12,7 @@ import (
 )
 
 const getPaymentByOrder = `-- name: GetPaymentByOrder :one
-select id, order_id, amount_cents, status, created_at
+select id, order_id, amount, asset, status, created_at
 from payments
 where order_id = $1
 limit 1
@@ -24,7 +24,8 @@ func (q *Queries) GetPaymentByOrder(ctx context.Context, orderID string) (Paymen
 	err := row.Scan(
 		&i.ID,
 		&i.OrderID,
-		&i.AmountCents,
+		&i.Amount,
+		&i.Asset,
 		&i.Status,
 		&i.CreatedAt,
 	)
@@ -32,22 +33,25 @@ func (q *Queries) GetPaymentByOrder(ctx context.Context, orderID string) (Paymen
 }
 
 const insertPayment = `-- name: InsertPayment :exec
-insert into payments (id, order_id, amount_cents, status)
-values ($1, $2, $3, $4)
+insert into payments (id, order_id, amount, asset, status)
+values ($1, $2, $3, $4, $5)
 `
 
 type InsertPaymentParams struct {
-	ID          uuid.UUID
-	OrderID     string
-	AmountCents int64
-	Status      string
+	ID      uuid.UUID
+	OrderID string
+	Amount  string
+	Asset   string
+	Status  string
 }
 
 func (q *Queries) InsertPayment(ctx context.Context, arg InsertPaymentParams) error {
-	_, err := q.db.Exec(ctx, insertPayment,
+	_, err := q.db.Exec(
+		ctx, insertPayment,
 		arg.ID,
 		arg.OrderID,
-		arg.AmountCents,
+		arg.Amount,
+		arg.Asset,
 		arg.Status,
 	)
 	return err

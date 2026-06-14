@@ -41,14 +41,14 @@ func TestPgRepository_InsertGetByOrder(t *testing.T) {
 	id := uuid.New()
 	orderID := uuid.NewString()
 	require.NoError(t, repo.Insert(ctx, payment.Payment{
-		ID: id, OrderID: orderID, AmountCents: 4200, Status: payment.StatusProcessed,
+		ID: id, OrderID: orderID, Amount: usd(4200), Status: payment.StatusProcessed,
 	}))
 
 	got, err := repo.GetByOrder(ctx, orderID)
 	require.NoError(t, err)
 	assert.Equal(t, id, got.ID)
 	assert.Equal(t, orderID, got.OrderID)
-	assert.EqualValues(t, 4200, got.AmountCents)
+	assert.True(t, got.Amount.Equal(usd(4200)), "amount round-trips as money (got %s)", got.Amount)
 	assert.Equal(t, payment.StatusProcessed, got.Status)
 	assert.False(t, got.CreatedAt.IsZero(), "created_at is DB time (DEFAULT now())")
 	assert.WithinDuration(t, time.Now().UTC(), got.CreatedAt, time.Minute)
@@ -70,7 +70,7 @@ func TestPgRepository_JoinsAmbientTransaction(t *testing.T) {
 
 	err := pg.RunInTx(ctx, pool, func(ctx context.Context) error {
 		if err := repo.Insert(ctx, payment.Payment{
-			ID: uuid.New(), OrderID: orderID, AmountCents: 1, Status: payment.StatusProcessed,
+			ID: uuid.New(), OrderID: orderID, Amount: usd(1), Status: payment.StatusProcessed,
 		}); err != nil {
 			return err
 		}

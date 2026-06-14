@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"go-boilerplate/examples/payments/internal/store/gen"
+	"go-boilerplate/platform/money"
 	"go-boilerplate/platform/storage/pg"
 )
 
@@ -39,28 +40,41 @@ func (r *PgRepository) q(ctx context.Context) *gen.Queries {
 	return gen.New(pg.FromContext(ctx, r.pool))
 }
 
-// Insert writes a new payment row; created_at is DB time (DEFAULT now()).
+// Insert writes a new payment row; created_at is DB time (DEFAULT now()). The
+// amount goes into the NUMERIC column via money's driver.Valuer (its canonical
+// decimal string) and the asset into the text column — lossless, no float.
 func (r *PgRepository) Insert(ctx context.Context, p Payment) error {
+	amountVal, err := p.Amount.AmountValue().Value()
+	if err != nil {
+		return fmt.Errorf("payment: amount value: %w", err)
+	}
+	amount, _ := amountVal.(string)
 	return r.q(ctx).InsertPayment(ctx, gen.InsertPaymentParams{
-		ID:          p.ID,
-		OrderID:     p.OrderID,
-		AmountCents: p.AmountCents,
-		Status:      p.Status,
+		ID:      p.ID,
+		OrderID: p.OrderID,
+		Amount:  amount,
+		Asset:   p.Amount.Asset(),
+		Status:  p.Status,
 	})
 }
 
-// GetByOrder returns the payment recorded for an order.
+// GetByOrder returns the payment recorded for an order. The NUMERIC amount and
+// asset columns are reassembled into a money.Money via ScanRow.
 func (r *PgRepository) GetByOrder(ctx context.Context, orderID string) (Payment, error) {
 	row, err := r.q(ctx).GetPaymentByOrder(ctx, orderID)
 	if err != nil {
 		return Payment{}, fmt.Errorf("payment: get by order %s: %w", orderID, err)
 	}
+	amount, err := money.ScanRow(row.Amount, row.Asset)
+	if err != nil {
+		return Payment{}, fmt.Errorf("payment: get by order %s: %w", orderID, err)
+	}
 	return Payment{
-		ID:          row.ID,
-		OrderID:     row.OrderID,
-		AmountCents: row.AmountCents,
-		Status:      row.Status,
-		CreatedAt:   row.CreatedAt.Time,
+		ID:        row.ID,
+		OrderID:   row.OrderID,
+		Amount:    amount,
+		Status:    row.Status,
+		CreatedAt: row.CreatedAt.Time,
 	}, nil
 }
 

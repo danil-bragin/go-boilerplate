@@ -33,9 +33,8 @@ func TestContract_PaymentProcessed(t *testing.T) {
 
 	orderID := uuid.NewString()
 	res, err := svc.Process(context.Background(), payment.ProcessParams{
-		OrderID:     orderID,
-		AmountCents: payment.DeclineThresholdCents - 1, // just below: processed
-		Currency:    "USD",
+		OrderID: orderID,
+		Amount:  usd(payment.DeclineThresholdMinor - 1), // just below: processed
 	})
 	require.NoError(t, err)
 	require.Equal(t, payment.StatusProcessed, res.Status)
@@ -56,9 +55,8 @@ func TestContract_PaymentFailed(t *testing.T) {
 
 	orderID := uuid.NewString()
 	res, err := svc.Process(context.Background(), payment.ProcessParams{
-		OrderID:     orderID,
-		AmountCents: payment.DeclineThresholdCents, // at threshold: declined
-		Currency:    "USD",
+		OrderID: orderID,
+		Amount:  usd(payment.DeclineThresholdMinor), // at threshold: declined
 	})
 	require.NoError(t, err)
 	require.Equal(t, payment.StatusFailed, res.Status)

@@ -12,9 +12,12 @@ package app
 
 import (
 	"context"
+	"fmt"
+	"math/big"
 
 	"go-boilerplate/examples/payments/internal/domain/payment"
 	"go-boilerplate/platform/cqrs"
+	"go-boilerplate/platform/money"
 	"go-boilerplate/platform/security/audit"
 )
 
@@ -42,10 +45,15 @@ type ProcessPaymentResult struct {
 // commit atomically — see the payment.Service.Process godoc.
 func ProcessPaymentHandler(svc *payment.Service) cqrs.HandlerFunc[ProcessPayment, ProcessPaymentResult] {
 	return func(ctx context.Context, cmd ProcessPayment) (ProcessPaymentResult, error) {
+		// Convert the wire shape (minor units + currency, the cross-service
+		// contract) into a precision-exact money.Money at the boundary.
+		amount, err := money.FromMinor(big.NewInt(cmd.AmountCents), cmd.Currency)
+		if err != nil {
+			return ProcessPaymentResult{}, fmt.Errorf("process payment: amount %d %s: %w", cmd.AmountCents, cmd.Currency, err)
+		}
 		res, err := svc.Process(ctx, payment.ProcessParams{
-			OrderID:     cmd.OrderID,
-			AmountCents: cmd.AmountCents,
-			Currency:    cmd.Currency,
+			OrderID: cmd.OrderID,
+			Amount:  amount,
 		})
 		if err != nil {
 			return ProcessPaymentResult{}, err

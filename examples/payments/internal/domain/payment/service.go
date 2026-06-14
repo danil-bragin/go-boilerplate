@@ -3,10 +3,12 @@ package payment
 import (
 	"context"
 	"fmt"
+	"math/big"
 
 	"go-boilerplate/platform/clock"
 	"go-boilerplate/platform/messaging/consume"
 	"go-boilerplate/platform/messaging/outbox"
+	"go-boilerplate/platform/money"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
@@ -32,18 +34,20 @@ const (
 	StatusFailed = "failed"
 )
 
-// DeclineThresholdCents is the deterministic demo decline rule: payments with
-// amount_cents >= this threshold are declined. It gives the choreography a
-// reproducible failure path (PaymentFailed) without external dependencies —
-// any order of 10 000.00 currency units or more fails payment.
-const DeclineThresholdCents = 1_000_000
+// DeclineThresholdMinor is the deterministic demo decline rule, expressed in
+// the asset's smallest unit: payments whose amount is at or above this many
+// minor units are declined (10 000.00 for a 2-decimal fiat). It gives the
+// choreography a reproducible failure path (PaymentFailed) without external
+// dependencies. Building the threshold in the payment's own asset keeps the
+// comparison same-asset (and so generalizes beyond 2-decimal fiat).
+const DeclineThresholdMinor = 1_000_000
 
-// ProcessParams are the validated inputs to Service.Process (struct-tag
-// validation happens at the entry point via the cqrs Validation behavior).
+// ProcessParams are the validated inputs to Service.Process. Amount is a
+// precision-exact money value; the cents+currency from the wire are converted
+// to it at the entry point (see internal/app).
 type ProcessParams struct {
-	OrderID     string
-	AmountCents int64
-	Currency    string
+	OrderID string
+	Amount  money.Money
 }
 
 // Result is the outcome of Service.Process: the new payment's id and its
@@ -79,13 +83,17 @@ func NewService(repo Repository, events EventPublisher, clk clock.Clock, outTopi
 // atomically — both writes resolve their DBTX from ctx.
 func (s *Service) Process(ctx context.Context, p ProcessParams) (Result, error) {
 	paymentID := uuid.New()
-	status, eventType, event := s.decide(p, paymentID)
+	declined, err := isDeclined(p.Amount)
+	if err != nil {
+		return Result{}, fmt.Errorf("payment: decide %s: %w", p.OrderID, err)
+	}
+	status, eventType, event := s.outcome(p, paymentID, declined)
 
 	if err := s.repo.Insert(ctx, Payment{
-		ID:          paymentID,
-		OrderID:     p.OrderID,
-		AmountCents: p.AmountCents,
-		Status:      status,
+		ID:      paymentID,
+		OrderID: p.OrderID,
+		Amount:  p.Amount,
+		Status:  status,
 	}); err != nil {
 		return Result{}, fmt.Errorf("payment: insert: %w", err)
 	}
@@ -108,13 +116,24 @@ func (s *Service) Process(ctx context.Context, p ProcessParams) (Result, error) 
 	return Result{PaymentID: paymentID.String(), Status: status}, nil
 }
 
-// decide is the pure payment decision: it maps the params to the resulting
-// payment status, versioned event type, and event payload. Amounts at or
-// above DeclineThresholdCents are declined (PaymentFailed — the choreography
-// failure branch); everything else is processed. The decline's occurred_at
-// is the injected clock's now.
-func (s *Service) decide(p ProcessParams, paymentID uuid.UUID) (status, eventType string, event proto.Message) {
-	if p.AmountCents >= DeclineThresholdCents {
+// isDeclined applies the demo decline rule: the amount is compared (same-asset)
+// against the threshold built in the amount's own asset. An error only arises
+// if the asset is somehow unregistered (it cannot be, since a money.Money is
+// always constructed with a registered asset).
+func isDeclined(amount money.Money) (bool, error) {
+	threshold, err := money.FromMinor(big.NewInt(DeclineThresholdMinor), amount.Asset())
+	if err != nil {
+		return false, fmt.Errorf("threshold for %s: %w", amount.Asset(), err)
+	}
+	return amount.GreaterThanOrEqual(threshold)
+}
+
+// outcome maps the decision to the resulting payment status, versioned event
+// type, and event payload. Declined payments emit PaymentFailed (the
+// choreography failure branch) with the injected clock's now as occurred_at;
+// everything else is processed.
+func (s *Service) outcome(p ProcessParams, paymentID uuid.UUID, declined bool) (status, eventType string, event proto.Message) {
+	if declined {
 		return StatusFailed, PaymentFailedEventType, &ordersv1.PaymentFailed{
 			OrderId:    p.OrderID,
 			Reason:     "declined",
