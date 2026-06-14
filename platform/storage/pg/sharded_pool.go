@@ -82,9 +82,10 @@ func NewSharded(ctx context.Context, cfg ShardedConfig) (*ShardedPool, error) {
 // Pool. Resolve always returns p (the FNV router over m=1 maps every key to
 // shard 0), so it is byte-identical to using p directly — it just exposes the
 // ShardedPool seam (Resolve/RunInTx/FromContext) to code that holds a *Pool.
-// Used by consumers and example services that adopt sharded routing while still
-// receiving the single Pool. A nil p yields a ShardedPool whose Resolve panics
-// — pass a real pool.
+// It is the seam for callers that own pool construction directly (notably tests
+// wrapping a container pool); the service harness builds its ShardedPool via
+// NewSharded and exposes it through servicekit.Service.Shards(). A nil p yields
+// a ShardedPool whose Resolve panics — pass a real pool.
 func WrapPool(p *Pool) *ShardedPool {
 	return &ShardedPool{
 		shards:      []*Pool{p},
