@@ -2,7 +2,6 @@ package money
 
 import (
 	"database/sql/driver"
-	"fmt"
 
 	"github.com/shopspring/decimal"
 )
@@ -22,11 +21,11 @@ func (m Money) AmountValue() driver.Valuer { return m.amount }
 // text). Use after Scan(&amountSrc, &assetSrc).
 func ScanRow(amountSrc any, assetSrc string) (Money, error) {
 	if _, ok := Lookup(assetSrc); !ok {
-		return Money{}, fmt.Errorf("money: %w: %s", ErrUnknownAsset, assetSrc)
+		return Money{}, codeErr(CodeUnknownAsset, "ScanRow").withAsset(assetSrc)
 	}
 	var d decimal.Decimal
 	if err := d.Scan(amountSrc); err != nil {
-		return Money{}, fmt.Errorf("money: scan amount: %w", err)
+		return Money{}, codeErr(CodeParseFailed, "ScanRow").wrap(err)
 	}
 	return Money{amount: d, asset: assetSrc}, nil
 }

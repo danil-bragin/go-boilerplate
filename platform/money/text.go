@@ -1,7 +1,6 @@
 package money
 
 import (
-	"fmt"
 	"strings"
 )
 
@@ -15,7 +14,7 @@ func (m *Money) UnmarshalText(text []byte) error {
 	s := string(text)
 	i := strings.LastIndexByte(s, ' ')
 	if i < 0 {
-		return fmt.Errorf("money: bad text %q, want \"<amount> <asset>\"", s)
+		return codeErr(CodeParseFailed, "UnmarshalText").withDetail("bad text " + s + ", want \"<amount> <asset>\"")
 	}
 	parsed, err := Parse(s[:i], s[i+1:])
 	if err != nil {

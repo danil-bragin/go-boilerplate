@@ -8,8 +8,6 @@
 package money
 
 import (
-	"fmt"
-
 	"github.com/shopspring/decimal"
 )
 
@@ -24,7 +22,7 @@ type Dec struct {
 func DecFromString(s string) (Dec, error) {
 	d, err := decimal.NewFromString(s)
 	if err != nil {
-		return Dec{}, fmt.Errorf("money: parse decimal %q: %w", s, err)
+		return Dec{}, codeErr(CodeParseFailed, "DecFromString").withDetail(s).wrap(err)
 	}
 	return Dec{d: d}, nil
 }

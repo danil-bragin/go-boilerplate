@@ -3,7 +3,6 @@ package money
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 )
 
 // jsonMoney is the wire shape: amount is ALWAYS a string (never a JSON number,
@@ -37,11 +36,11 @@ func (m Money) MarshalJSON() ([]byte, error) {
 func (m *Money) UnmarshalJSON(data []byte) error {
 	var j jsonMoney
 	if err := json.Unmarshal(data, &j); err != nil {
-		return fmt.Errorf("money: unmarshal: %w", err)
+		return codeErr(CodeParseFailed, "UnmarshalJSON").wrap(err)
 	}
 	var amount string
 	if err := json.Unmarshal(j.Amount, &amount); err != nil {
-		return fmt.Errorf("money: amount must be a JSON string, not a number: %w", err)
+		return codeErr(CodeParseFailed, "UnmarshalJSON").withDetail("amount must be a JSON string, not a number").wrap(err)
 	}
 	parsed, err := Parse(amount, j.Asset)
 	if err != nil {

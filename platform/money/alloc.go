@@ -1,9 +1,8 @@
 package money
 
 import (
-	"errors"
-	"fmt"
 	"math/big"
+	"strconv"
 
 	"github.com/shopspring/decimal"
 )
@@ -13,7 +12,7 @@ import (
 // (Fowler's allocate). n must be > 0.
 func (m Money) Split(n int) ([]Money, error) {
 	if n <= 0 {
-		return nil, fmt.Errorf("money: split needs n > 0, got %d", n)
+		return nil, codeErr(CodeInvalidRatio, "Split").withDetail("needs n > 0, got " + strconv.Itoa(n))
 	}
 	w := make([]int, n)
 	for i := range w {
@@ -33,17 +32,17 @@ func (m Money) Split(n int) ([]Money, error) {
 // Σ(parts) == m still holds exactly (a negative whole yields negative parts).
 func (m Money) Allocate(ratios ...int) ([]Money, error) {
 	if len(ratios) == 0 {
-		return nil, errors.New("money: allocate needs at least one ratio")
+		return nil, codeErr(CodeInvalidRatio, "Allocate").withDetail("needs at least one ratio")
 	}
 	total := 0
 	for _, r := range ratios {
 		if r < 0 {
-			return nil, fmt.Errorf("money: allocate negative ratio %d", r)
+			return nil, codeErr(CodeInvalidRatio, "Allocate").withDetail("negative ratio " + strconv.Itoa(r))
 		}
 		total += r
 	}
 	if total == 0 {
-		return nil, errors.New("money: allocate ratios sum to zero")
+		return nil, codeErr(CodeInvalidRatio, "Allocate").withDetail("ratios sum to zero")
 	}
 	a, _ := Lookup(m.asset) // asset validated at construction
 	// integer minor units (truncate any sub-smallest-unit precision toward zero)

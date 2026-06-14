@@ -1,7 +1,5 @@
 package money
 
-import "fmt"
-
 // Rate is an exact FX factor from one asset to another (supplied by the caller;
 // money does no IO).
 type Rate struct {
@@ -21,10 +19,10 @@ type RateProvider interface {
 // registered.
 func (m Money) Convert(r Rate) (Money, error) {
 	if m.asset != r.From {
-		return Money{}, fmt.Errorf("%w: have %s, rate from %s", ErrCurrencyMismatch, m.asset, r.From)
+		return Money{}, codeErr(CodeCurrencyMismatch, "Convert").withAssets(m.asset, r.From)
 	}
 	if _, ok := Lookup(r.To); !ok {
-		return Money{}, fmt.Errorf("money: %w: %s", ErrUnknownAsset, r.To)
+		return Money{}, codeErr(CodeUnknownAsset, "Convert").withAsset(r.To)
 	}
 	return Money{amount: m.amount.Mul(r.Factor.d), asset: r.To}, nil
 }

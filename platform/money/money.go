@@ -1,7 +1,6 @@
 package money
 
 import (
-	"fmt"
 	"math/big"
 
 	"github.com/shopspring/decimal"
@@ -19,11 +18,11 @@ type Money struct {
 // asset code. No float path; full precision retained.
 func Parse(s, asset string) (Money, error) {
 	if _, ok := Lookup(asset); !ok {
-		return Money{}, fmt.Errorf("money: %w: %s", ErrUnknownAsset, asset)
+		return Money{}, codeErr(CodeUnknownAsset, "Parse").withAsset(asset)
 	}
 	d, err := decimal.NewFromString(s)
 	if err != nil {
-		return Money{}, fmt.Errorf("money: parse %q: %w", s, err)
+		return Money{}, codeErr(CodeParseFailed, "Parse").withDetail(s).wrap(err)
 	}
 	return Money{amount: d, asset: asset}, nil
 }
@@ -35,11 +34,11 @@ func FromMajor(s, asset string) (Money, error) { return Parse(s, asset) }
 // (cents, wei): value = minor × 10^-exponent (exact).
 func FromMinor(minor *big.Int, asset string) (Money, error) {
 	if minor == nil {
-		return Money{}, errNilAmount
+		return Money{}, codeErr(CodeInvalidAmount, "FromMinor").withDetail("nil amount")
 	}
 	a, ok := Lookup(asset)
 	if !ok {
-		return Money{}, fmt.Errorf("money: %w: %s", ErrUnknownAsset, asset)
+		return Money{}, codeErr(CodeUnknownAsset, "FromMinor").withAsset(asset)
 	}
 	return Money{amount: decimal.NewFromBigInt(minor, -a.Exponent), asset: asset}, nil
 }

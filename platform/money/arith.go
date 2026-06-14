@@ -1,7 +1,5 @@
 package money
 
-import "fmt"
-
 // divGuardDigits is how many extra fractional digits DivRound computes beyond
 // the requested scale before applying the rounding mode, so the mode rounds the
 // TRUE quotient rather than a quotient already rounded at shopspring's global
@@ -10,10 +8,10 @@ const divGuardDigits = 16
 
 func (m Money) sameAsset(n Money) error {
 	if m.asset == "" || n.asset == "" {
-		return fmt.Errorf("%w: empty asset (zero-value Money is not a valid operand)", ErrCurrencyMismatch)
+		return codeErr(CodeCurrencyMismatch, "").withDetail("zero-value Money is not a valid operand")
 	}
 	if m.asset != n.asset {
-		return fmt.Errorf("%w: %s vs %s", ErrCurrencyMismatch, m.asset, n.asset)
+		return codeErr(CodeCurrencyMismatch, "").withAssets(m.asset, n.asset)
 	}
 	return nil
 }
