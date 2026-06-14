@@ -83,6 +83,8 @@ Kafka handler. Rules, rationale and the ambient-transaction invariant:
 
 Goose SQL files live in `internal/migrations/sql/` — note the `sql/` subdirectory; it is the `migrationsDir` argument passed to `servicekit.New`. Every consumer service needs its domain tables plus the three platform tables (`outbox` **with the `topic` column**, `inbox`, `audit_log`):
 
+Each service ships a **single baseline** `00001_init.sql` carrying the full starting schema (domain + platform tables in their final shape); new features extend the schema with `00002_*.sql` onward, **after** the baseline — never edit `00001_init.sql` once it has been applied anywhere. (The example baselines were collapsed from their original chains because the template was never deployed; never re-collapse a live schema.)
+
 ```sql
 -- +goose Up
 create table shipments (
@@ -122,8 +124,7 @@ create table audit_log (
     action     text        not null,
     subject    text        not null,
     metadata   jsonb       not null default '{}'::jsonb,
-    created_at timestamptz not null default now(),
-    primary key (id)
+    created_at timestamptz not null default now()
 );
 
 -- +goose Down
