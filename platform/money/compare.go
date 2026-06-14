@@ -8,6 +8,56 @@ func (m Money) Cmp(n Money) (int, error) {
 	return m.amount.Cmp(n.amount), nil
 }
 
+// LessThan reports whether m < n (same-asset). Errors on cross-asset.
+func (m Money) LessThan(n Money) (bool, error) {
+	c, err := m.Cmp(n)
+	return c < 0, err
+}
+
+// LessThanOrEqual reports whether m <= n (same-asset). Errors on cross-asset.
+func (m Money) LessThanOrEqual(n Money) (bool, error) {
+	c, err := m.Cmp(n)
+	return c <= 0, err
+}
+
+// GreaterThan reports whether m > n (same-asset). Errors on cross-asset.
+func (m Money) GreaterThan(n Money) (bool, error) {
+	c, err := m.Cmp(n)
+	return c > 0, err
+}
+
+// GreaterThanOrEqual reports whether m >= n (same-asset). Errors on cross-asset.
+func (m Money) GreaterThanOrEqual(n Money) (bool, error) {
+	c, err := m.Cmp(n)
+	return c >= 0, err
+}
+
+// Min returns the smaller of m and n (same-asset). Errors on cross-asset. On a
+// tie it returns m.
+func (m Money) Min(n Money) (Money, error) {
+	c, err := m.Cmp(n)
+	if err != nil {
+		return Money{}, err
+	}
+	if c <= 0 {
+		return m, nil
+	}
+	return n, nil
+}
+
+// Max returns the larger of m and n (same-asset). Errors on cross-asset. On a
+// tie it returns m.
+func (m Money) Max(n Money) (Money, error) {
+	c, err := m.Cmp(n)
+	if err != nil {
+		return Money{}, err
+	}
+	if c >= 0 {
+		return m, nil
+	}
+	return n, nil
+}
+
 // Equal reports whether m and n are the same asset and equal amount. The amount
 // comparison is by value, so 0.10 and 0.1 of the same asset are equal.
 func (m Money) Equal(n Money) bool {
