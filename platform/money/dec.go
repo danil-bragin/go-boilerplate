@@ -1,10 +1,3 @@
-// Package money provides decimal-safe monetary primitives.
-//
-// It wraps github.com/shopspring/decimal behind a narrow public seam so the
-// underlying library never leaks into callers. dec.go is the only file that
-// imports shopspring; Dec and RoundingMode are the public surface. Construction
-// is from strings or integers only — there is deliberately no float path, so
-// binary floating-point rounding error can never enter a money value.
 package money
 
 import (
