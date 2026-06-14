@@ -28,8 +28,9 @@ func (m Money) Split(n int) ([]Money, error) {
 // (the only sensible divisible granularity). Any sub-smallest-unit precision in
 // m is truncated toward zero before allocation.
 //
-// Allocate requires a non-negative amount; splitting a debt (m < 0) is a
-// separate concern and returns an error.
+// Negative amounts are supported (e.g. splitting a refund/reversal): allocation
+// runs on the magnitude and the original sign is reapplied to every part, so
+// Σ(parts) == m still holds exactly (a negative whole yields negative parts).
 func (m Money) Allocate(ratios ...int) ([]Money, error) {
 	if len(ratios) == 0 {
 		return nil, errors.New("money: allocate needs at least one ratio")
@@ -47,25 +48,32 @@ func (m Money) Allocate(ratios ...int) ([]Money, error) {
 	a, _ := Lookup(m.asset) // asset validated at construction
 	// integer minor units (truncate any sub-smallest-unit precision toward zero)
 	minor := m.amount.Shift(a.Exponent).BigInt()
-	if minor.Sign() < 0 {
-		return nil, fmt.Errorf("money: allocate requires a non-negative amount, got %s", m.String())
-	}
+	sign := minor.Sign()
+	abs := new(big.Int).Abs(minor) // allocate the magnitude; reapply sign at the end
 	totalBig := big.NewInt(int64(total))
 	allocated := new(big.Int)
-	out := make([]Money, len(ratios))
+	shares := make([]*big.Int, len(ratios))
 	for i, r := range ratios {
-		share := new(big.Int).Mul(minor, big.NewInt(int64(r)))
-		share.Div(share, totalBig) // floor; non-negative operands => plain truncation
-		out[i] = Money{amount: decimal.NewFromBigInt(share, -a.Exponent), asset: m.asset}
-		allocated.Add(allocated, share)
+		s := new(big.Int).Mul(abs, big.NewInt(int64(r)))
+		s.Div(s, totalBig) // non-negative operands => plain truncation
+		shares[i] = s
+		allocated.Add(allocated, s)
 	}
-	// remainder = minor - Σshares; hand out one smallest-unit at a time to the
-	// earliest parts (Fowler). remainder is in [0, len(out)) by construction.
-	remainder := new(big.Int).Sub(minor, allocated)
-	one := decimal.NewFromBigInt(big.NewInt(1), -a.Exponent) // 10^-exponent
-	for i := 0; remainder.Sign() > 0; i = (i + 1) % len(out) {
-		out[i] = Money{amount: out[i].amount.Add(one), asset: m.asset}
-		remainder.Sub(remainder, big.NewInt(1))
+	// remainder = abs - Σshares; hand out one smallest-unit at a time to the
+	// earliest parts (Fowler). remainder is in [0, len(shares)) by construction.
+	remainder := new(big.Int).Sub(abs, allocated)
+	one := big.NewInt(1)
+	for i := 0; remainder.Sign() > 0; i = (i + 1) % len(shares) {
+		shares[i].Add(shares[i], one)
+		remainder.Sub(remainder, one)
+	}
+	out := make([]Money, len(ratios))
+	for i, s := range shares {
+		v := s
+		if sign < 0 {
+			v = new(big.Int).Neg(s)
+		}
+		out[i] = Money{amount: decimal.NewFromBigInt(v, -a.Exponent), asset: m.asset}
 	}
 	return out, nil
 }

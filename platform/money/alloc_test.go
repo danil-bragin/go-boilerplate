@@ -69,9 +69,6 @@ func TestSplit_Errors(t *testing.T) {
 	if _, err := MustParse("1", "USD").Split(0); err == nil {
 		t.Fatal("split(0) must error")
 	}
-	if _, err := MustParse("-1", "USD").Allocate(1, 1); err == nil {
-		t.Fatal("negative amount must error")
-	}
 	if _, err := MustParse("1", "USD").Allocate(); err == nil {
 		t.Fatal("empty ratios must error")
 	}
@@ -80,5 +77,56 @@ func TestSplit_Errors(t *testing.T) {
 	}
 	if _, err := MustParse("1", "USD").Allocate(1, -1); err == nil {
 		t.Fatal("negative ratio must error")
+	}
+}
+
+func TestSplit_NegativeConserves(t *testing.T) {
+	// A negative amount (refund/reversal) splits with conservation: parts are
+	// negative and sum back to the whole exactly.
+	refund := MustParse("-10.00", "USD")
+	parts, err := refund.Split(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := MustParse("0", "USD")
+	for _, p := range parts {
+		sum, _ = sum.Add(p)
+	}
+	if sum.String() != "-10 USD" {
+		t.Fatalf("negative split must conserve, got %s", sum.String())
+	}
+	// Fowler on the magnitude, sign reapplied: -3.34, -3.33, -3.33.
+	if parts[0].String() != "-3.34 USD" || parts[1].String() != "-3.33 USD" || parts[2].String() != "-3.33 USD" {
+		t.Fatalf("negative Fowler distribution wrong: %s %s %s", parts[0], parts[1], parts[2])
+	}
+}
+
+func TestAllocate_NegativeWeightedConserves(t *testing.T) {
+	pot := MustParse("-0.05", "USD")
+	parts, err := pot.Allocate(3, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := MustParse("0", "USD")
+	for _, p := range parts {
+		sum, _ = sum.Add(p)
+	}
+	if sum.String() != "-0.05 USD" {
+		t.Fatalf("negative allocate must conserve, got %s", sum.String())
+	}
+}
+
+func TestSplit_NegativeCrypto18dpConserves(t *testing.T) {
+	m := MustParse("-0.000000000000000010", "ETH") // -10 wei
+	parts, err := m.Split(3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := MustParse("0", "ETH")
+	for _, p := range parts {
+		sum, _ = sum.Add(p)
+	}
+	if !sum.Equal(m) {
+		t.Fatalf("negative crypto split must conserve: %s vs %s", sum, m)
 	}
 }
